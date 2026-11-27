@@ -1,0 +1,6 @@
+# Guest components build with the host toolchain plus the Wasm target.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

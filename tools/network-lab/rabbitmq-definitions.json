@@ -1,0 +1,70 @@
+{
+  "users": [
+    {
+      "name": "guest",
+      "password_hash": "obLD1MWQghB4VYycO80mo/BS12CAgKx2HaNpNWrVbVcF82D3",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": []
+    },
+    {
+      "name": "lab",
+      "password_hash": "9aa3yJxNqWHNo+AumSZp3lyvo2mq7JyNqBEn+K0W61cZdWcx",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": []
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/"
+    },
+    {
+      "name": "orange-auth"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "guest",
+      "vhost": "/",
+      "configure": "^$",
+      "write": ".*",
+      "read": "^orange\\.lab\\."
+    },
+    {
+      "user": "lab",
+      "vhost": "orange-auth",
+      "configure": "^$",
+      "write": ".*",
+      "read": "^orange\\.lab\\."
+    }
+  ],
+  "queues": [
+    {
+      "name": "orange.lab.text",
+      "vhost": "/",
+      "durable": false,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "orange.lab.binary",
+      "vhost": "/",
+      "durable": false,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "orange.lab.text",
+      "vhost": "orange-auth",
+      "durable": false,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "orange.lab.binary",
+      "vhost": "orange-auth",
+      "durable": false,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+[package]
+name = "orange-packages"
+description = "OrangeEditor package manifests, lifecycle state and registry transactions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+# Integration tests build as one binary (tests/main.rs).
+autotests = false
+
+[dependencies]
+orange-model = { path = "../../core/orange-model", version = "=0.1.0-preview.1" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

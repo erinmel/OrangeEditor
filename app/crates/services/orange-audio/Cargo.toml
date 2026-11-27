@@ -1,0 +1,44 @@
+[package]
+name = "orange-audio"
+description = "OrangeEditor base audio package: device playback of sound files and input level triggers as a native host service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "../../../build/locales.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+windows-core.workspace = true
+
+[features]
+audio-device-tests = []
+
+[dependencies]
+orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.0-preview.1" }
+orange-net = { path = "../orange-net", version = "=0.1.0-preview.1" }
+serde_json.workspace = true
+# Device input and output. Linux builds need the ALSA development headers.
+cpal.workspace = true
+# FLAC decoding.
+claxon.workspace = true
+# WAV decoding.
+hound.workspace = true
+# AIFF, MP3, Ogg Vorbis, and M4A decoding.
+symphonia.workspace = true
+symphonia-opus.workspace = true
+
+[dev-dependencies]
+orange-testkit = { path = "../../dev/orange-testkit", version = "=0.1.0-preview.1" }
+orange-host = { path = "../../platform/orange-host", version = "=0.1.0-preview.1" }
+orange-model = { path = "../../core/orange-model", version = "=0.1.0-preview.1" }
+
+# The workspace forbids unsafe code. Capturing one application on Windows needs COM
+# calls, so this crate alone denies it and allows the reviewed uses in
+# `src/device/apps/wasapi.rs`.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

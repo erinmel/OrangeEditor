@@ -1,0 +1,67 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "20000000-0000-4000-8000-000000000001",
+  "revision": 0,
+  "package_lock": [],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "10000000-0000-4000-8000-000000000064",
+      "name": "total",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "signatures": {},
+  "nodes": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 4,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000064"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "7"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "in"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {}
+}

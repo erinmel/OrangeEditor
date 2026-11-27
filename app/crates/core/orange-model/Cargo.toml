@@ -1,0 +1,25 @@
+[package]
+name = "orange-model"
+description = "OrangeEditor graph document model: stable IDs, document structures, node contracts, the registry snapshot and the v1 JSON codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+# The tests/ harness compiles into the library's unit-test target (src/lib.rs) so it can
+# reach crate-private validation passes.
+autotests = false
+
+[dependencies]
+indexmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
+

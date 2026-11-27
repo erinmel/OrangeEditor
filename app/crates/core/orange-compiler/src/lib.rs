@@ -1,0 +1,68 @@
+//! Checked immutable data and bounded structured-control plans.
+//!
+//! Current profile: pure/seeded data demand supports Select/And/Or/Coalesce/Try, the
+//! Repeat, Fold, Map and Filter iteration zones, and bounded graph-local Pure calls; data
+//! plans also support seeded volatile calls. Control plans additionally admit the
+//! documented entries, Get/Set, branches, Sequence, Count/While/ForEach, Fork, scalar
+//! Switch, Match-result, Gate/DoOnce/FlipFlop/Register, Core variable updates, virtual
+//! Wait/Yield and graph-local Action/Async calls. Run-scoped OnEvent/Emit support FIFO
+//! Queue, busy Drop, serial latest-only Replace and bounded Parallel handlers. Replace
+//! waits for owned cleanup before starting a new root. Other event families,
+//! package-provided bodies, clock readers and host services remain unsupported.
+// Product code reports failures as typed errors; each remaining panic is a documented
+// internal invariant (10, "Panic policy").
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
+mod calls;
+mod compile;
+mod control;
+mod data;
+mod data_compile;
+mod effects;
+mod error;
+mod evaluate;
+mod plan;
+mod preview;
+mod projection;
+mod zones;
+
+pub use compile::{CompileLimits, CompileOptions, compile_pure};
+pub use control::ControlWatch;
+pub use control::{
+    ChangeProjection, ControlCell, ControlChange, ControlEvent, ControlIx, ControlLive,
+    ControlManual, ControlNode, ControlOperation, ControlPlan, ControlSource, ControlState,
+    ControlTimer, ControlVariable, EventHandler, ExecInput, ExecTarget, ForkJoin, FunctionLayout,
+    HostSource, IterationProjection, SourceKind, SwitchCase, SwitchKey, TickProjection,
+    UpdateDemand, UpdateOperation, UpdateProjection, VariableDependents, compile_control,
+    compile_control_with_effects,
+};
+pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
+pub use data_compile::compile_data;
+pub use effects::{ControlEffect, SharedWrite};
+pub use error::CompileError;
+pub use evaluate::{EvaluatedExport, EvaluationError, EvaluationOptions, PureEvaluation};
+// The provider-facing interface lives in `orange-kernel`; these names stay available
+// here for code that already works with plans.
+pub use orange_kernel::{
+    ActionKernel, BindingRequest, EffectBinding, EffectResolver, EntropyBinding, EntropyKernel,
+    EntropyKernelResolver, EntropySource, FaultText, KernelBinding, KernelFault, PureKernel,
+    PureKernelResolver, ResolveEntropyInDocument, ResolveError, ResolveInDocument,
+};
+pub use plan::{
+    ConstantFault, Export, FoldedValue, InputSource, NodeIx, PureCallSite, PurePlan, PureStep,
+    SlotIx, SlotSource,
+};
+pub use preview::{PreviewLimits, PreviewReset, PreviewSnapshot, PreviewStats, PurePreview};
+pub use zones::{DataZone, ZoneIx};
+
+pub(crate) use orange_model::value::shape::{ValueCheckError, ValueShape};
+
+/// Plans depend on semantic graph edits and the definitions available at compilation.
+fn plan_inputs_current(
+    state: u64,
+    compiled_registry: &orange_model::catalog::RegistrySnapshot,
+    document: &orange_model::GraphDocument,
+    registry: &orange_model::catalog::RegistrySnapshot,
+) -> bool {
+    state == document.semantic_state_id() && compiled_registry.generation() == registry.generation()
+}

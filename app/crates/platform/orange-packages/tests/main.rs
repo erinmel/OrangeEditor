@@ -1,0 +1,14 @@
+//! The crate's integration tests as one binary: one link instead of one per file, and
+//! every module's tests share the harness's thread pool. Each file is a module.
+
+mod common;
+
+mod archive;
+mod defaults;
+mod durable;
+mod lifecycle;
+mod recovery;
+mod redaction;
+mod retention;
+mod schemas;
+mod specializations;

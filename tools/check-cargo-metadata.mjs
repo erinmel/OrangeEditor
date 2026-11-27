@@ -1,15 +1,76 @@
 import {execFileSync} from 'node:child_process';
 
-const corePackages = new Set([
-  'orange-model',
-  'orange-graph',
-  'orange-types',
-  'orange-compiler',
-  'orange-runtime',
-  'orange-contracts',
-]);
-const bevyVersion = '0.20.0';
-const isBevyFrameworkPackage = name => name === 'bevy' || name.startsWith('bevy_');
+// Every workspace member, whether it is graph core, and the first-party crates it may depend
+// on: `normal` for product builds, `dev` additionally for its own tests and examples
+// (ADR-21). A new member fails the check until it is classified here.
+const policy = {
+  'orange-model': {core: true, normal: []},
+  // The interface native node implementations are written against; model only.
+  'orange-kernel': {core: true, normal: ['orange-model']},
+  'orange-compiler': {core: true, normal: ['orange-model', 'orange-kernel']},
+  'orange-runtime': {core: true, normal: ['orange-model', 'orange-compiler']},
+  // Tests may install synthetic third-party packages through the package store (G2).
+  // The library only implements kernels; its tests and examples compile and run graphs.
+  'orange-bundled': {core: true, normal: ['orange-model', 'orange-kernel'], dev: ['orange-compiler', 'orange-runtime', 'orange-packages']},
+  // Package store and registry transactions over model snapshots (02 boundaries); no runtime edge.
+  'orange-packages': {core: true, normal: ['orange-model']},
+  // Development measurement binary; never part of an embedding host's dependency graph.
+  'orange-measure': {core: false, normal: ['orange-model', 'orange-compiler', 'orange-runtime', 'orange-bundled']},
+  // Host-side Wasm component execution (ADR-03); graph core never depends on it.
+  // Tests compose guest kernels with the bundled resolver and run guest effects in a run.
+  'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages', 'orange-sandbox', 'orange-sdk'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
+  // Session host: composes every layer into running flows. Front ends depend on it alone.
+  'orange-host': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-compiler', 'orange-runtime', 'orange-bundled', 'orange-packages', 'orange-guest', 'orange-sandbox', 'orange-sdk'], dev: ['orange-testkit']},
+  // Plugin SDK: the traits and types a native plugin crate implements. No package
+  // store, guest engine or front end.
+  'orange-sdk': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-runtime']},
+  // Terminal front end; reaches the product only through the host and the service
+  // packages it builds in.
+  'orange-cli': {core: false, normal: ['orange-host', 'orange-net', 'orange-audio', 'orange-native', 'orange-vault', 'orange-files']},
+  // Base network service package: the only crate with a network client. It is built on
+  // the plugin SDK alone; its tests run it in a host.
+  'orange-net': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
+  // Loads native plugin libraries into service packages; the only crate with unsafe code.
+  'orange-native': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
+  // Test support for integration tests; only ever a development dependency.
+  'orange-testkit': {core: false, normal: ['orange-model']},
+  // File access confined to one directory; no first-party or third-party dependency.
+  'orange-sandbox': {core: false, normal: []},
+  // Base file service package, built on the plugin SDK alone; its tests run it in a host.
+  'orange-files': {core: false, normal: ['orange-sdk', 'orange-sandbox'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
+  // Credential stores behind the SDK's SecretStore; the only crate with an OS keyring library.
+  'orange-vault': {core: false, normal: ['orange-sdk']},
+  // Example native plugin library, loaded by orange-native's tests.
+  'orange-plugin-example': {core: false, normal: ['orange-sdk']},
+  // Theme-aware egui controls, free of graph and host types.
+  'orange-ui-controls': {core: false, normal: [], dev: ['orange-testkit', 'orange-audio']},
+  // The editor reaches services through the host. UI tests install real bundled adapters.
+  'orange-editor-ui': {core: false, normal: ['orange-host', 'orange-ui-controls'], dev: ['orange-audio', 'orange-net', 'orange-testkit']},
+  // Browser documentation examples depend only on the shared widget library.
+  'orange-docs-web': {core: false, normal: ['orange-ui-controls']},
+  // Desktop application: the window, the editor interface and the built-in service packages.
+  'orange-desktop': {core: false, normal: ['orange-editor-ui', 'orange-host', 'orange-sandbox', 'orange-sdk', 'orange-native', 'orange-net', 'orange-audio', 'orange-files', 'orange-vault'], dev: ['orange-testkit']},
+  // Base audio service package: the only crate with an audio device library. Built on
+  // the plugin SDK and reuses the network package for HTTP file sources.
+  'orange-audio': {core: false, normal: ['orange-sdk', 'orange-net'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
+};
+// UI, window, renderer and engine frameworks that graph-core crates must never depend on
+// (ADR-01, ADR-02, ADR-21). Host applications may use them.
+const frameworkRoots = ['bevy', 'egui', 'eframe', 'epaint', 'winit', 'wgpu', 'slint', 'i-slint', 'iced'];
+// Concrete network, async-runtime, TLS, audio and OS-service crates. Hosts supply services
+// behind provider and service ports; graph core builds without them. Cargo metadata cannot
+// see `std::fs` or other standard-library I/O, which code review covers.
+const serviceRoots = [
+  'tokio', 'async-std', 'smol', 'mio', 'hyper', 'reqwest', 'ureq', 'h2', 'rustls', 'native-tls',
+  'openssl', 'tungstenite', 'rumqttc', 'cpal', 'rodio', 'alsa', 'coreaudio-rs', 'wasapi', 'keyring', 'notify',
+];
+const matchesRoot = roots => name => roots.some(root =>
+  name === root || name.startsWith(`${root}_`) || name.startsWith(`${root}-`));
+const isFrameworkPackage = matchesRoot(frameworkRoots);
+const isServicePackage = matchesRoot(serviceRoots);
+// A resolve edge only for tests and examples; core product builds never include it.
+const isDevOnly = dependency => Array.isArray(dependency.dep_kinds) && dependency.dep_kinds.length > 0 &&
+  dependency.dep_kinds.every(kind => kind.kind === 'dev');
 
 function loadMetadata() {
   try {
@@ -23,7 +84,7 @@ function loadMetadata() {
   }
 }
 
-function inspectMetadata(metadata) {
+function inspectMetadata(metadata, memberPolicy = policy) {
   if (!metadata || !Array.isArray(metadata.packages) || !Array.isArray(metadata.workspace_members) ||
       !metadata.workspace_members.length || !metadata.resolve || !Array.isArray(metadata.resolve.nodes)) {
     throw new Error('Cargo metadata is incomplete; refusing to pass the policy check.');
@@ -41,25 +102,33 @@ function inspectMetadata(metadata) {
   if (!members.some(pkg => pkg.name === 'orange-model')) {
     throw new Error('Cargo metadata is missing the expected orange-model core root.');
   }
-  for (const pkg of metadata.packages.filter(pkg => pkg.name === 'bevy')) {
-    if (pkg.version !== bevyVersion) errors.push(`resolved Bevy ${pkg.version}; required ${bevyVersion}`);
-  }
+  const isCore = name => memberPolicy[name]?.core === true;
   for (const pkg of members) {
+    const rule = memberPolicy[pkg.name];
+    if (!rule) {
+      errors.push(`${pkg.name} is not classified in the dependency policy; add it as core or host before use`);
+      continue;
+    }
     for (const dependency of pkg.dependencies ?? []) {
       const dependencyName = dependency.package ?? dependency.name;
-      if (dependencyName === 'bevy' && dependency.req !== `=${bevyVersion}`) {
-        errors.push(`${pkg.name} requires Bevy as '${dependency.req}'; use '=${bevyVersion}'`);
+      if (rule.core && isFrameworkPackage(dependencyName)) {
+        errors.push(`${pkg.name} declares ${dependencyName}; graph core must stay free of UI and engine frameworks, including optional dependencies`);
       }
-      if (corePackages.has(pkg.name) && isBevyFrameworkPackage(dependencyName)) {
-        errors.push(`${pkg.name} declares ${dependencyName}; graph core must remain Bevy-free, including optional dependencies`);
+      if (!(dependencyName in memberPolicy)) continue;
+      const allowed = dependency.kind === 'dev'
+        ? [...rule.normal, ...(rule.dev ?? [])]
+        : rule.normal;
+      if (!allowed.includes(dependencyName)) {
+        const kind = dependency.kind === 'dev' ? 'development' : 'normal';
+        errors.push(`${pkg.name} has a ${kind} dependency on ${dependencyName}, which the first-party dependency matrix does not allow`);
       }
     }
   }
 
   const memberByName = new Map(members.map(pkg => [pkg.name, pkg]));
-  for (const name of corePackages) {
-    const root = memberByName.get(name);
-    if (!root) continue;
+  // Product builds of core crates: normal and build edges only, transitively.
+  for (const [name, root] of memberByName) {
+    if (!isCore(name)) continue;
     const visited = new Set();
     const pending = [root.id];
     while (pending.length) {
@@ -69,7 +138,27 @@ function inspectMetadata(metadata) {
       const pkg = packages.get(id);
       const node = nodes.get(id);
       if (!pkg || !node) throw new Error(`Cargo resolve graph is incomplete at ${id}; refusing to pass.`);
-      if (isBevyFrameworkPackage(pkg.name)) errors.push(`${name} has a transitive Bevy dependency (${pkg.name} ${pkg.version})`);
+      if (isServicePackage(pkg.name)) errors.push(`${name} has a transitive network, audio or OS-service dependency (${pkg.name} ${pkg.version})`);
+      if (!Array.isArray(node.deps)) throw new Error(`Cargo resolve graph is missing dependencies for ${id}; refusing to pass.`);
+      for (const dependency of node.deps) {
+        if (!packages.has(dependency.pkg)) throw new Error(`Cargo resolve graph references unknown package ${dependency.pkg}.`);
+        if (!isDevOnly(dependency)) pending.push(dependency.pkg);
+      }
+    }
+  }
+
+  for (const [name, root] of memberByName) {
+    if (!isCore(name)) continue;
+    const visited = new Set();
+    const pending = [root.id];
+    while (pending.length) {
+      const id = pending.pop();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const pkg = packages.get(id);
+      const node = nodes.get(id);
+      if (!pkg || !node) throw new Error(`Cargo resolve graph is incomplete at ${id}; refusing to pass.`);
+      if (isFrameworkPackage(pkg.name)) errors.push(`${name} has a transitive UI or engine dependency (${pkg.name} ${pkg.version})`);
       if (!Array.isArray(node.deps)) throw new Error(`Cargo resolve graph is missing dependencies for ${id}; refusing to pass.`);
       for (const dependency of node.deps) {
         if (!packages.has(dependency.pkg)) throw new Error(`Cargo resolve graph references unknown package ${dependency.pkg}.`);
@@ -84,43 +173,82 @@ function makePackage(id, name, version, dependencies = []) {
   return {id, name, version, dependencies};
 }
 
+// `edges` maps a package ID to its targets; a target written `dev:ID` is a dev-only edge.
 function fixtureMetadata(packages, members, edges) {
   return {
     packages,
     workspace_members: members,
     resolve: {nodes: packages.map(pkg => ({
       id: pkg.id,
-      deps: (edges[pkg.id] ?? []).map(target => ({pkg: target, dep_kinds: []})),
+      deps: (edges[pkg.id] ?? []).map(target => target.startsWith('dev:')
+        ? {pkg: target.slice(4), dep_kinds: [{kind: 'dev', target: null}]}
+        : {pkg: target, dep_kinds: [{kind: null, target: null}]}),
     }))},
   };
 }
 
 function selfTest() {
+  // Fixture members: the real crates plus a host application.
+  const fixturePolicy = {...policy, 'orange-app': {core: false, normal: ['orange-model']}};
   const core = makePackage('model 0.0.0', 'orange-model', '0.0.0');
-  const app = makePackage('orange-app 0.0.0', 'orange-app', '0.0.0', [{name: 'bevy', req: '=0.20.0'}]);
-  const bevy = makePackage('bevy 0.20.0', 'bevy', '0.20.0');
+  const app = makePackage('orange-app 0.0.0', 'orange-app', '0.0.0', [{name: 'eframe', req: '=1.0.0'}]);
+  const eframe = makePackage('eframe 1.0.0', 'eframe', '1.0.0');
   const transitive = makePackage('graphics-helper 1.0.0', 'graphics-helper', '1.0.0');
-  const bevyEcs = makePackage('bevy_ecs 0.20.0', 'bevy_ecs', '0.20.0');
+  const winit = makePackage('winit 1.0.0', 'winit', '1.0.0');
+  const eguiExtras = makePackage('egui_extras 1.0.0', 'egui_extras', '1.0.0');
+  const tokio = makePackage('tokio 1.0.0', 'tokio', '1.0.0');
+  const first = (id, name, dependencies = []) => makePackage(id, name, '0.0.0',
+    dependencies.map(([dependency, kind]) => ({name: dependency, req: '*', kind: kind ?? null})));
+  let cases = 0;
   const check = (label, metadata, expectedErrors) => {
-    const actual = inspectMetadata(metadata);
+    cases += 1;
+    const actual = inspectMetadata(metadata, fixturePolicy);
     if (actual.length !== expectedErrors) throw new Error(`${label}: expected ${expectedErrors} errors, received ${actual.length}: ${actual.join('; ')}`);
   };
-  check('host-only Bevy is allowed', fixtureMetadata([core, app, bevy], [core.id, app.id], {[app.id]: [bevy.id]}), 0);
-  check('transitive core leak is rejected', fixtureMetadata([core, transitive, bevy], [core.id], {[core.id]: [transitive.id], [transitive.id]: [bevy.id]}), 1);
-  check('transitive Bevy subsystem leak is rejected', fixtureMetadata([core, bevyEcs], [core.id], {[core.id]: [bevyEcs.id]}), 1);
-  check('optional core declaration is rejected', fixtureMetadata([makePackage('model 0.0.0', 'orange-model', '0.0.0', [{name: 'bevy', req: '=0.20.0', optional: true}]), bevy], ['model 0.0.0'], {}), 1);
-  check('invalid Bevy version is rejected', fixtureMetadata([core, app, makePackage('bevy 0.21.0', 'bevy', '0.21.0')], [core.id, app.id], {}), 1);
-  check('non-exact member pin is rejected', fixtureMetadata([core, makePackage('app 0.0.0', 'orange-app', '0.0.0', [{name: 'bevy', req: '^0.20'}]), bevy], [core.id, 'app 0.0.0'], {}), 1);
+  check('host-only UI framework is allowed', fixtureMetadata([core, app, eframe], [core.id, app.id], {[app.id]: [eframe.id]}), 0);
+  check('transitive core leak is rejected', fixtureMetadata([core, transitive, winit], [core.id], {[core.id]: [transitive.id], [transitive.id]: [winit.id]}), 1);
+  check('framework subcrate leak is rejected', fixtureMetadata([core, eguiExtras], [core.id], {[core.id]: [eguiExtras.id]}), 1);
+  check('optional core declaration is rejected', fixtureMetadata([makePackage('model 0.0.0', 'orange-model', '0.0.0', [{name: 'egui', req: '=1.0.0', optional: true}]), eframe], ['model 0.0.0'], {}), 1);
+  const bundled = makePackage('bundled 0.0.0', 'orange-bundled', '0.0.0', [{name: 'egui', req: '=1.0.0'}]);
+  check('bundled kernel UI dependency is rejected', fixtureMetadata([core, bundled, eframe], [core.id, bundled.id], {[bundled.id]: [eframe.id]}), 2);
+
+  const compiler = first('compiler 0.0.0', 'orange-compiler', [['orange-model']]);
+  const runtime = first('runtime 0.0.0', 'orange-runtime', [['orange-model'], ['orange-compiler']]);
+  const workspace = [core, compiler, runtime];
+  const ids = workspace.map(pkg => pkg.id);
+  const allowedEdges = {[compiler.id]: [core.id], [runtime.id]: [core.id, compiler.id]};
+  check('the documented matrix passes', fixtureMetadata(workspace, ids, allowedEdges), 0);
+  const backwards = first('model 0.0.0', 'orange-model', [['orange-runtime']]);
+  check('core depending upward is rejected', fixtureMetadata([backwards, compiler, runtime], ids, {...allowedEdges, [core.id]: [runtime.id]}), 1);
+  const toHost = first('runtime 0.0.0', 'orange-runtime', [['orange-model'], ['orange-compiler'], ['orange-measure']]);
+  const measure = first('measure 0.0.0', 'orange-measure', [['orange-model']]);
+  check('core depending on a host crate is rejected', fixtureMetadata([core, compiler, toHost, measure], [...ids, measure.id], {...allowedEdges, [toHost.id]: [core.id, compiler.id, measure.id], [measure.id]: [core.id]}), 1);
+  const stray = first('stray 0.0.0', 'orange-stray', [['orange-model']]);
+  check('an unclassified member is rejected', fixtureMetadata([core, stray], [core.id, stray.id], {[stray.id]: [core.id]}), 1);
+  const bundledDev = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler', 'dev'], ['orange-runtime', 'dev']]);
+  check('bundled may use the runtime in its tests', fixtureMetadata([...workspace, bundledDev], [...ids, bundledDev.id], {...allowedEdges, [bundledDev.id]: [core.id, `dev:${compiler.id}`, `dev:${runtime.id}`]}), 0);
+  const bundledNormal = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler', 'dev'], ['orange-runtime']]);
+  check('bundled may not ship depending on the runtime', fixtureMetadata([...workspace, bundledNormal], [...ids, bundledNormal.id], {...allowedEdges, [bundledNormal.id]: [core.id, `dev:${compiler.id}`, runtime.id]}), 1);
+  const bundledCompiler = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler']]);
+  check('bundled may not ship depending on the compiler', fixtureMetadata([...workspace, bundledCompiler], [...ids, bundledCompiler.id], {...allowedEdges, [bundledCompiler.id]: [core.id, compiler.id]}), 1);
+  const packages = first('packages 0.0.0', 'orange-packages', [['orange-model'], ['orange-runtime']]);
+  check('packages may not depend on the runtime', fixtureMetadata([...workspace, packages], [...ids, packages.id], {...allowedEdges, [packages.id]: [core.id, runtime.id]}), 1);
+  check('a core crate with a transitive async runtime is rejected', fixtureMetadata([core, transitive, tokio], [core.id], {[core.id]: [transitive.id], [transitive.id]: [tokio.id]}), 1);
+  check('a service crate only in core tests is allowed', fixtureMetadata([core, tokio], [core.id], {[core.id]: [`dev:${tokio.id}`]}), 0);
+  const host = makePackage('orange-app 0.0.0', 'orange-app', '0.0.0');
+  check('a host may use services', fixtureMetadata([core, host, tokio], [core.id, host.id], {[host.id]: [tokio.id]}), 0);
+
   const mustFail = (label, metadata) => {
+    cases += 1;
     let failed = false;
-    try { inspectMetadata(metadata); } catch { failed = true; }
+    try { inspectMetadata(metadata, fixturePolicy); } catch { failed = true; }
     if (!failed) throw new Error(`${label}: malformed metadata unexpectedly passed`);
   };
   mustFail('broken graph', {packages: [], workspace_members: ['missing'], resolve: {nodes: []}});
   mustFail('empty workspace', {packages: [], workspace_members: [], resolve: {nodes: []}});
   mustFail('missing orange-model root', fixtureMetadata([app], [app.id], {}));
   mustFail('missing resolve deps', {...fixtureMetadata([core], [core.id], {}), resolve: {nodes: [{id: core.id}]}});
-  console.log('Cargo metadata policy fixtures passed (10 cases).');
+  console.log(`Cargo metadata policy fixtures passed (${cases} cases).`);
 }
 
 if (process.argv.includes('--self-test')) {
@@ -151,8 +279,5 @@ if (process.argv.includes('--self-test')) {
     for (const error of errors) console.error(`FAIL: ${error}`);
     process.exit(1);
   }
-  const bevyPresent = metadata.packages.some(pkg => pkg.name === 'bevy');
-  console.log(bevyPresent
-    ? 'Cargo metadata policy passed; core dependency boundary and exact Bevy 0.20.0 pin verified.'
-    : 'Cargo metadata policy passed; core dependency boundary holds; Bevy pin check is inapplicable because Bevy is absent.');
+  console.log('Cargo metadata policy passed: first-party dependency matrix holds and graph core is free of UI, engine and service frameworks.');
 }

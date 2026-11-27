@@ -1,0 +1,18 @@
+<h2 id="export-a-function">Export a function from the editor</h2>
+<ol>
+<li><a href="../custom-nodes/#graph-function">Make a graph function</a>. Right-click its call and choose <strong>Export function</strong>.</li>
+<li>Review the generated ports and dependencies. Set a package ID you own, such as <code>org.example.math</code>, and save the <code>.orangeplug</code> file.</li>
+<li>Import it from <strong>Packages</strong> in the receiving editor. Place the node from the library and select the receiving graph’s own connection where the card exposes one.</li>
+</ol>
+<p>For automation, publish the same saved function by name. Use a file that already contains a function called Compute power.</p>
+<pre><code>cargo run -p orange-cli --locked -- publish graph.json "Compute power" org.example.math 0.1.0 power power.orangeplug</code></pre>
+<h2 id="pack-a-directory">Pack an authored directory</h2>
+<p>A package directory starts with <code>manifest.json</code> and the node definitions under <code>nodes/</code>. A graph-backed provider uses a matching <code>graphs/</code> entry. A Wasm provider carries the component at the execution entry declared in its manifest. Put localized labels in the Fluent files named by the manifest.</p>
+<p>The <a href="@tree/app/crates/apps/orange-cli/packages/remember">Remember fixture</a> provides a minimal manifest, definition, and graph provider. <code>pack</code> computes the content digest. Pass the output archive when validating or running its consuming graph.</p>
+<pre><code>cargo run -p orange-cli --locked -- pack app/crates/apps/orange-cli/packages/remember remember.orangeplug
+cargo run -p orange-cli --locked -- check app/crates/apps/orange-cli/graphs/remember-on-trigger.json --package remember.orangeplug
+cargo run -p orange-cli --locked -- run app/crates/apps/orange-cli/graphs/remember-on-trigger.json --package remember.orangeplug</code></pre>
+<p>Use <code>--store &lt;dir&gt;</code> to retain packages for subsequent CLI commands. Use <code>orange bind</code> on a hand-authored graph that needs saved provider bindings. It updates the file and keeps a <code>.bak</code> copy.</p>
+<h2 id="permissions-and-updates">Permissions and updates</h2>
+<p>Review the archive’s requested capabilities during installation. The host approves grants per package. Graphs pin package and provider identities, and running flows can keep the providers they started with. Install new versions side by side and review bindings before moving a graph.</p>
+<p>Ship archives for installed graph and Wasm providers. Native Rust libraries are trusted start-time integrations loaded separately. The <a href="@source/docs/04-expansion-plugins.md">expansion contract</a> specifies archive validation, permissions, provider pins, feeds, and hot updates.</p>

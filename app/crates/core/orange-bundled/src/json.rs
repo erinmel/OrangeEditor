@@ -1,0 +1,860 @@
+//! `org.orange.json` operations over validated `core/json@1` text. Navigation works
+//! on the text itself, so extracted values keep their exact number text (03).
+
+use std::{borrow::Cow, sync::Arc};
+
+use orange_model::Value;
+use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot};
+use orange_model::document::{ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+use orange_model::error::JsonTextError;
+use orange_model::id::TypeExpr;
+use orange_model::value::{JsonText, MAX_JSON_TEXT_BYTES};
+use serde_json::json;
+
+use crate::{BindingError, CatalogError, KernelError, MathPackage};
+
+/// Pure JSON operations with separate representations for null and missing values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonOperation {
+    Parse,
+    Kind,
+    IsNull,
+    Get,
+    GetPath,
+    At,
+    Length,
+    AsBool,
+    AsString,
+    AsI64,
+    AsU64,
+    AsF64,
+    BuildObject,
+    BuildArray,
+    SetField,
+    RemoveField,
+    FromBool,
+    FromString,
+    FromI64,
+    FromU64,
+    FromF64,
+    Null,
+    ReadText,
+    ReadInt,
+    ReadNumber,
+    ReadBool,
+}
+
+const JSON: &str = "core/json@1";
+
+impl JsonOperation {
+    pub const ALL: [Self; 26] = [
+        Self::Parse,
+        Self::Kind,
+        Self::IsNull,
+        Self::Get,
+        Self::GetPath,
+        Self::At,
+        Self::Length,
+        Self::AsBool,
+        Self::AsString,
+        Self::AsI64,
+        Self::AsU64,
+        Self::AsF64,
+        Self::BuildObject,
+        Self::BuildArray,
+        Self::SetField,
+        Self::RemoveField,
+        Self::FromBool,
+        Self::FromString,
+        Self::FromI64,
+        Self::FromU64,
+        Self::FromF64,
+        Self::Null,
+        Self::ReadText,
+        Self::ReadInt,
+        Self::ReadNumber,
+        Self::ReadBool,
+    ];
+
+    pub const fn definition_id(self) -> &'static str {
+        match self {
+            Self::Parse => "org.orange.json/parse",
+            Self::Kind => "org.orange.json/kind",
+            Self::IsNull => "org.orange.json/is-null",
+            Self::Get => "org.orange.json/get",
+            Self::GetPath => "org.orange.json/get-path",
+            Self::At => "org.orange.json/at",
+            Self::Length => "org.orange.json/length",
+            Self::AsBool => "org.orange.json/as-bool",
+            Self::AsString => "org.orange.json/as-string",
+            Self::AsI64 => "org.orange.json/as-i64",
+            Self::AsU64 => "org.orange.json/as-u64",
+            Self::AsF64 => "org.orange.json/as-f64",
+            Self::BuildObject => "org.orange.json/build-object",
+            Self::BuildArray => "org.orange.json/build-array",
+            Self::SetField => "org.orange.json/set-field",
+            Self::RemoveField => "org.orange.json/remove-field",
+            Self::FromBool => "org.orange.json/from-bool",
+            Self::FromString => "org.orange.json/from-string",
+            Self::FromI64 => "org.orange.json/from-i64",
+            Self::FromU64 => "org.orange.json/from-u64",
+            Self::FromF64 => "org.orange.json/from-f64",
+            Self::Null => "org.orange.json/null",
+            Self::ReadText => "org.orange.json/read-text",
+            Self::ReadInt => "org.orange.json/read-int",
+            Self::ReadNumber => "org.orange.json/read-number",
+            Self::ReadBool => "org.orange.json/read-bool",
+        }
+    }
+
+    pub fn from_definition_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|op| op.definition_id() == id)
+    }
+
+    pub const fn inputs(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::Parse => &[("text", "core/string@1")],
+            Self::Get => &[("value", JSON), ("key", "core/string@1")],
+            Self::GetPath => &[("value", JSON), ("path", "core/string@1")],
+            Self::At => &[("value", JSON), ("index", "core/u64@1")],
+            Self::SetField => &[("object", JSON), ("key", "core/string@1"), ("value", JSON)],
+            Self::RemoveField => &[("object", JSON), ("key", "core/string@1")],
+            Self::Null => &[],
+            Self::BuildObject => &[("fields", "core/map@1<core/string@1,core/json@1>")],
+            Self::BuildArray => &[("items", "core/list@1<core/json@1>")],
+            Self::FromBool => &[("value", "core/bool@1")],
+            Self::FromString => &[("value", "core/string@1")],
+            Self::FromI64 => &[("value", "core/i64@1")],
+            Self::FromU64 => &[("value", "core/u64@1")],
+            Self::FromF64 => &[("value", "core/f64@1")],
+            Self::ReadText => &[
+                ("value", JSON),
+                ("path", "core/string@1"),
+                ("fallback", "core/string@1"),
+            ],
+            Self::ReadInt => &[
+                ("value", JSON),
+                ("path", "core/string@1"),
+                ("fallback", "core/i64@1"),
+            ],
+            Self::ReadNumber => &[
+                ("value", JSON),
+                ("path", "core/string@1"),
+                ("fallback", "core/f64@1"),
+            ],
+            Self::ReadBool => &[
+                ("value", JSON),
+                ("path", "core/string@1"),
+                ("fallback", "core/bool@1"),
+            ],
+            _ => &[("value", JSON)],
+        }
+    }
+
+    pub const fn output_type(self) -> &'static str {
+        match self {
+            Self::Parse
+            | Self::BuildObject
+            | Self::BuildArray
+            | Self::SetField
+            | Self::RemoveField
+            | Self::FromBool
+            | Self::FromString
+            | Self::FromI64
+            | Self::FromU64
+            | Self::FromF64
+            | Self::Null => JSON,
+            Self::Kind | Self::ReadText => "core/string@1",
+            Self::ReadInt => "core/i64@1",
+            Self::ReadNumber => "core/f64@1",
+            Self::ReadBool => "core/bool@1",
+            Self::IsNull => "core/bool@1",
+            Self::Get | Self::GetPath | Self::At => "core/option@1<core/json@1>",
+            Self::Length => "core/u64@1",
+            Self::AsBool => "core/option@1<core/bool@1>",
+            Self::AsString => "core/option@1<core/string@1>",
+            Self::AsI64 => "core/option@1<core/i64@1>",
+            Self::AsU64 => "core/option@1<core/u64@1>",
+            Self::AsF64 => "core/option@1<core/f64@1>",
+        }
+    }
+}
+
+/// Ordinary non-generic definitions in the `org.orange.json` namespace.
+pub fn json_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
+    JsonOperation::ALL
+        .into_iter()
+        .map(|operation| {
+            let mut ports = crate::catalog::input_ports(operation.inputs())?;
+            ports.push(PortDescriptor::data_out(
+                "result",
+                operation.output_type().parse::<TypeExpr>()?,
+                OutputSource::Computed,
+            ));
+            Ok(NodeDefinition {
+                definition: DefinitionRef {
+                    id: operation.definition_id().parse()?,
+                    version: 1,
+                },
+                config_version: 1,
+                kind: NodeKind::Pure,
+                volatility: None,
+                determinism: orange_model::catalog::Determinism::Deterministic,
+                suspends: None,
+                type_params: vec![],
+                ports: Ports::Declared(ports),
+                references: vec![],
+                specializations: None,
+                config_schema: Some(json!({"$schema":"orange.config-schema/v1","type":"object",
+                "properties":{},"additionalProperties":false})),
+            })
+        })
+        .collect()
+}
+
+/// Byte scanner over text already accepted by [`JsonText`]; it never re-validates.
+struct Scan<'a> {
+    text: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Scan<'a> {
+    fn new(text: &'a str) -> Self {
+        let mut scan = Self {
+            text: text.as_bytes(),
+            at: 0,
+        };
+        scan.skip_space();
+        scan
+    }
+    fn skip_space(&mut self) {
+        while matches!(self.text.get(self.at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.at += 1;
+        }
+    }
+    fn peek(&self) -> Option<u8> {
+        self.text.get(self.at).copied()
+    }
+    /// Advances past one complete value and returns its byte span.
+    fn value(&mut self) -> (usize, usize) {
+        let start = self.at;
+        match self.peek() {
+            Some(b'"') => self.string(),
+            Some(b'[' | b'{') => {
+                let mut depth = 0usize;
+                while let Some(byte) = self.peek() {
+                    match byte {
+                        b'"' => {
+                            self.string();
+                            continue;
+                        }
+                        b'[' | b'{' => depth += 1,
+                        b']' | b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                self.at += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.at += 1;
+                }
+            }
+            _ => {
+                while !matches!(
+                    self.peek(),
+                    None | Some(b',' | b']' | b'}' | b' ' | b'\t' | b'\n' | b'\r')
+                ) {
+                    self.at += 1;
+                }
+            }
+        }
+        (start, self.at)
+    }
+    fn string(&mut self) {
+        self.at += 1;
+        while let Some(byte) = self.peek() {
+            self.at += 1;
+            match byte {
+                b'\\' => self.at += 1,
+                b'"' => return,
+                _ => {}
+            }
+        }
+    }
+    /// Steps over `[` / `{`, then reports whether the container is empty.
+    fn open(&mut self) -> bool {
+        self.at += 1;
+        self.skip_space();
+        matches!(self.peek(), Some(b']' | b'}'))
+    }
+    /// After an element: true if another follows (a `,` was consumed).
+    fn next(&mut self) -> bool {
+        self.skip_space();
+        if self.peek() == Some(b',') {
+            self.at += 1;
+            self.skip_space();
+            true
+        } else {
+            false
+        }
+    }
+    /// An object key at the cursor, unescaped, then steps past the `:`.
+    fn key(&mut self) -> Result<Cow<'a, str>, KernelError> {
+        let (start, end) = self.value();
+        let raw =
+            std::str::from_utf8(&self.text[start..end]).map_err(|_| KernelError::InputContract)?;
+        self.skip_space();
+        self.at += 1; // ':'
+        self.skip_space();
+        if raw[1..raw.len() - 1].contains('\\') {
+            serde_json::from_str::<String>(raw)
+                .map(Cow::Owned)
+                .map_err(|_| KernelError::InputContract)
+        } else {
+            Ok(Cow::Borrowed(&raw[1..raw.len() - 1]))
+        }
+    }
+    fn slice(&self, (start, end): (usize, usize)) -> &'a str {
+        // Spans start and end on ASCII delimiters of valid UTF-8 text.
+        std::str::from_utf8(&self.text[start..end]).unwrap_or_default()
+    }
+
+    fn member(&mut self, key: &str) -> Result<Option<&'a str>, KernelError> {
+        let mut found = None;
+        if !self.open() {
+            loop {
+                let name = self.key()?;
+                let span = self.value();
+                if name == key {
+                    found = Some(self.slice(span));
+                }
+                if !self.next() {
+                    break;
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    fn element(&mut self, index: u64) -> Option<&'a str> {
+        if !self.open() {
+            for position in 0..=index {
+                let span = self.value();
+                if position == index {
+                    return Some(self.slice(span));
+                }
+                if !self.next() {
+                    break;
+                }
+            }
+        }
+        None
+    }
+}
+
+enum Segment<'a> {
+    Key(Cow<'a, str>),
+    Index(u64),
+}
+
+/// A field name or an array/object bracket, followed by the unconsumed path.
+fn path_segment(path: &str, first: bool) -> Result<(Segment<'_>, &str), KernelError> {
+    if let Some(bracket) = path.strip_prefix('[') {
+        let bracket = bracket.trim_start();
+        let (step, rest) = if bracket.starts_with('"') {
+            let mut scan = Scan::new(bracket);
+            scan.string();
+            let (quoted, rest) = bracket
+                .split_at_checked(scan.at)
+                .ok_or(KernelError::Domain)?;
+            let key = serde_json::from_str(quoted).map_err(|_| KernelError::Domain)?;
+            (Segment::Key(Cow::Owned(key)), rest)
+        } else {
+            let end = bracket.bytes().take_while(u8::is_ascii_digit).count();
+            let (digits, rest) = bracket.split_at(end);
+            let index = digits.parse().map_err(|_| KernelError::Domain)?;
+            (Segment::Index(index), rest)
+        };
+        let rest = rest
+            .trim_start()
+            .strip_prefix(']')
+            .ok_or(KernelError::Domain)?;
+        return Ok((step, rest));
+    }
+    let field = if first {
+        path
+    } else {
+        path.strip_prefix('.').ok_or(KernelError::Domain)?
+    };
+    if !matches!(
+        field.as_bytes().first(),
+        Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')
+    ) {
+        return Err(KernelError::Domain);
+    }
+    let end = field
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    let (name, rest) = field.split_at(end);
+    Ok((Segment::Key(Cow::Borrowed(name)), rest))
+}
+
+fn get_path(text: &str, path: &str) -> Result<Value, KernelError> {
+    if path.len() > 4096 {
+        return Err(KernelError::OutOfRange);
+    }
+    let mut path = path.trim();
+    let mut current = Some(text);
+    for index in 0..128 {
+        let (step, rest) = path_segment(path, index == 0)?;
+        if let Some(value) = current {
+            let mut scan = Scan::new(value);
+            current = match (step, scan.peek()) {
+                (Segment::Key(key), Some(b'{')) => scan.member(&key)?,
+                (Segment::Index(index), Some(b'[')) => scan.element(index),
+                _ => None,
+            };
+        }
+        if rest.is_empty() {
+            return current.map_or(Ok(Value::None), json_value);
+        }
+        path = rest;
+    }
+    Err(KernelError::OutOfRange)
+}
+
+/// One step from JSON to a typed value: the value at `path` (the whole value when the
+/// path is empty) read as the node's type, or `fallback` when it is missing, of
+/// another kind, not in integer form or out of range. Invalid path syntax still faults.
+fn read(
+    op: JsonOperation,
+    text: &str,
+    path: &Value,
+    fallback: &Value,
+) -> Result<Value, KernelError> {
+    use JsonOperation as Op;
+    let Value::Str(path) = path else {
+        return Err(KernelError::InputContract);
+    };
+    let fits = matches!(
+        (op, fallback),
+        (Op::ReadText, Value::Str(_))
+            | (Op::ReadInt, Value::I64(_))
+            | (Op::ReadNumber, Value::F64(_))
+            | (Op::ReadBool, Value::Bool(_))
+    );
+    if !fits {
+        return Err(KernelError::InputContract);
+    }
+    let found = if path.trim().is_empty() {
+        Some(text.to_owned())
+    } else {
+        match get_path(text, path)? {
+            Value::Json(found) => Some(found.as_str().to_owned()),
+            _ => None,
+        }
+    };
+    let Some(found) = found else {
+        return Ok(fallback.clone());
+    };
+    let mut scan = Scan::new(&found);
+    let first = scan.peek().ok_or(KernelError::InputContract)?;
+    let number = matches!(first, b'-' | b'0'..=b'9');
+    let read = match op {
+        Op::ReadText if first == b'"' => {
+            let span = scan.value();
+            serde_json::from_str::<String>(scan.slice(span))
+                .ok()
+                .map(|text| Value::Str(Arc::new(text)))
+        }
+        Op::ReadBool => match first {
+            b't' => Some(Value::Bool(true)),
+            b'f' => Some(Value::Bool(false)),
+            _ => None,
+        },
+        Op::ReadInt if number => {
+            let span = scan.value();
+            scan.slice(span).parse::<i64>().ok().map(Value::I64)
+        }
+        Op::ReadNumber if number => {
+            let span = scan.value();
+            scan.slice(span)
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite())
+                .map(Value::F64)
+        }
+        _ => None,
+    };
+    Ok(read.unwrap_or_else(|| fallback.clone()))
+}
+
+fn json_value(text: &str) -> Result<Value, KernelError> {
+    let text = JsonText::try_from(text).map_err(|_| KernelError::InputContract)?;
+    Ok(Value::Json(Arc::new(text)))
+}
+
+/// Object members as (unescaped key, value byte span), in text order.
+type Members<'a> = Vec<(Cow<'a, str>, (usize, usize))>;
+
+/// The members of an object at the cursor, in text order.
+fn members<'a>(scan: &mut Scan<'a>) -> Result<Members<'a>, KernelError> {
+    let mut members = Vec::new();
+    if scan.open() {
+        return Ok(members);
+    }
+    loop {
+        let key = scan.key()?;
+        let span = scan.value();
+        members.push((key, span));
+        if !scan.next() {
+            return Ok(members);
+        }
+    }
+}
+
+#[derive(Default)]
+struct JsonOutput(Vec<u8>);
+
+impl std::io::Write for JsonOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_JSON_TEXT_BYTES - self.0.len() {
+            return Err(std::io::Error::other("JSON output exceeds the size limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl JsonOutput {
+    fn raw(&mut self, text: &str) -> Result<(), KernelError> {
+        use std::io::Write;
+        self.write_all(text.as_bytes())
+            .map_err(|_| KernelError::OutOfRange)
+    }
+
+    fn scalar(&mut self, value: impl Into<serde_json::Value>) -> Result<(), KernelError> {
+        serde_json::to_writer(self, &value.into()).map_err(|_| KernelError::OutOfRange)
+    }
+
+    fn string(&mut self, value: &str) -> Result<(), KernelError> {
+        if value.len() > MAX_JSON_TEXT_BYTES - self.0.len() {
+            return Err(KernelError::OutOfRange);
+        }
+        self.scalar(value)
+    }
+
+    fn field(&mut self, key: &str, value: &str) -> Result<(), KernelError> {
+        if self.0.len() > 1 {
+            self.raw(",")?;
+        }
+        self.string(key)?;
+        self.raw(":")?;
+        self.raw(value)
+    }
+
+    fn finish(self) -> Result<Value, KernelError> {
+        let text = String::from_utf8(self.0).map_err(|_| KernelError::InputContract)?;
+        let json = JsonText::new(text).map_err(|error| match error {
+            JsonTextError::TooLarge { .. } | JsonTextError::TooDeep => KernelError::OutOfRange,
+            _ => KernelError::InputContract,
+        })?;
+        Ok(Value::Json(Arc::new(json)))
+    }
+}
+
+fn update_object(
+    output: &mut JsonOutput,
+    text: &str,
+    key: &str,
+    replacement: Option<&str>,
+) -> Result<(), KernelError> {
+    let mut scan = Scan::new(text);
+    if scan.peek() != Some(b'{') {
+        return Err(KernelError::Domain);
+    }
+    let fields = members(&mut scan)?;
+    let last = fields.iter().rposition(|(name, _)| name == key);
+    output.raw("{")?;
+    for (index, (name, span)) in fields.into_iter().enumerate() {
+        if name != key {
+            output.field(&name, scan.slice(span))?;
+        } else if Some(index) == last
+            && let Some(value) = replacement
+        {
+            output.field(key, value)?;
+        }
+    }
+    if last.is_none()
+        && let Some(value) = replacement
+    {
+        output.field(key, value)?;
+    }
+    output.raw("}")
+}
+
+fn construct(op: JsonOperation, inputs: &[Value]) -> Result<Value, KernelError> {
+    use JsonOperation as Op;
+    let mut output = JsonOutput::default();
+    match (op, inputs) {
+        (Op::BuildObject, [Value::Map(fields)]) => {
+            output.raw("{")?;
+            for (key, value) in fields.entries() {
+                let (Value::Str(key), Value::Json(value)) = (key, value) else {
+                    return Err(KernelError::InputContract);
+                };
+                output.field(key, value.as_str())?;
+            }
+            output.raw("}")?;
+        }
+        (Op::BuildArray, [Value::List(items)]) => {
+            output.raw("[")?;
+            for index in 0..items.len() {
+                let Some(Value::Json(value)) = items.get(index) else {
+                    return Err(KernelError::InputContract);
+                };
+                if index > 0 {
+                    output.raw(",")?;
+                }
+                output.raw(value.as_str())?;
+            }
+            output.raw("]")?;
+        }
+        (Op::SetField, [Value::Json(object), Value::Str(key), Value::Json(value)]) => {
+            update_object(&mut output, object.as_str(), key, Some(value.as_str()))?;
+        }
+        (Op::RemoveField, [Value::Json(object), Value::Str(key)]) => {
+            update_object(&mut output, object.as_str(), key, None)?;
+        }
+        (Op::FromBool, [Value::Bool(value)]) => output.scalar(*value)?,
+        (Op::FromString, [Value::Str(value)]) => output.string(value)?,
+        (Op::FromI64, [Value::I64(value)]) => output.scalar(*value)?,
+        (Op::FromU64, [Value::U64(value)]) => output.scalar(*value)?,
+        (Op::FromF64, [Value::F64(value)]) if value.is_finite() => output.scalar(*value)?,
+        (Op::FromF64, [Value::F64(_)]) => return Err(KernelError::Domain),
+        (Op::Null, []) => output.raw("null")?,
+        _ => return Err(KernelError::InputContract),
+    }
+    output.finish()
+}
+
+/// A pinned exact provider binding; JSON nodes have no config.
+#[derive(Debug, Clone)]
+pub struct ResolvedJson {
+    snapshot: Arc<RegistrySnapshot>,
+    provider: ProviderKey,
+    operation: JsonOperation,
+}
+
+impl ResolvedJson {
+    pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {
+        &self.snapshot
+    }
+    pub fn provider(&self) -> &ProviderKey {
+        &self.provider
+    }
+    pub fn operation(&self) -> JsonOperation {
+        self.operation
+    }
+
+    /// `get`/`at`/`length` on the wrong kind of JSON value are `core/Domain`; a number
+    /// read as an integer must have integer form (`core/Domain` otherwise) and fit the
+    /// type (`core/OutOfRange`). Duplicate object keys resolve to the last member.
+    pub fn evaluate(&self, inputs: &[Value]) -> Result<Value, KernelError> {
+        use JsonOperation as Op;
+        if inputs.len() != self.operation.inputs().len() {
+            return Err(KernelError::InputContract);
+        }
+        match self.operation {
+            Op::BuildObject
+            | Op::BuildArray
+            | Op::SetField
+            | Op::RemoveField
+            | Op::FromBool
+            | Op::FromString
+            | Op::FromI64
+            | Op::FromU64
+            | Op::FromF64
+            | Op::Null => {
+                return construct(self.operation, inputs);
+            }
+            _ => {}
+        }
+        if self.operation == Op::Parse {
+            let Value::Str(text) = &inputs[0] else {
+                return Err(KernelError::InputContract);
+            };
+            let value = JsonText::try_from(text.as_str()).map_err(|_| KernelError::Domain)?;
+            return Ok(Value::Json(Arc::new(value)));
+        }
+        let Value::Json(text) = &inputs[0] else {
+            return Err(KernelError::InputContract);
+        };
+        if matches!(
+            self.operation,
+            Op::ReadText | Op::ReadInt | Op::ReadNumber | Op::ReadBool
+        ) {
+            return read(self.operation, text.as_str(), &inputs[1], &inputs[2]);
+        }
+        let mut scan = Scan::new(text.as_str());
+        let first = scan.peek().ok_or(KernelError::InputContract)?;
+        Ok(match self.operation {
+            Op::ReadText | Op::ReadInt | Op::ReadNumber | Op::ReadBool => {
+                return Err(KernelError::InputContract);
+            }
+            Op::Parse
+            | Op::BuildObject
+            | Op::BuildArray
+            | Op::SetField
+            | Op::RemoveField
+            | Op::FromBool
+            | Op::FromString
+            | Op::FromI64
+            | Op::FromU64
+            | Op::FromF64
+            | Op::Null => return Err(KernelError::InputContract),
+            Op::Kind => Value::Str(Arc::new(
+                match first {
+                    b'n' => "null",
+                    b't' | b'f' => "boolean",
+                    b'"' => "string",
+                    b'[' => "array",
+                    b'{' => "object",
+                    _ => "number",
+                }
+                .to_owned(),
+            )),
+            Op::IsNull => Value::Bool(first == b'n'),
+            Op::AsBool => match first {
+                b't' => Value::Bool(true),
+                b'f' => Value::Bool(false),
+                _ => Value::None,
+            },
+            Op::AsString => match first {
+                b'"' => {
+                    let span = scan.value();
+                    Value::Str(Arc::new(
+                        serde_json::from_str(scan.slice(span))
+                            .map_err(|_| KernelError::InputContract)?,
+                    ))
+                }
+                _ => Value::None,
+            },
+            Op::AsI64 | Op::AsU64 | Op::AsF64 if !matches!(first, b'-' | b'0'..=b'9') => {
+                Value::None
+            }
+            Op::AsI64 | Op::AsU64 => {
+                let span = scan.value();
+                let number = scan.slice(span);
+                // Integer form only: an optional minus and digits, no fraction/exponent.
+                let digits = number.strip_prefix('-').unwrap_or(number);
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(KernelError::Domain);
+                }
+                let value: i128 = number.parse().map_err(|_| KernelError::OutOfRange)?;
+                if self.operation == Op::AsI64 {
+                    Value::I64(i64::try_from(value).map_err(|_| KernelError::OutOfRange)?)
+                } else {
+                    Value::U64(u64::try_from(value).map_err(|_| KernelError::OutOfRange)?)
+                }
+            }
+            Op::AsF64 => {
+                let span = scan.value();
+                let value: f64 = scan
+                    .slice(span)
+                    .parse()
+                    .map_err(|_| KernelError::InputContract)?;
+                if value.is_infinite() {
+                    return Err(KernelError::OutOfRange);
+                }
+                Value::F64(value)
+            }
+            Op::Get => {
+                let Value::Str(key) = &inputs[1] else {
+                    return Err(KernelError::InputContract);
+                };
+                if first != b'{' {
+                    return Err(KernelError::Domain);
+                }
+                scan.member(key)?.map_or(Ok(Value::None), json_value)?
+            }
+            Op::GetPath => {
+                let Value::Str(path) = &inputs[1] else {
+                    return Err(KernelError::InputContract);
+                };
+                return get_path(text.as_str(), path);
+            }
+            Op::At => {
+                let Value::U64(index) = inputs[1] else {
+                    return Err(KernelError::InputContract);
+                };
+                if first != b'[' {
+                    return Err(KernelError::Domain);
+                }
+                scan.element(index).map_or(Ok(Value::None), json_value)?
+            }
+            Op::Length => match first {
+                b'[' => {
+                    let mut count = 0u64;
+                    if !scan.open() {
+                        loop {
+                            scan.value();
+                            count += 1;
+                            if !scan.next() {
+                                break;
+                            }
+                        }
+                    }
+                    Value::U64(count)
+                }
+                b'{' => {
+                    let mut keys: Vec<Cow<'_, str>> = members(&mut scan)?
+                        .into_iter()
+                        .map(|(key, _)| key)
+                        .collect();
+                    keys.sort_unstable();
+                    keys.dedup();
+                    Value::U64(keys.len() as u64)
+                }
+                _ => return Err(KernelError::Domain),
+            },
+        })
+    }
+}
+
+impl MathPackage {
+    /// Resolves only this build's exact `org.orange.json` provider.
+    pub fn resolve_json(
+        &self,
+        snapshot: Arc<RegistrySnapshot>,
+        provider: &ProviderKey,
+        definition: &DefinitionRef,
+        config_version: u32,
+        config: &ConfigValue,
+    ) -> Result<ResolvedJson, BindingError> {
+        let operation = JsonOperation::from_definition_id(definition.id.as_str())
+            .ok_or(BindingError::Unavailable)?;
+        if provider != self.json_provider_key()
+            || definition.version != 1
+            || config_version != 1
+            || !snapshot.provides(definition, config_version, provider)
+        {
+            return Err(BindingError::Unavailable);
+        }
+        if !config.is_empty() {
+            return Err(BindingError::InvalidConfig);
+        }
+        Ok(ResolvedJson {
+            snapshot,
+            provider: provider.clone(),
+            operation,
+        })
+    }
+}

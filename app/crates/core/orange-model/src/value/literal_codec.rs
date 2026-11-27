@@ -1,0 +1,610 @@
+//! Typed literal codec (12 §6.1): [`Literal`] ↔ [`Value`] for every type with a literal
+//! form.
+//!
+//! Only the top-level literal carries `type`; nested values are untyped JSON whose types
+//! come from the outer type. Nested floats use the same lowercase-hex bit-pattern strings
+//! as top-level `bits`. Decimal strings and bit patterns must already be canonical, so
+//! load→save stays byte-stable.
+//!
+//! Unknown record fields and enum variants survive storage because the document keeps the
+//! raw literal; only decoding them to a `Value` fails (03).
+
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::Arc;
+
+use serde_json::{Map, Value as Json, json};
+
+use super::base64;
+use super::shape::{VALUE_CHARGE, ValueShape};
+use super::{JsonText, ListBuilder, ListPushError, MapRepr, RecordRepr, Value};
+use crate::document::literal::{Literal, LiteralPayload};
+use crate::error::{JsonTextError, LiteralError};
+use crate::id::TypeExpr;
+
+/// Exact identity of the structural decoder implemented by this module.
+pub const CODEC_ID: &str = "orange.value.v1";
+use crate::type_term::{MAX_NESTING, NamedTerm, TypeTerm};
+
+/// Record and enum layouts by nominal type, supplied by the registry (12 §5).
+pub trait Schemas {
+    fn record(&self, ty: &NamedTerm) -> Option<&RecordSchema>;
+    fn enumeration(&self, ty: &NamedTerm) -> Option<&EnumSchema>;
+
+    /// Validate a map key before codec duplicate detection. The default preserves the
+    /// codec-only `SchemaSet` compatibility behavior (float exclusion); registries should
+    /// override this to enforce language `hash` and `eq` constraints.
+    fn validate_map_key(&self, term: &TypeTerm) -> Result<(), LiteralError> {
+        if float_width(term).is_some() {
+            Err(LiteralError::FloatMapKey {
+                ty: term.to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Whether a nominal type's `eq` and `hash` are both declared structural derives
+    /// (11 §5.4), so the host can key maps by its tag and payload identity. Codec-only
+    /// schema sets prove no constraint; registries override this.
+    fn derives_key(&self, ty: &NamedTerm) -> bool {
+        let _ = ty;
+        false
+    }
+
+    /// Whether a nominal type's `eq` is a declared structural derive (11 §5.4), so the
+    /// host compares it by tags/fields and members. Codec-only schema sets prove no
+    /// constraint; registries override this.
+    fn derives_eq(&self, ty: &NamedTerm) -> bool {
+        let _ = ty;
+        false
+    }
+}
+
+/// Field IDs in schema order (12 §5).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordSchema {
+    pub fields: Vec<FieldSchema>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldSchema {
+    pub field_id: String,
+    pub ty: TypeTerm,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumSchema {
+    pub variants: Vec<VariantSchema>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantSchema {
+    pub variant_id: String,
+    pub payload: Option<TypeTerm>,
+}
+
+/// In-memory schemas keyed by canonical named type (`org.example/point@1`).
+#[derive(Debug, Clone, Default)]
+pub struct SchemaSet {
+    records: HashMap<String, RecordSchema>,
+    enums: HashMap<String, EnumSchema>,
+}
+
+impl SchemaSet {
+    pub fn with_record(mut self, ty: &str, schema: RecordSchema) -> Self {
+        self.records.insert(ty.to_owned(), schema);
+        self
+    }
+
+    pub fn with_enum(mut self, ty: &str, schema: EnumSchema) -> Self {
+        self.enums.insert(ty.to_owned(), schema);
+        self
+    }
+}
+
+impl Schemas for SchemaSet {
+    fn record(&self, ty: &NamedTerm) -> Option<&RecordSchema> {
+        self.records.get(&TypeTerm::Named(ty.clone()).to_string())
+    }
+
+    fn enumeration(&self, ty: &NamedTerm) -> Option<&EnumSchema> {
+        self.enums.get(&TypeTerm::Named(ty.clone()).to_string())
+    }
+}
+
+/// Default byte budget for decoding one literal: the default document import size, so
+/// a literal that a document can hold always fits. Proposed value, recorded in 10.
+pub const MAX_LITERAL_BYTES: usize = 64 * 1024 * 1024;
+
+/// Decodes a literal into the value it denotes, within [`MAX_LITERAL_BYTES`].
+pub fn decode(literal: &Literal, schemas: &impl Schemas) -> Result<Value, LiteralError> {
+    decode_with_budget(literal, schemas, MAX_LITERAL_BYTES)
+}
+
+/// Decodes a literal, charging every decoded value and every copied string, byte or JSON
+/// payload against `max_bytes` before allocating it. Exceeding the budget fails with
+/// [`LiteralError::TooLarge`] for the type at the failing position.
+pub fn decode_with_budget(
+    literal: &Literal,
+    schemas: &impl Schemas,
+    max_bytes: usize,
+) -> Result<Value, LiteralError> {
+    let term = TypeTerm::parse(&literal.ty)?;
+    match &literal.payload {
+        LiteralPayload::Bits(bits) => match float_width(&term) {
+            Some(width) => float_from_bits(bits, width, &term),
+            None => Err(mismatch(&term)),
+        },
+        LiteralPayload::Value(_) if float_width(&term).is_some() => Err(mismatch(&term)),
+        LiteralPayload::Value(json) => Codec::new(schemas, max_bytes).decode(json, &term, 0),
+    }
+}
+
+/// Encodes `value` as a literal of type `ty`; fails if the value does not have that type.
+pub fn encode(
+    ty: &TypeExpr,
+    value: &Value,
+    schemas: &impl Schemas,
+) -> Result<Literal, LiteralError> {
+    let term = TypeTerm::parse(ty)?;
+    let payload = match (float_width(&term), value) {
+        (Some(32), Value::F32(x)) => LiteralPayload::Bits(format!("{:08x}", x.to_bits())),
+        (Some(64), Value::F64(x)) => LiteralPayload::Bits(format!("{:016x}", x.to_bits())),
+        (Some(_), _) => return Err(value_mismatch(&term)),
+        (None, _) => {
+            LiteralPayload::Value(Codec::new(schemas, usize::MAX).encode(value, &term, 0)?)
+        }
+    };
+    Ok(Literal {
+        ty: ty.clone(),
+        payload,
+        display: None,
+    })
+}
+
+fn float_width(term: &TypeTerm) -> Option<u32> {
+    if term.core("f32").is_some_and(<[_]>::is_empty) {
+        Some(32)
+    } else if term.core("f64").is_some_and(<[_]>::is_empty) {
+        Some(64)
+    } else {
+        None
+    }
+}
+
+fn float_from_bits(bits: &str, width: u32, term: &TypeTerm) -> Result<Value, LiteralError> {
+    let digits = width as usize / 4;
+    let canonical = bits.len() == digits
+        && bits
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !canonical {
+        return Err(LiteralError::NonCanonical {
+            ty: term.to_string(),
+        });
+    }
+    let raw = u64::from_str_radix(bits, 16).map_err(|_| LiteralError::NonCanonical {
+        ty: term.to_string(),
+    })?;
+    Ok(if width == 32 {
+        Value::F32(f32::from_bits(raw as u32))
+    } else {
+        Value::F64(f64::from_bits(raw))
+    })
+}
+
+fn mismatch(term: &TypeTerm) -> LiteralError {
+    LiteralError::TypeMismatch {
+        ty: term.to_string(),
+    }
+}
+
+fn value_mismatch(term: &TypeTerm) -> LiteralError {
+    LiteralError::ValueMismatch {
+        ty: term.to_string(),
+    }
+}
+
+/// Exactly `N` type arguments, or the type is malformed for its constructor.
+fn args<'a, const N: usize>(
+    term: &TypeTerm,
+    args: &'a [TypeTerm],
+) -> Result<&'a [TypeTerm; N], LiteralError> {
+    args.try_into().map_err(|_| LiteralError::UnknownType {
+        ty: term.to_string(),
+    })
+}
+
+/// Canonical decimal string of an integer type.
+fn decimal<T: FromStr + ToString>(json: &Json, term: &TypeTerm) -> Result<T, LiteralError> {
+    let text = json.as_str().ok_or_else(|| mismatch(term))?;
+    let numeric = !text.is_empty()
+        && text
+            .trim_start_matches('-')
+            .bytes()
+            .all(|b| b.is_ascii_digit());
+    match text.parse::<T>() {
+        Ok(value) if value.to_string() == text => Ok(value),
+        Ok(_) => Err(LiteralError::NonCanonical {
+            ty: term.to_string(),
+        }),
+        Err(_) if numeric => Err(LiteralError::OutOfRange {
+            ty: term.to_string(),
+        }),
+        Err(_) => Err(LiteralError::NonCanonical {
+            ty: term.to_string(),
+        }),
+    }
+}
+
+/// JSON integer of a 32-bit type.
+fn integer<T: TryFrom<i64>>(json: &Json, term: &TypeTerm) -> Result<T, LiteralError> {
+    let number = json
+        .as_number()
+        .filter(|n| n.is_i64() || n.is_u64())
+        .ok_or_else(|| mismatch(term))?;
+    let out_of_range = || LiteralError::OutOfRange {
+        ty: term.to_string(),
+    };
+    let wide = number.as_i64().ok_or_else(out_of_range)?;
+    T::try_from(wide).map_err(|_| out_of_range())
+}
+
+struct Codec<'a, S> {
+    schemas: &'a S,
+    /// Bytes the rest of the decode may still allocate.
+    budget: Cell<usize>,
+}
+
+impl<'a, S: Schemas> Codec<'a, S> {
+    fn new(schemas: &'a S, budget: usize) -> Self {
+        Self {
+            schemas,
+            budget: Cell::new(budget),
+        }
+    }
+
+    /// Charges `bytes` for the value of `term` being decoded, before it is allocated.
+    fn charge(&self, bytes: usize, term: &TypeTerm) -> Result<(), LiteralError> {
+        let left = self
+            .budget
+            .get()
+            .checked_sub(bytes)
+            .ok_or_else(|| LiteralError::TooLarge {
+                ty: term.to_string(),
+            })?;
+        self.budget.set(left);
+        Ok(())
+    }
+
+    /// Reject impossible container storage before reserving its element slots.
+    fn minimum(&self, count: usize, per_item: usize, term: &TypeTerm) -> Result<(), LiteralError> {
+        if count
+            .checked_mul(per_item)
+            .is_none_or(|n| n > self.budget.get())
+        {
+            return Err(LiteralError::TooLarge {
+                ty: term.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn decode(&self, json: &Json, term: &TypeTerm, depth: usize) -> Result<Value, LiteralError> {
+        if depth > MAX_NESTING {
+            return Err(LiteralError::TooDeep);
+        }
+        self.charge(VALUE_CHARGE, term)?;
+        let named = term
+            .named()
+            .ok_or_else(|| LiteralError::UnresolvedParameter {
+                ty: term.to_string(),
+            })?;
+        if named.namespace != "core" || named.major != 1 {
+            return self.decode_schema(json, term, named, depth);
+        }
+        // Text is charged before it is copied or decoded; base64 never decodes longer.
+        let string = || {
+            let text = json.as_str().ok_or_else(|| mismatch(term))?;
+            self.charge(text.len(), term)?;
+            Ok::<_, LiteralError>(text)
+        };
+        Ok(match (named.name.as_str(), named.args.as_slice()) {
+            ("bool", []) => Value::Bool(json.as_bool().ok_or_else(|| mismatch(term))?),
+            ("i32", []) => Value::I32(integer(json, term)?),
+            ("u32", []) => Value::U32(integer(json, term)?),
+            ("i64", []) => Value::I64(decimal(json, term)?),
+            ("u64", []) => Value::U64(decimal(json, term)?),
+            ("duration", []) => Value::Duration(decimal(json, term)?),
+            ("timestamp", []) => Value::Timestamp(decimal(json, term)?),
+            ("f32", []) => float_from_bits(string()?, 32, term)?,
+            ("f64", []) => float_from_bits(string()?, 64, term)?,
+            ("string", []) => Value::Str(Arc::new(string()?.to_owned())),
+            ("bytes", []) => {
+                let bytes = base64::decode(string()?).ok_or(LiteralError::NonCanonical {
+                    ty: term.to_string(),
+                })?;
+                Value::Bytes(Arc::new(bytes))
+            }
+            ("json", []) => {
+                let text = JsonText::try_from(string()?).map_err(|error| match error {
+                    JsonTextError::TooDeep => LiteralError::TooDeep,
+                    JsonTextError::TooLarge { .. } => LiteralError::TooLarge {
+                        ty: term.to_string(),
+                    },
+                    JsonTextError::Invalid(_) => mismatch(term),
+                })?;
+                Value::Json(Arc::new(text))
+            }
+            ("secret-ref", []) => {
+                let reference = string()?;
+                if !reference.starts_with("credential://") {
+                    return Err(LiteralError::InvalidSecretRef);
+                }
+                Value::Str(Arc::new(reference.to_owned()))
+            }
+            ("list", items) => {
+                let [element] = args(term, items)?;
+                let array = json.as_array().ok_or_else(|| mismatch(term))?;
+                self.minimum(array.len(), VALUE_CHARGE, term)?;
+                let list_error = |error| match error {
+                    ListPushError::Mismatch => mismatch(term),
+                    ListPushError::Capacity => LiteralError::TooLarge {
+                        ty: term.to_string(),
+                    },
+                };
+                let mut list = ListBuilder::new(ValueShape::resolve(element).as_ref());
+                list.reserve(array.len()).map_err(list_error)?;
+                for item in array {
+                    list.push(self.decode(item, element, depth + 1)?)
+                        .map_err(list_error)?;
+                }
+                Value::List(Arc::new(list.finish()))
+            }
+            ("map", items) => {
+                let [key, value] = args(term, items)?;
+                self.schemas.validate_map_key(key)?;
+                let pairs = json.as_array().ok_or_else(|| mismatch(term))?;
+                self.minimum(pairs.len(), 2 * VALUE_CHARGE, term)?;
+                let mut entries: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
+                for pair in pairs {
+                    let [k, v] = pair
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .ok_or_else(|| mismatch(term))?
+                    else {
+                        return Err(mismatch(term));
+                    };
+                    entries.push((
+                        self.decode(k, key, depth + 1)?,
+                        self.decode(v, value, depth + 1)?,
+                    ));
+                }
+                let map = MapRepr::new(entries).map_err(|_| LiteralError::DuplicateMapKey)?;
+                Value::Map(Arc::new(map))
+            }
+            ("option", items) => {
+                let [inner] = args(term, items)?;
+                let object = json
+                    .as_object()
+                    .filter(|o| o.len() == 1)
+                    .ok_or_else(|| mismatch(term))?;
+                match (object.get("none"), object.get("some")) {
+                    (Some(Json::Bool(true)), None) => Value::None,
+                    (None, Some(some)) => {
+                        let value = self.decode(some, inner, depth + 1)?;
+                        // No result literals exist, so only nested options box here (12 §7).
+                        if inner.core("option").is_some() {
+                            Value::Some(Arc::new(value))
+                        } else {
+                            value
+                        }
+                    }
+                    _ => return Err(mismatch(term)),
+                }
+            }
+            ("result" | "error" | "stream" | "handle", _) => {
+                return Err(LiteralError::NoLiteralForm {
+                    ty: term.to_string(),
+                });
+            }
+            _ => {
+                return Err(LiteralError::UnknownType {
+                    ty: term.to_string(),
+                });
+            }
+        })
+    }
+
+    fn decode_schema(
+        &self,
+        json: &Json,
+        term: &TypeTerm,
+        named: &NamedTerm,
+        depth: usize,
+    ) -> Result<Value, LiteralError> {
+        let object = json.as_object().ok_or_else(|| mismatch(term))?;
+        if let Some(schema) = self.schemas.record(named) {
+            let ty = term.to_type_expr();
+            self.charge(ty.as_str().len(), term)?;
+            self.minimum(schema.fields.len(), VALUE_CHARGE, term)?;
+            if let Some(field) = object
+                .keys()
+                .find(|key| !schema.fields.iter().any(|f| &f.field_id == *key))
+            {
+                return Err(LiteralError::UnknownField {
+                    field: field.as_str().into(),
+                });
+            }
+            let fields = schema
+                .fields
+                .iter()
+                .map(|field| match object.get(&field.field_id) {
+                    Some(value) => self.decode(value, &field.ty, depth + 1).map(Some),
+                    None if field.optional => self.charge(VALUE_CHARGE, term).map(|()| None),
+                    None => Err(LiteralError::MissingField {
+                        field: field.field_id.clone(),
+                    }),
+                })
+                .collect::<Result<_, _>>()?;
+            return Ok(Value::Record(Arc::new(RecordRepr { ty, fields })));
+        }
+        if let Some(schema) = self.schemas.enumeration(named) {
+            let variant = object
+                .get("variant")
+                .and_then(Json::as_str)
+                .ok_or_else(|| mismatch(term))?;
+            let (tag, declared) = schema
+                .variants
+                .iter()
+                .enumerate()
+                .find(|(_, v)| v.variant_id == variant)
+                .ok_or_else(|| LiteralError::UnknownVariant {
+                    variant: variant.into(),
+                })?;
+            let expected_keys = 1 + usize::from(declared.payload.is_some());
+            if object.len() != expected_keys {
+                return Err(mismatch(term));
+            }
+            let payload = match &declared.payload {
+                Some(payload_ty) => {
+                    let json = object.get("payload").ok_or_else(|| mismatch(term))?;
+                    Some(Arc::new(self.decode(json, payload_ty, depth + 1)?))
+                }
+                None => None,
+            };
+            return Ok(Value::Enum {
+                tag: tag as u32,
+                payload,
+            });
+        }
+        Err(LiteralError::UnknownType {
+            ty: term.to_string(),
+        })
+    }
+
+    fn encode(&self, value: &Value, term: &TypeTerm, depth: usize) -> Result<Json, LiteralError> {
+        if depth > MAX_NESTING {
+            return Err(LiteralError::TooDeep);
+        }
+        let named = term
+            .named()
+            .ok_or_else(|| LiteralError::UnresolvedParameter {
+                ty: term.to_string(),
+            })?;
+        if named.namespace != "core" || named.major != 1 {
+            return self.encode_schema(value, term, named, depth);
+        }
+        let wrong = || value_mismatch(term);
+        Ok(match (named.name.as_str(), named.args.as_slice(), value) {
+            ("bool", [], Value::Bool(b)) => json!(b),
+            ("i32", [], Value::I32(n)) => json!(n),
+            ("u32", [], Value::U32(n)) => json!(n),
+            ("i64", [], Value::I64(n))
+            | ("duration", [], Value::Duration(n))
+            | ("timestamp", [], Value::Timestamp(n)) => {
+                json!(n.to_string())
+            }
+            ("u64", [], Value::U64(n)) => json!(n.to_string()),
+            ("f32", [], Value::F32(x)) => json!(format!("{:08x}", x.to_bits())),
+            ("f64", [], Value::F64(x)) => json!(format!("{:016x}", x.to_bits())),
+            ("string", [], Value::Str(s)) => json!(s.as_str()),
+            ("bytes", [], Value::Bytes(b)) => json!(base64::encode(b)),
+            ("json", [], Value::Json(text)) => json!(text.as_str()),
+            ("secret-ref", [], Value::Str(s)) if s.starts_with("credential://") => {
+                json!(s.as_str())
+            }
+            ("list", items, Value::List(list)) => {
+                let [element] = args(term, items)?;
+                let items = list
+                    .iter()
+                    .map(|item| self.encode(&item, element, depth + 1));
+                Json::Array(items.collect::<Result<_, _>>()?)
+            }
+            ("map", items, Value::Map(map)) => {
+                let [key, value] = args(term, items)?;
+                self.schemas.validate_map_key(key)?;
+                let pairs = map.entries().iter().map(|(k, v)| {
+                    Ok(json!([
+                        self.encode(k, key, depth + 1)?,
+                        self.encode(v, value, depth + 1)?
+                    ]))
+                });
+                Json::Array(pairs.collect::<Result<_, LiteralError>>()?)
+            }
+            ("option", items, value) => {
+                let [inner] = args(term, items)?;
+                match value {
+                    Value::None => json!({"none": true}),
+                    Value::Some(boxed) if inner.core("option").is_some() => {
+                        json!({"some": self.encode(boxed, inner, depth + 1)?})
+                    }
+                    _ if inner.core("option").is_some() => return Err(wrong()),
+                    value => json!({"some": self.encode(value, inner, depth + 1)?}),
+                }
+            }
+            ("result" | "error" | "stream" | "handle", _, _) => {
+                return Err(LiteralError::NoLiteralForm {
+                    ty: term.to_string(),
+                });
+            }
+            _ => return Err(wrong()),
+        })
+    }
+
+    fn encode_schema(
+        &self,
+        value: &Value,
+        term: &TypeTerm,
+        named: &NamedTerm,
+        depth: usize,
+    ) -> Result<Json, LiteralError> {
+        let wrong = || value_mismatch(term);
+        if let Some(schema) = self.schemas.record(named) {
+            let Value::Record(record) = value else {
+                return Err(wrong());
+            };
+            if record.ty.as_str() != term.to_string() || record.fields.len() != schema.fields.len()
+            {
+                return Err(wrong());
+            }
+            let mut object = Map::new();
+            for (field, slot) in schema.fields.iter().zip(record.fields.iter()) {
+                match slot {
+                    Some(value) => {
+                        object.insert(
+                            field.field_id.clone(),
+                            self.encode(value, &field.ty, depth + 1)?,
+                        );
+                    }
+                    None if field.optional => {}
+                    None => {
+                        return Err(LiteralError::MissingField {
+                            field: field.field_id.clone(),
+                        });
+                    }
+                }
+            }
+            return Ok(Json::Object(object));
+        }
+        if let Some(schema) = self.schemas.enumeration(named) {
+            let Value::Enum { tag, payload } = value else {
+                return Err(wrong());
+            };
+            let variant = schema.variants.get(*tag as usize).ok_or_else(wrong)?;
+            return match (&variant.payload, payload) {
+                (None, None) => Ok(json!({"variant": variant.variant_id})),
+                (Some(ty), Some(payload)) => Ok(
+                    json!({"variant": variant.variant_id, "payload": self.encode(payload, ty, depth + 1)?}),
+                ),
+                _ => Err(wrong()),
+            };
+        }
+        Err(LiteralError::UnknownType {
+            ty: term.to_string(),
+        })
+    }
+}

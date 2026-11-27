@@ -1,0 +1,690 @@
+//! What a graph's nodes and variables are called and how values, steps and problems
+//! read as text, so every front end shows and accepts names instead of IDs.
+//!
+//! A node is called by its own `name` field when the graph gives it one, otherwise by
+//! what its kind is called ("Write text file"). When two nodes would be called the
+//! same, each gets the end of its ID added. A variable is called by its declared name.
+#[cfg(test)]
+use crate::intrinsic;
+use crate::{ControlOutcome, Diagnostic, FlowEvent, Host, HostEvent, NodeId, Value, VariableId};
+use std::collections::BTreeMap;
+use std::fmt::{self, Write};
+
+/// The names of one graph.
+#[derive(Debug, Default)]
+pub struct Names {
+    nodes: BTreeMap<String, String>,
+    /// Each node's name before an ID ending tells it from another of the same name.
+    called: BTreeMap<String, String>,
+    /// Each variable's ID with its name and declared type.
+    variables: BTreeMap<String, (String, String)>,
+}
+
+fn tail(id: &str) -> &str {
+    let end = id.trim_start_matches(|c: char| c == '0' || c == '-' || !c.is_ascii_hexdigit());
+    // The part of an ID that tells it from its neighbours: its last digits.
+    let short = id.rsplit('-').next().unwrap_or(id).trim_start_matches('0');
+    if short.is_empty() { end } else { short }
+}
+
+impl Names {
+    /// Reads the names of a graph from its text. Text that is not a graph has none.
+    pub fn of(host: &Host, json: &str) -> Self {
+        let Ok(graph) = serde_json::from_str::<serde_json::Value>(json) else {
+            return Self::default();
+        };
+        let list = |key: &str| graph[key].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let nodes = list("nodes").iter().filter_map(|node| {
+            Some((
+                node["id"].as_str()?.to_owned(),
+                node["definition_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                node["name"].as_str().map(str::to_owned),
+            ))
+        });
+        let variables = list("variables")
+            .iter()
+            .filter_map(|variable| {
+                let text = |key: &str| variable[key].as_str().map(str::to_owned);
+                Some((text("id")?, (text("name")?, text("type")?)))
+            })
+            .collect();
+        Self::from_parts(host, nodes, variables)
+    }
+
+    /// Reads the names of a parsed graph.
+    pub fn of_document(host: &Host, document: &orange_model::GraphDocument) -> Self {
+        Self::of_body(host, document, document.root())
+    }
+
+    pub(crate) fn of_body(
+        host: &Host,
+        document: &orange_model::GraphDocument,
+        body: &orange_model::document::GraphBody,
+    ) -> Self {
+        let nodes = body.nodes.values().map(|node| {
+            (
+                node.id.to_string(),
+                node.definition.id.as_str().to_owned(),
+                node.extensions
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            )
+        });
+        let variables = document
+            .variables()
+            .values()
+            .map(|variable| {
+                (
+                    variable.id.to_string(),
+                    (variable.name.clone(), variable.ty.to_string()),
+                )
+            })
+            .collect();
+        Self::from_parts(host, nodes, variables)
+    }
+
+    /// Names from each node's ID, kind and own name, and each variable's ID, name and
+    /// declared type.
+    fn from_parts(
+        host: &Host,
+        nodes: impl Iterator<Item = (String, String, Option<String>)>,
+        variables: BTreeMap<String, (String, String)>,
+    ) -> Self {
+        let labels: BTreeMap<String, String> = host
+            .nodes()
+            .map(|info| {
+                (
+                    info.definition.definition.id.as_str().to_owned(),
+                    info.label().into_owned(),
+                )
+            })
+            .collect();
+        let mut nodes: Vec<(String, String)> = nodes
+            .map(|(id, kind, name)| {
+                let name = name.or_else(|| labels.get(&kind).cloned()).unwrap_or(kind);
+                (id, name)
+            })
+            .collect();
+        let called: BTreeMap<String, String> = nodes.iter().cloned().collect();
+        // In text, nodes that would be called the same are told apart by the end of
+        // their ID.
+        let mut count: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, name) in &nodes {
+            *count.entry(name.to_lowercase()).or_default() += 1;
+        }
+        for (id, name) in &mut nodes {
+            if count[&name.to_lowercase()] > 1 {
+                *name = format!("{name} #{}", tail(id));
+            }
+        }
+        Self {
+            nodes: nodes.into_iter().collect(),
+            called,
+            variables,
+        }
+    }
+
+    /// The same names, with nodes called only by their name even where several share
+    /// it: for a front end that shows which node is which in another way, such as a
+    /// canvas, where an ID ending would only be noise.
+    pub fn without_ids(mut self) -> Self {
+        self.nodes.clone_from(&self.called);
+        self
+    }
+
+    /// What a node is called, without an ID ending even when another has the same name.
+    pub fn called(&self, id: &NodeId) -> String {
+        let id = id.to_string();
+        self.called.get(&id).cloned().unwrap_or(id)
+    }
+
+    /// What a node is called; its ID when the graph does not have it.
+    pub fn node(&self, id: &NodeId) -> String {
+        let id = id.to_string();
+        self.nodes.get(&id).cloned().unwrap_or(id)
+    }
+
+    /// What a variable is called.
+    pub fn variable(&self, id: &VariableId) -> String {
+        let id = id.to_string();
+        self.variables.get(&id).map_or(id, |(name, _)| name.clone())
+    }
+
+    fn find<'a>(
+        what: &str,
+        word: &str,
+        candidates: impl Iterator<Item = (&'a String, &'a str)>,
+    ) -> Result<String, String> {
+        let mut named = Vec::new();
+        for (id, name) in candidates {
+            if id == word {
+                return Ok(id.clone());
+            }
+            if name.eq_ignore_ascii_case(word) {
+                named.push(id.clone());
+            }
+        }
+        match named.len() {
+            1 => Ok(named.remove(0)),
+            0 => Err(format!("no {what} is called `{word}`")),
+            _ => Err(format!("several {what}s are called `{word}`; use the ID")),
+        }
+    }
+
+    /// The node a word typed by the user means: an ID, or a name in any letter case.
+    pub fn find_node(&self, word: &str) -> Result<NodeId, String> {
+        let id = Self::find(
+            "node",
+            word,
+            self.nodes.iter().map(|(id, name)| (id, name.as_str())),
+        )?;
+        id.parse().map_err(|_| format!("`{id}` is not a node ID"))
+    }
+
+    /// The variable a word means, with its declared type.
+    pub fn find_variable(&self, word: &str) -> Result<(VariableId, String), String> {
+        let id = Self::find(
+            "variable",
+            word,
+            self.variables
+                .iter()
+                .map(|(id, (name, _))| (id, name.as_str())),
+        )?;
+        let ty = self.variables[&id].1.clone();
+        let id = id
+            .parse()
+            .map_err(|_| format!("`{id}` is not a variable ID"))?;
+        Ok((id, ty))
+    }
+}
+
+/// What a node did in one step, in plain words.
+pub fn said(outcome: ControlOutcome) -> String {
+    use ControlOutcome as O;
+    let words = match outcome {
+        O::Then | O::Completed => "done",
+        O::Suspended => "waiting",
+        O::Yielded => "paused for others",
+        O::True => "true",
+        O::False => "false",
+        O::Failed => "failed",
+        O::Cancelled => "cancelled",
+        O::TimedOut => "timed out",
+        O::Suppressed => "skipped",
+        O::StateChanged => "changed state",
+        O::Forked => "started its branches",
+        O::Body => "runs its body",
+        O::Break => "left the loop",
+        O::Continue => "next round",
+        O::Default => "took the default case",
+        O::MatchedOk => "took the ok path",
+        O::MatchedErr => "took the error path",
+        O::MatchedPresent => "took the present path",
+        O::MatchedMissing => "took the missing path",
+        O::FlipA => "took A",
+        O::FlipB => "took B",
+        O::Case(case) => return format!("took case {}", u32::from(case) + 1),
+        O::Step(step) => return format!("step {}", step + 1),
+    };
+    words.to_owned()
+}
+
+/// A value as a person reads it: `7`, `"text"`, `true`, `<12 bytes>`, JSON as its
+/// text, `[1, 2, 3]`, `{"a": 1}`, `point(1, 2)`. Long values are cut at 120 characters.
+pub fn plain(value: &Value) -> String {
+    let mut budget = TextBudget {
+        text: String::new(),
+        remaining: 120,
+    };
+    if write_plain(&mut budget, value, 0).is_err() {
+        budget.text.push('…');
+    }
+    budget.text
+}
+
+/// Items of a list or map [`plain`] shows before counting the rest.
+const PLAIN_ITEMS: usize = 8;
+
+fn write_plain(out: &mut impl Write, value: &Value, depth: usize) -> fmt::Result {
+    match value {
+        Value::Unit => out.write_str("()"),
+        Value::Bool(v) => write!(out, "{v}"),
+        Value::I32(v) => write!(out, "{v}"),
+        Value::U32(v) => write!(out, "{v}"),
+        Value::I64(v) | Value::Timestamp(v) | Value::Duration(v) => write!(out, "{v}"),
+        Value::U64(v) => write!(out, "{v}"),
+        Value::F32(v) => write!(out, "{v}"),
+        Value::F64(v) => write!(out, "{v}"),
+        Value::Str(text) => write!(out, "{:?}", text.as_str()),
+        Value::Bytes(bytes) => write!(out, "<{} bytes>", bytes.len()),
+        Value::Json(text) => {
+            // Pretty JSON stays on one line.
+            let mut words = text.as_str().split_whitespace();
+            if let Some(first) = words.next() {
+                out.write_str(first)?;
+            }
+            words.try_for_each(|word| write!(out, " {word}"))
+        }
+        Value::Record(record) if record.ty.as_str() == crate::RGBA_TYPE => out.write_str(
+            &record
+                .rgba_channels()
+                .map_or_else(|| "—".to_owned(), orange_model::value::rgba_hex),
+        ),
+        _ if depth >= 2 && matches!(value, Value::List(_) | Value::Map(_) | Value::Record(_)) => {
+            out.write_str("…")
+        }
+        Value::List(list) => {
+            out.write_str("[")?;
+            for (index, item) in list.iter().take(PLAIN_ITEMS).enumerate() {
+                if index > 0 {
+                    out.write_str(", ")?;
+                }
+                write_plain(out, &item, depth + 1)?;
+            }
+            if list.len() > PLAIN_ITEMS {
+                write!(out, ", … {} more", list.len() - PLAIN_ITEMS)?;
+            }
+            out.write_str("]")
+        }
+        Value::Map(map) => {
+            let entries = map.entries();
+            out.write_str("{")?;
+            for (index, (key, item)) in entries.iter().take(PLAIN_ITEMS).enumerate() {
+                if index > 0 {
+                    out.write_str(", ")?;
+                }
+                write_plain(out, key, depth + 1)?;
+                out.write_str(": ")?;
+                write_plain(out, item, depth + 1)?;
+            }
+            if entries.len() > PLAIN_ITEMS {
+                write!(out, ", … {} more", entries.len() - PLAIN_ITEMS)?;
+            }
+            out.write_str("}")
+        }
+        Value::Record(record) => {
+            // `org.example/point@1` reads as `point`.
+            let name = record.ty.as_str();
+            let name = name.split('@').next().unwrap_or(name);
+            out.write_str(name.rsplit(['/', '.']).next().unwrap_or(name))?;
+            out.write_str("(")?;
+            for (index, field) in record.fields.iter().enumerate() {
+                if index > 0 {
+                    out.write_str(", ")?;
+                }
+                match field {
+                    Some(field) => write_plain(out, field, depth + 1)?,
+                    None => out.write_str("—")?,
+                }
+            }
+            out.write_str(")")
+        }
+        Value::Enum { tag, payload } => {
+            write!(out, "case {}", u64::from(*tag) + 1)?;
+            if let Some(payload) = payload {
+                out.write_str("(")?;
+                write_plain(out, payload, depth + 1)?;
+                out.write_str(")")?;
+            }
+            Ok(())
+        }
+        Value::None => out.write_str("none"),
+        Value::Some(inner) | Value::Ok(inner) => write_plain(out, inner, depth),
+        Value::Err(error) => write!(out, "error {}", error.code),
+        Value::Handle(_) => out.write_str("<handle>"),
+        Value::Stream(_) => out.write_str("<stream>"),
+        other => write!(out, "{other:?}"),
+    }
+}
+
+/// The literal text for a value typed plainly (`7`, `hello there`, `true`, `0.5`) for a
+/// variable of type `ty`. Text that is already a literal object is passed through.
+pub fn literal(ty: &str, typed: &str) -> Result<String, String> {
+    let typed = typed.trim();
+    if typed.starts_with('{') {
+        return Ok(typed.to_owned());
+    }
+    let number = |what: &str| format!("`{typed}` is not {what}");
+    let value = match ty {
+        "core/string@1" => serde_json::json!({"type": ty, "value": typed}),
+        crate::RGBA_TYPE => {
+            let [r, g, b, a] = crate::parse_rgba_hex(typed)
+                .ok_or_else(|| "Enter six or eight hexadecimal color digits.".to_owned())?;
+            serde_json::json!({"type": ty, "value": {"red":r, "green":g, "blue":b, "alpha":a}})
+        }
+        "core/bool@1" => {
+            let value: bool = typed.parse().map_err(|_| number("true or false"))?;
+            serde_json::json!({"type": ty, "value": value})
+        }
+        "core/i32@1" => {
+            let value: i32 = typed.parse().map_err(|_| number("a 32-bit whole number"))?;
+            serde_json::json!({"type": ty, "value": value})
+        }
+        "core/u32@1" => {
+            let value: u32 = typed
+                .parse()
+                .map_err(|_| number("an unsigned 32-bit whole number"))?;
+            serde_json::json!({"type": ty, "value": value})
+        }
+        "core/i64@1" | "core/u64@1" | "core/timestamp@1" | "core/duration@1" => {
+            let _: i128 = typed.parse().map_err(|_| number("a whole number"))?;
+            serde_json::json!({"type": ty, "value": typed})
+        }
+        "core/f32@1" => {
+            let value: f32 = typed.parse().map_err(|_| number("a number"))?;
+            serde_json::json!({"type": ty, "bits": format!("{:08x}", value.to_bits())})
+        }
+        "core/f64@1" => {
+            let value: f64 = typed.parse().map_err(|_| number("a number"))?;
+            serde_json::json!({"type": ty, "bits": format!("{:016x}", value.to_bits())})
+        }
+        _ => {
+            return Err(format!(
+                "a variable of type {ty} needs a literal such as {{\"type\":\"{ty}\",\"value\":…}}"
+            ));
+        }
+    };
+    Ok(value.to_string())
+}
+
+/// One diagnostic as a line: what is wrong and where, by name.
+pub fn describe(diagnostic: &Diagnostic, names: &Names) -> String {
+    let subject = &diagnostic.subject;
+    let mut place = Vec::new();
+    if let Some(node) = &subject.node {
+        place.push(format!("node {}", names.node(node)));
+    }
+    if let Some(port) = &subject.port {
+        place.push(format!("port {port}"));
+    }
+    if let Some(variable) = &subject.variable {
+        place.push(format!("variable {}", names.variable(variable)));
+    }
+    let place = if place.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", place.join(", "))
+    };
+    format!("{:?}: {}{place}", diagnostic.code, diagnostic.message)
+}
+
+/// What a flow event says, as the lines a log shows. Each starts with the flow's
+/// number.
+pub fn lines(event: &HostEvent, names: &Names) -> Vec<String> {
+    let flow = event.flow;
+    match &event.kind {
+        FlowEvent::State(state) => vec![format!("[{flow}] state {state:?}")],
+        FlowEvent::Node(step) => vec![match &step.fault {
+            None if let Some(port) = &step.route => {
+                format!("[{flow}] {}: {port}", names.node(&step.node))
+            }
+            None => format!(
+                "[{flow}] {}: {}",
+                names.node(&step.node),
+                said(step.outcome)
+            ),
+            Some(fault) => format!(
+                "[{flow}] {}: {}, fault {} from {}",
+                names.node(&step.node),
+                said(step.outcome),
+                fault.fault.code,
+                names.node(&fault.source)
+            ),
+        }],
+        FlowEvent::TraceLost(count) => vec![format!("[{flow}] {count} steps not shown")],
+        FlowEvent::Refused(reason) => vec![format!("[{flow}] input refused: {reason:?}")],
+        FlowEvent::Fault(error) => vec![format!("[{flow}] error: {error}")],
+        FlowEvent::Variables(changed) => changed
+            .iter()
+            .map(|(variable, value)| match value {
+                Some(value) => {
+                    format!("[{flow}] {} = {}", names.variable(variable), plain(value))
+                }
+                None => format!("[{flow}] {} is unset", names.variable(variable)),
+            })
+            .collect(),
+        FlowEvent::Ports(changed) => changed
+            .iter()
+            .map(|(node, port, value)| {
+                format!("[{flow}] {} {port} = {}", names.node(node), plain(value))
+            })
+            .collect(),
+        FlowEvent::PortsCleared(cleared) => cleared
+            .iter()
+            .map(|(node, port)| format!("[{flow}] {} {port} is unavailable", names.node(node)))
+            .collect(),
+        FlowEvent::Updated { .. } => vec![format!("[{flow}] graph replaced")],
+        FlowEvent::SourceRefused { node, reason } => vec![format!(
+            "[{flow}] {} did not start: {reason}",
+            names.node(node)
+        )],
+        FlowEvent::SourceFault { node, fault } => vec![format!(
+            "[{flow}] {}: {} ({})",
+            names.node(node),
+            fault.message,
+            fault.code,
+        )],
+        FlowEvent::Finished => vec![format!("[{flow}] finished")],
+    }
+}
+
+/// Most value characters [`inspect`] writes before marking the result truncated.
+pub const MAX_INSPECT_CHARS: usize = 64 * 1024;
+/// Most bytes [`inspect`] shows of a bytes value, in hex.
+pub const MAX_INSPECT_BYTES: usize = 256;
+
+/// A value for inspection: text, exact numbers, bytes as their
+/// count and a hex preview of the first [`MAX_INSPECT_BYTES`], and lists, maps and
+/// records laid out one item a line. Bounded by [`MAX_INSPECT_CHARS`].
+pub fn inspect(value: &Value) -> String {
+    match value {
+        Value::Str(text) => bounded_text(
+            format_args!("{}", text.as_str()),
+            MAX_INSPECT_CHARS,
+            "\n… truncated",
+        ),
+        Value::Json(text) => bounded_text(
+            format_args!("{}", text.as_str()),
+            MAX_INSPECT_CHARS,
+            "\n… truncated",
+        ),
+        Value::Bytes(bytes) => {
+            let shown: Vec<String> = bytes
+                .iter()
+                .take(MAX_INSPECT_BYTES)
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let mut lines: Vec<String> = shown.chunks(16).map(|row| row.join(" ")).collect();
+            if bytes.len() > MAX_INSPECT_BYTES {
+                lines.push(format!("… {} more bytes", bytes.len() - MAX_INSPECT_BYTES));
+            }
+            format!("{} bytes\n{}", bytes.len(), lines.join("\n"))
+        }
+        Value::List(_)
+        | Value::Map(_)
+        | Value::Record(_)
+        | Value::Enum { .. }
+        | Value::Some(_)
+        | Value::Err(_) => bounded_text(
+            format_args!("{value:#?}"),
+            MAX_INSPECT_CHARS,
+            "\n… truncated",
+        ),
+        other => plain(other),
+    }
+}
+
+struct TextBudget {
+    text: String,
+    remaining: usize,
+}
+
+impl Write for TextBudget {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        for (offset, _) in value.char_indices() {
+            if self.remaining == 0 {
+                self.text.push_str(&value[..offset]);
+                return Err(fmt::Error);
+            }
+            self.remaining -= 1;
+        }
+        self.text.push_str(value);
+        Ok(())
+    }
+}
+
+fn bounded_text(value: fmt::Arguments<'_>, max_chars: usize, suffix: &str) -> String {
+    let mut budget = TextBudget {
+        text: String::new(),
+        remaining: max_chars,
+    };
+    if budget.write_fmt(value).is_err() {
+        budget.text.push_str(suffix);
+    }
+    budget.text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::HostOptions;
+
+    #[test]
+    fn formatting_stops_at_the_budget_on_a_utf8_boundary() {
+        struct Chunks<'a>(&'a std::cell::Cell<usize>);
+
+        impl fmt::Display for Chunks<'_> {
+            fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+                for _ in 0..1_000 {
+                    self.0.set(self.0.get() + 1);
+                    out.write_str("a\u{e9}")?;
+                }
+                Ok(())
+            }
+        }
+
+        let visited = std::cell::Cell::new(0);
+        assert_eq!(
+            bounded_text(format_args!("{}", Chunks(&visited)), 3, "."),
+            "a\u{e9}a."
+        );
+        assert_eq!(visited.get(), 2);
+        assert_eq!(bounded_text(format_args!("a\u{e9}"), 2, "."), "a\u{e9}");
+    }
+
+    #[test]
+    fn nodes_and_variables_are_found_by_name_and_same_names_are_told_apart() {
+        let (host, _events) = Host::new(HostOptions::default()).unwrap();
+        let graph = serde_json::json!({
+            "nodes": [
+                {"id": "10000000-0000-4000-8000-000000000001", "name": "Save Greeting",
+                    "definition_id": intrinsic::ON_MANUAL},
+                {"id": "10000000-0000-4000-8000-000000000002", "definition_id": intrinsic::SET_VARIABLE},
+                {"id": "10000000-0000-4000-8000-00000000000a", "definition_id": intrinsic::SET_VARIABLE}
+            ],
+            "variables": [{"id": "10000000-0000-4000-8000-000000000064", "name": "total",
+                "type": "core/i64@1"}]
+        })
+        .to_string();
+        let names = Names::of(&host, &graph);
+        let first: NodeId = "10000000-0000-4000-8000-000000000001".parse().unwrap();
+        assert_eq!(names.node(&first), "Save Greeting");
+        assert_eq!(names.find_node("save greeting"), Ok(first));
+        assert_eq!(
+            names.find_node("10000000-0000-4000-8000-000000000001"),
+            Ok(first)
+        );
+        // Two nodes of the same kind are called by the kind and the end of their ID.
+        let second: NodeId = "10000000-0000-4000-8000-000000000002".parse().unwrap();
+        assert_eq!(names.node(&second), "Set variable #2");
+        assert_eq!(
+            names.find_node("set variable #a").map(|id| id.to_string()),
+            Ok("10000000-0000-4000-8000-00000000000a".to_owned())
+        );
+        assert!(names.find_node("set variable").is_err());
+        assert!(names.find_node("nobody").is_err());
+        let (variable, ty) = names.find_variable("Total").unwrap();
+        assert_eq!(
+            (names.variable(&variable).as_str(), ty.as_str()),
+            ("total", "core/i64@1")
+        );
+        // A node the graph does not have is shown by its ID.
+        let unknown: NodeId = "10000000-0000-4000-8000-0000000000ff".parse().unwrap();
+        assert_eq!(names.node(&unknown), unknown.to_string());
+    }
+
+    #[test]
+    fn plainly_typed_values_become_literals_of_the_variables_type() {
+        let value = |ty: &str, typed: &str| {
+            literal(ty, typed).map(|text| serde_json::from_str::<serde_json::Value>(&text).unwrap())
+        };
+        assert_eq!(
+            value("core/string@1", "hello there").unwrap()["value"],
+            "hello there"
+        );
+        assert_eq!(value("core/i64@1", "-7").unwrap()["value"], "-7");
+        assert_eq!(value("core/bool@1", "true").unwrap()["value"], true);
+        assert_eq!(
+            value("core/f64@1", "0.15").unwrap()["bits"],
+            "3fc3333333333333"
+        );
+        assert!(value("core/i64@1", "seven").is_err());
+        assert!(value("core/f64@1", "loud").is_err());
+        assert!(value("core/bytes@1", "abc").is_err());
+        // A literal written in full is passed through for any type.
+        assert_eq!(
+            literal(
+                "core/bytes@1",
+                r#" {"type":"core/bytes@1","value":"AA=="} "#
+            )
+            .unwrap(),
+            r#"{"type":"core/bytes@1","value":"AA=="}"#
+        );
+        assert_eq!(said(ControlOutcome::Then), "done");
+        assert_eq!(said(ControlOutcome::Case(0)), "took case 1");
+        assert_eq!(plain(&Value::I64(7)), "7");
+        assert_eq!(
+            plain(&Value::Str(std::sync::Arc::new("hi".into()))),
+            "\"hi\""
+        );
+        assert_eq!(
+            plain(&Value::Bytes(std::sync::Arc::new(vec![1, 2]))),
+            "<2 bytes>"
+        );
+    }
+
+    #[test]
+    fn composite_values_read_as_json_lists_maps_and_named_records() {
+        use orange_model::value::{JsonText, ListRepr, MapRepr, RecordRepr};
+        use std::sync::Arc;
+        let json = |text: &str| Value::Json(Arc::new(JsonText::new(text.to_owned()).unwrap()));
+        assert_eq!(plain(&json("null")), "null");
+        assert_eq!(plain(&json("{\n  \"a\": [1, 2]\n}")), "{ \"a\": [1, 2] }");
+        let strings = ListRepr::Str(Box::new([]));
+        assert_eq!(plain(&Value::List(Arc::new(strings))), "[]");
+        let numbers = ListRepr::I64((1..=10).collect());
+        assert_eq!(
+            plain(&Value::List(Arc::new(numbers))),
+            "[1, 2, 3, 4, 5, 6, 7, 8, … 2 more]"
+        );
+        assert_eq!(plain(&Value::Map(Arc::new(MapRepr::default()))), "{}");
+        let record = RecordRepr {
+            ty: "org.example/point@1".parse().unwrap(),
+            fields: Box::new([Some(Value::I32(1)), None]),
+        };
+        assert_eq!(plain(&Value::Record(Arc::new(record))), "point(1, —)");
+        let tagged = Value::Enum {
+            tag: 1,
+            payload: Some(Arc::new(Value::Bool(true))),
+        };
+        assert_eq!(plain(&tagged), "case 2(true)");
+        assert_eq!(plain(&Value::Some(Arc::new(Value::U32(3)))), "3");
+        let long = Value::Str(Arc::new("x".repeat(300)));
+        assert_eq!(plain(&long).chars().count(), 121);
+        assert!(plain(&long).ends_with('…'));
+    }
+}

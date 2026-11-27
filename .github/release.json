@@ -1,0 +1,6 @@
+{
+  "qualified": false,
+  "package": "orange-desktop",
+  "binary": "orange-editor",
+  "unsigned_preview": true
+}

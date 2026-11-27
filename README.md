@@ -1,58 +1,163 @@
-# OrangeEditor planning baseline
+# OrangeEditor
 
-Status: architecture proposal, 2026-10-20. No product implementation, compilation, performance measurement, dependency installation or OS capability test has been performed by this planning assignment. Quantitative budgets are proposed release gates. Product name and current workspace folder are **OrangeEditor**; earlier environment evidence refers to the originally supplied **OraneEditor** path.
+A node editor foundation in Rust: a typed graph language with an embeddable headless
+core, an egui editor, a desktop application and a terminal runner. Graphs react to
+triggers (manual, timers, keys, files, network messages, audio), compute with typed
+values and call services such as HTTP, WebSocket, MQTT, AMQP, files and audio.
+Packages and native plugins add nodes, triggers and connection kinds without
+rebuilding the application.
 
-OrangeEditor is a Rust desktop and headless visual programming platform for typed calculations, state, events, files, connections and media. Its expansion plugins are installable product packages that add functionality or replace explicitly supported base providers while the application remains open. Bevy **=0.20.0** is the application/graphics pin; it does not define the graph language or external package ABI.
+Start with the [OrangeEditor documentation](https://erinmel.github.io/OrangeEditor/)
+for the editor, node reference, example graphs, shared controls, embedding and SDK.
 
-Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). The repository has a protected `main` branch and a Rust code pipeline for the graph-model workspace. Desktop application and expansion-package implementation remain future work.
+It is pre-1.0: the core, editor and base services work; see
+[the overview](docs/00-overview.md) for what is done and what is missing.
 
-## Document map
+## Starter workflows
 
-| Document | Decision/output |
+Use the **Nodes** tab to search for a node and **Properties** to choose its
+inputs, types, or declarations. To send a typed value between branches, place
+**Dispatch** and **Listen**, create a typed event from the Event picker, and
+select the same event on both nodes. Use **Await Event** when an existing
+branch should wait for the value. The [editor guide](docs/22-editor-design.md)
+describes typed events, variable scopes, and stream bounds.
+
+| Graph | What it demonstrates |
+| --- | --- |
+| [Counter with reset](app/crates/apps/orange-cli/graphs/counter-with-reset.json) | Increment, decrement and reset the same initialized variable. To add another counter action, place Increment Counter or Decrement Counter and select the variable on the card. |
+| [Quiet mic gate](app/crates/apps/orange-cli/graphs/quiet-mic-gate.json) | Route a microphone through a gate and meter it. The graph starts on silent devices. Choose your microphone and headphones when ready to listen. |
+| [HTTP with failure handling](app/crates/apps/orange-cli/graphs/http-with-failure-handling.json) | Make a GET request and record success, an HTTP error status, or a transport error independently. The default endpoint is `http://127.0.0.1:8080/health`. |
+| [HTTP with bounded retry](app/crates/apps/orange-cli/graphs/http-with-bounded-retry.json) | Retry GET once after 250 ms on the request failure route. HTTP error statuses terminate the attempt immediately. |
+| [Idle watchdog](app/crates/apps/orange-cli/graphs/idle-watchdog.json) | Fire Heartbeat to start a 750 ms timer. Every new heartbeat replaces the pending wait. The Idle variable turns true once the flow goes quiet. |
+| [Forward value with deadband](app/crates/apps/orange-cli/graphs/forward-value-with-deadband.json) | Change Reading in a running graph. Values only forward when they move more than 1 from the last qualifying reading. |
+
+## Run it
+
+Use the toolchain in [rust-toolchain.toml](rust-toolchain.toml) (Rust 1.99.1) from the
+repository root.
+
+```sh
+cargo run -p orange-desktop --locked -- graph.json        # the editor
+cargo run -p orange-cli --locked -- check app/crates/apps/orange-cli/graphs/set-on-trigger.json
+cargo run -p orange-cli --locked -- run app/crates/apps/orange-cli/graphs/set-on-trigger.json
+```
+
+Example graphs are in [app/crates/apps/orange-cli/graphs](app/crates/apps/orange-cli/graphs):
+`json-extraction.json` works offline, `connection-smoke.json` exercises JSON, feedback and
+connections, and `network-lab.json` talks to the [Docker network lab](tools/README.md).
+`remember-on-trigger.json` uses a node from a package in
+[packages/remember](app/crates/apps/orange-cli/packages/remember): pack it, then pass it in.
+
+```sh
+cargo run -p orange-cli --locked -- pack app/crates/apps/orange-cli/packages/remember remember.orangeplug
+cargo run -p orange-cli --locked -- run app/crates/apps/orange-cli/graphs/remember-on-trigger.json --package remember.orangeplug
+```
+
+[power-with-count.json](app/crates/apps/orange-cli/graphs/power-with-count.json) shows a
+numeric `for` loop using Count. Open it in the editor, press Run, then Fire on Calculate
+power. Edit the Base or Exponent card and fire again. The Variables panel shows `result`
+(81 with the default inputs). The graph resets the accumulator to 1, multiplies it by Base
+once per iteration, then saves the result on Completed. No wire goes from the body back
+to Count. A zero exponent skips the body and leaves the result at 1.
+
+[power-with-repeat.json](app/crates/apps/orange-cli/graphs/power-with-repeat.json)
+uses Repeat with State and Multiply. It starts with 1 and multiplies by 3 four
+times. [running-total-with-reduce.json](app/crates/apps/orange-cli/graphs/running-total-with-reduce.json)
+uses Reduce and Add to sum 2, 3, and 5. Press Run and look for `result` in the
+Variables panel. The default results are 81 and 10, respectively.
+
+To send one JSON request after a burst of file changes, add **On file change**
+with a Folder connection and select **Debounce** under **Event timing** in
+Properties. Connect its execution output to **HTTP JSON Request**, and wire a
+JSON object into Body. The HTTP node uses its own HTTP connection. Wire its
+optional JSON result to **Match Option** to handle absent or non-JSON responses.
+
+[audio-file-quality.json](app/crates/apps/orange-cli/graphs/audio-file-quality.json)
+is a grouped QA graph for seven playback formats, audio triggers, loop controls,
+recording, files and HTTP. Launch the editor from the repository root so the
+relative fixture paths resolve. The file suite creates `orange-audio-qa-86dc`
+under the launch directory. Fire **Run file and folder suite** and then edit a
+file in that scratch folder to exercise the watcher.
+
+The two output connections default to the silent test device. For listening tests,
+choose a playback device for **QA output** and **QA loop output**. **Start Opus
+loop** repeats until **Loop · stop** fires. **Loop stopped** counts completed
+stops. **On local source finished** uses the supplied WebM file connection.
+**Read-only write rejected** and **Parent path rejected** deliberately log
+errors and should each increment their rejection counter.
+
+For the HTTP group, serve the fixtures before pressing Run. One local option is
+
+```sh
+python -m http.server 18765 --bind 127.0.0.1 --directory app/crates/services/orange-audio/tests/fixtures
+```
+
+Fire **Play remote audio** and **Check fixture server**. Expect one completed
+remote clip and status 200. The other groups can be exercised without the server.
+
+Double-click a node name in Properties or on the card to rename it. An empty name
+restores the node type's name.
+
+To make a reusable **Compute power** node, leave **Calculate power**, **Base**,
+**Exponent**, and **Save result** outside the selection. Shift-click the other cards
+and choose **Make function…**. The incoming value wires become the inputs
+`a` (base) and `count` (exponent), and the value wire going to **Save result**
+becomes the `value` output. Confirm the preview, then press **Run** and **Fire** to
+see the result in Variables. Duplicate the **Compute power** call to use the same
+function again with its own arguments and wires.
+
+For ordinary exponentiation with floating-point values, add **Power** from the
+node search. The Count example demonstrates how to carry state through a loop.
+
+To share a function between graphs, right-click its call and choose
+**Export function…**. Review its ports and dependencies, enter the package ID
+(such as `org.example.math`), and save the `.orangeplug` file. Import it from
+the Packages panel in the other graph. A function that uses a connection exposes
+that connection on the imported card so the receiving graph can choose its own.
+
+For scripted packaging, use the same graph and function from the CLI.
+
+```sh
+orange publish graph.json "Compute power" org.example.math 0.1.0 power power.orangeplug
+```
+
+A front end embeds the core through `orange-host` alone;
+[examples/attach.rs](app/crates/platform/orange-host/examples/attach.rs) is a complete one.
+[Embedding](docs/02-architecture.md#embedding-surface) documents the supported host API
+and the editor's layout, theme, command icon and text hooks.
+A Rust plugin can be a dynamic library built on `orange-sdk`, as
+[orange-plugin-example](app/crates/dev/orange-plugin-example) shows.
+
+## Check it
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+node tools/check-cargo-metadata.mjs
+node tools/check-automation.mjs --offline
+```
+
+[Development](docs/10-development.md) covers the toolchain, CI, testing, performance
+measurement and the Git workflow.
+
+## Documents
+
+| Document | What it holds |
 |---|---|
-| [Agent instructions](AGENTS.md) | Persistent project version, contract and evidence rules |
-| [01 Requirements](docs/01-product-requirements.md) | Product perspective, FR IDs, acceptance criteria, priorities and scope |
-| [02 Architecture](docs/02-architecture.md) | Crates, ownership, dependency direction and editor decision |
-| [03 Data and execution](docs/03-data-and-execution.md) | Value model, document examples, compilation and lifecycle semantics |
-| [04 Expansion plugins](docs/04-expansion-plugins.md) | Installable SDK, isolation, overrides and hot lifecycle |
-| [05 Services and platforms](docs/05-services-and-platforms.md) | Files, vault, protocols, audio, OBS and Twitch contracts |
-| [06 Quality](docs/06-quality-and-validation.md) | NFR IDs, workloads, budgets, test and release evidence |
-| [07 Delivery](docs/07-delivery-plan.md) | Dependency-ordered work, readiness gates and risks |
-| [08 Decisions](docs/08-decisions.md) | ADRs, alternatives, falsifiable experiments and open decisions |
-| [09 Bevy dossier](docs/09-bevy-0.20.md) | Exact-version evidence and feasibility gaps |
-| [10 Tooling and sources](docs/10-tooling-and-sources.md) | Environment, dependency candidates, primary references and optional tools |
-| [11 Graph language](docs/11-graph-language.md) | **Normative** node kinds, ports, types, conversions, regions, cycles, ordering, events, state, streams, diagnostics and G-suite |
-| [12 Graph data structures](docs/12-graph-data-structures.md) | **Normative** document, registry, plan IR and run-state layouts; JSON formats and invariants |
-| [13 Internationalization](docs/13-internationalization.md) | **Normative** translatable text, package catalogues, locale/fallback, diagnostics and localization acceptance |
-| [14 Git workflow](docs/14-git-workflow.md) | Branches, commits, scoped checks, solo/team reviews, merge/release rules and verified bootstrap status |
-| [15 Monorepo layout](docs/15-monorepo-layout.md) | Application/plugin source areas, SDK boundary and independent package builds/releases |
-| [Contributing](CONTRIBUTING.md) | Short contributor entrypoint and PR template |
+| [00 Overview](docs/00-overview.md) | Vision, scope, status and what is missing |
+| [02 Architecture](docs/02-architecture.md) | Crates, layers, how an edit becomes a running graph |
+| [03 Data and execution](docs/03-data-and-execution.md) | Runtime semantics: epochs, control, effects, streams |
+| [04 Expansion packages](docs/04-expansion-plugins.md) | Package format, install, override, hot update |
+| [05 Services and platforms](docs/05-services-and-platforms.md) | Connections, network, files, audio, input, credentials |
+| [08 Decisions](docs/08-decisions.md) | Architecture decision records |
+| [10 Development](docs/10-development.md) | Toolchain, CI, tests, performance, Git, releases |
+| [11 Graph language](docs/11-graph-language.md) | Normative language rules |
+| [12 Graph data structures](docs/12-graph-data-structures.md) | Normative document format, values and catalogues |
+| [13 Internationalization](docs/13-internationalization.md) | Translatable text contract |
+| [16 Incremental validation](docs/16-incremental-validation.md) | How edits are re-checked |
+| [20 Value checkpoints](docs/20-value-checkpoints.md) | Persistent value format |
+| [22 Editor design](docs/22-editor-design.md) | Editor interaction and visual rules |
 
-For node editor work, read 01 for product scope, 11 for language semantics, 12 for data layouts, 13 for presentation text, then 02/04 for editor and expansion boundaries and 06/07 for acceptance/dependencies. These are separate contract owners: examples and summaries must agree with them; conflicts are defects to fix, not permission to select a convenient rule. ADRs in 08 record decisions and evidence; 09/10 record research limits rather than proof of implementation.
-
-Development follows [14](docs/14-git-workflow.md): protected `main`, short-lived branches per work subunit, PR checks/review and squash merging. Repository bootstrap/enforcement evidence is recorded there and in 10.
-
-## Monorepo
-
-One repository holds the editor/engine under `app/` (today the `app/crates/orange-model` crate) and, later, installable expansion packages under `plugins/`, their public `sdk/` boundary and `examples/`. [tools/](tools/README.md) holds the CI support script.
-
-This lets a host/SDK/plugin contract change be reviewed and validated together. Each plugin still builds, versions and installs independently. Source sharing never changes hot installation into an application rebuild. A folder is created when its first content lands; implementation follows the delivery gates. See [15](docs/15-monorepo-layout.md) for ownership and Cargo workspace rules.
-
-## Selected defaults
-
-- Standalone graph model/compiler/runtime; Bevy observes editor/scene state through bounded messages.
-- Hybrid execution: lazy memoized data pull, explicit exec-token control, cooperative async suspension, queued events that start activations, and reactive triggers at segment boundaries. One actor per run. Structured regions with a value-availability rule; explicit cycle classes; nominal constrained generics; visible conversions only ([11](docs/11-graph-language.md)).
-- Immutable package registry snapshots and exact graph package locks; updates never silently rebind an existing graph.
-- Capability-limited Wasm components as the normal expansion format; declarative UI and handle-based graphics. Explicit-trust worker processes are the native escape hatch. A process boundary alone is not an OS sandbox.
-- Statically linked bundled kernels for cheap operations and real-time audio internals are a documented privilege exception. Public node, type, provider and package contracts remain shared.
-- OS vault references, host-owned connection sessions, explicit error/control semantics and cooperative bounded execution.
-- All product UI and expansion text is translatable through namespaced catalogues; UI locale never changes graph values, IDs, provider locks or execution. English is the source fallback; additional shipped languages remain a product choice.
-- Windows/macOS existing audio endpoints; Linux application-owned virtual source subject to PipeWire feasibility and session policy. No bundled kernel audio driver.
-
-## Assumptions and limits
-
-Initial AMQ means **AMQP 0-9-1** with RabbitMQ compatibility; AMQP 1.0 is a separate later adapter. Public desktop Twitch authentication uses a supported public-client flow; no embedded confidential client secret. Marketplace, arbitrary custom native editor widgets and full scene authoring are later scope. The final 1.0 baseline includes all protocol families and streaming gRPC modes; early previews explicitly expose an incomplete capability list.
-
-Readiness: **ready for feasibility work after G0 consistency/readiness checks**, with production architecture adoption conditional on the experiments in [delivery](docs/07-delivery-plan.md). Bevy toolchain, UI input/accessibility, component host costs, audio device behavior and plugin lifecycle are not proven by prose. These engineering gates add no mandatory user approval step to future authorized experiments. Read [09](docs/09-bevy-0.20.md) before using any Bevy API; older examples are not a substitute for the pin.
-
-Next executable tasks: **00a, graph-language fixtures and semantic review within WU-00**, and, in parallel, **01a, Bevy evidence review within WU-01**, both in [07](docs/07-delivery-plan.md). The first implementation pass is pure logic: graph rules, execution semantics and data structures (WU-00), with no Bevy dependency. Node, port and type contracts must pass the G-suite before WU-03 freezes the expansion SDK. Bevy work then verifies the exact tag/toolchain/dependency set and builds disposable experiments for text/focus/accessibility and hot expansion before any large editor shell. No product code should precede the G0 consistency/readiness checks.
+[Contributing](CONTRIBUTING.md) and [agent instructions](AGENTS.md) describe how to work
+in this repository.

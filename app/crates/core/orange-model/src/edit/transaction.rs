@@ -1,0 +1,1063 @@
+//! Document transactions (12 §3.3). A transaction applies its commands atomically, yields
+//! one [`ChangeSet`] and one [`Inverse`], and increments the revision once.
+//!
+//! Commands check only what the document's storage cannot represent: unique IDs, edge
+//! endpoints in one body, existing targets. Port kinds, fan-in, types, regions and
+//! references from config are the validator's job (00d). Runtime effects are never part of
+//! a transaction.
+
+use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+
+use serde_json::Value as Json;
+
+use super::change_set::{ChangeSet, Tracker};
+use super::patch::{Patch, Placed, editor_placement, placement};
+use crate::document::literal::Literal;
+use crate::document::nesting::MAX_NESTING;
+use crate::document::{
+    ActivationPolicy, BodyRef, ConfigValue, ConnectionDecl, Edge, EventDecl, FunctionDecl,
+    GraphDocument, GraphExport, LocalTypeDecl, NodeInstance, PackageLockEntry, PortRef,
+    ProviderBinding, SignatureSnapshot, TypeLockEntry, TypeParamName, VariableDecl, VariadicState,
+    fresh_state_id,
+};
+use crate::error::TxError;
+use crate::id::{
+    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey,
+    TypeDeclId, TypeExpr, VariableId,
+};
+
+/// One edit intent. Replacing an item keeps its position; a new item is appended.
+///
+/// Commands are built and consumed one transaction at a time, so variants hold their
+/// values inline for caller convenience instead of boxing the large ones.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum DocCommand {
+    /// `body` is explicit because nodes are stored per body.
+    AddNode {
+        body: BodyRef,
+        node: NodeInstance,
+    },
+    /// Incident edges in the node's body are removed too.
+    RemoveNodes {
+        ids: Vec<NodeId>,
+    },
+    /// A literal on the target port stays in the document, shadowed (11 §4.4).
+    Connect {
+        edge: Edge,
+    },
+    Disconnect {
+        edge: EdgeId,
+    },
+    SetLiteral {
+        port: PortRef,
+        literal: Option<Literal>,
+    },
+    SetConfig {
+        node: NodeId,
+        config_version: u32,
+        config: ConfigValue,
+    },
+    /// Sets or clears the node instance's display name.
+    SetNodeName {
+        node: NodeId,
+        name: Option<String>,
+    },
+    SetTypeArgs {
+        node: NodeId,
+        args: BTreeMap<TypeParamName, TypeExpr>,
+    },
+    /// Replaces the node's explicit type choices (pins, 11 §5.5).
+    SetTypePins {
+        node: NodeId,
+        pins: BTreeMap<TypeParamName, TypeExpr>,
+    },
+    /// Allocates the next never-reused counter `k` and places `port#k` at `at` (11 §4.5).
+    InsertVariadic {
+        node: NodeId,
+        port: PortId,
+        at: usize,
+    },
+    /// Removes the instance port with its edges and literal.
+    RemoveVariadic {
+        node: NodeId,
+        port: PortKey,
+    },
+    /// Reorders an existing instance without changing its identity or wires.
+    MoveVariadic {
+        node: NodeId,
+        port: PortKey,
+        at: usize,
+    },
+    UpsertVariable(VariableDecl),
+    RemoveVariable(VariableId),
+    UpsertEvent(EventDecl),
+    RemoveEvent(EventDeclId),
+    UpsertConnection(ConnectionDecl),
+    RemoveConnection(ConnectionId),
+    /// Declares or replaces a local record or enum type (12 §6.5).
+    UpsertType(LocalTypeDecl),
+    RemoveType(TypeDeclId),
+    /// Replaces the whole declaration, body included.
+    UpsertFunction(FunctionDecl),
+    RemoveFunction(FunctionId),
+    /// Explicit provider change only (ADR-07).
+    Rebind {
+        nodes: Vec<NodeId>,
+        provider: ProviderBinding,
+    },
+    /// Adds a shared signature snapshot. Putting an identical one again changes nothing;
+    /// different content under an existing key is rejected.
+    PutSignature {
+        key: SignatureKey,
+        snapshot: SignatureSnapshot,
+    },
+    /// Points a node at an existing shared snapshot; add it first with `PutSignature`.
+    SetSignature {
+        node: NodeId,
+        key: SignatureKey,
+    },
+    /// Locks a package version to its content digest, appended to `package_lock`. Putting
+    /// the same digest again changes nothing; a different digest for a locked package
+    /// version is rejected. Pair it with any `AddNode` or `Rebind` naming that version.
+    PutPackageLock(PackageLockEntry),
+    /// Locks a type to a codec, appended to `type_lock`. Putting the same codec again changes
+    /// nothing; a different codec for a locked type is rejected, so an interpretation is
+    /// never replaced silently. Changing a codec is an explicit `RemoveTypeLock` then `PutTypeLock`.
+    PutTypeLock(TypeLockEntry),
+    /// Removes the lock entry for a type. Its values then use the registry's codec.
+    RemoveTypeLock(TypeExpr),
+    /// Replaces the export with the same ID in place, or appends a new one. The target is
+    /// not checked here; the validator reports a missing or unsuitable port.
+    UpsertExport(GraphExport),
+    RemoveExport {
+        id: String,
+    },
+    /// Sets (or with `None`, clears) a node's activation policy; the validator checks it.
+    SetActivation {
+        node: NodeId,
+        policy: Option<ActivationPolicy>,
+    },
+    Layout(LayoutCommand),
+}
+
+/// Edits of the opaque editor layout map. Typed layout commands arrive with `orange-editor`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayoutCommand {
+    /// Sets (or with `None`, removes) the value at a key path, creating parent objects.
+    Set {
+        path: Vec<String>,
+        value: Option<Json>,
+    },
+}
+
+/// A committed transaction.
+#[derive(Debug, Clone, PartialEq)]
+#[must_use]
+pub struct Committed {
+    pub change_set: ChangeSet,
+    /// Undoes this transaction when passed to [`GraphDocument::revert`].
+    pub inverse: Inverse,
+}
+
+/// Exact undo of one committed transaction. Reverting it is itself a transaction, whose
+/// inverse is the redo.
+///
+/// It is bound to document content, not to the revision: undo and redo advance the revision
+/// but restore the content state they return to, so a redo stays valid once other undos
+/// and redos have brought the document back to the state it expects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inverse {
+    applies_to: u64,
+    restores: u64,
+    restores_semantic: u64,
+    patches: Vec<Patch>,
+}
+
+impl Inverse {
+    /// The only [`GraphDocument::state_id`] this inverse may be applied to.
+    pub fn applies_to_state(&self) -> u64 {
+        self.applies_to
+    }
+
+    /// One inverse that takes back this edit and then `earlier`, the edit made just
+    /// before it: what turns several transactions of one action into one undo step.
+    /// `None` when `earlier` did not leave the state this edit started from.
+    pub fn then(self, earlier: Inverse) -> Option<Inverse> {
+        (self.restores == earlier.applies_to).then(|| Inverse {
+            applies_to: self.applies_to,
+            restores: earlier.restores,
+            restores_semantic: earlier.restores_semantic,
+            patches: self.patches.into_iter().chain(earlier.patches).collect(),
+        })
+    }
+}
+
+impl GraphDocument {
+    /// Applies `commands` atomically. On error nothing changes, revision included.
+    pub fn apply(
+        &mut self,
+        commands: impl IntoIterator<Item = DocCommand>,
+    ) -> Result<Committed, TxError> {
+        self.check_revision()?;
+        let journal = Journal::commands(self, commands)?;
+        if journal.is_empty() {
+            return Err(TxError::Empty);
+        }
+        Ok(journal.commit(self, None))
+    }
+
+    /// Applies `commands`, lets `observe` read the edited document and its change set, then
+    /// restores the document exactly, revision and state identity included. Costs the
+    /// edit rather than a copy of the document, which planning would otherwise clone.
+    pub(crate) fn scratch<R>(
+        &mut self,
+        commands: impl IntoIterator<Item = DocCommand>,
+        observe: impl FnOnce(&Self, &ChangeSet) -> R,
+    ) -> Result<R, TxError> {
+        self.check_revision()?;
+        let mut journal = Journal::commands(self, commands)?;
+        if journal.is_empty() {
+            return Err(TxError::Empty);
+        }
+        let change = std::mem::take(&mut journal.tracker).finish(
+            self,
+            self.revision,
+            self.state_id,
+            self.semantic_state_id,
+            false,
+        );
+        // Roll back even if `observe` panics: a caller that catches the unwind must not
+        // keep trial content under the document's unchanged state identity.
+        let result = catch_unwind(AssertUnwindSafe(|| observe(self, &change)));
+        journal.rollback(self);
+        Ok(result.unwrap_or_else(|panic| resume_unwind(panic)))
+    }
+
+    /// Undoes (or, with a redo inverse, redoes) a committed transaction.
+    pub fn revert(&mut self, inverse: Inverse) -> Result<Committed, TxError> {
+        if inverse.applies_to != self.state_id {
+            return Err(TxError::StaleInverse {
+                expected: inverse.applies_to,
+                actual: self.state_id,
+            });
+        }
+        self.check_revision()?;
+        let mut journal = Journal::default();
+        for patch in inverse.patches {
+            if let Err(error) = journal.patch(self, patch) {
+                journal.rollback(self);
+                return Err(error);
+            }
+        }
+        Ok(journal.commit(self, Some((inverse.restores, inverse.restores_semantic))))
+    }
+
+    /// Checked before any patch so an exhausted counter (a loaded `u64::MAX`) changes nothing.
+    fn check_revision(&self) -> Result<(), TxError> {
+        self.revision
+            .checked_add(1)
+            .map(drop)
+            .ok_or(TxError::RevisionExhausted)
+    }
+}
+
+/// Applied patches of an open transaction, as inverses, plus change tracking.
+#[derive(Default)]
+struct Journal {
+    inverses: Vec<Patch>,
+    commands: usize,
+    tracker: Tracker,
+}
+
+impl Journal {
+    /// All caller-controlled iteration runs inside the transaction's rollback boundary.
+    fn commands(
+        document: &mut GraphDocument,
+        commands: impl IntoIterator<Item = DocCommand>,
+    ) -> Result<Self, TxError> {
+        let mut journal = Self::default();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            for command in commands {
+                journal.command(document, command)?;
+            }
+            Ok::<(), TxError>(())
+        }));
+        match result {
+            Ok(Ok(())) => Ok(journal),
+            Ok(Err(error)) => {
+                journal.rollback(document);
+                Err(error)
+            }
+            Err(panic) => {
+                journal.rollback(document);
+                resume_unwind(panic)
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.commands == 0
+    }
+
+    /// Every edit passes the shared nesting budget first, so what commits can be saved and
+    /// loaded again (12 §6).
+    fn patch(&mut self, document: &mut GraphDocument, patch: Patch) -> Result<(), TxError> {
+        if patch.nesting() > MAX_NESTING {
+            return Err(TxError::NestingLimit { max: MAX_NESTING });
+        }
+        let inverse = patch.apply(document)?;
+        self.tracker.record(&inverse);
+        self.inverses.push(inverse);
+        Ok(())
+    }
+
+    fn rollback(self, document: &mut GraphDocument) {
+        for inverse in self.inverses.into_iter().rev() {
+            #[expect(
+                clippy::expect_used,
+                reason = "rollback runs inverses of patches that just applied; failure is a bug"
+            )]
+            inverse
+                .apply(document)
+                .expect("the inverse of an applied patch always applies");
+        }
+    }
+
+    /// Bumps the revision. A new edit gets a fresh content-state identity; an undo or redo
+    /// returns to the identity it `restores`.
+    fn commit(mut self, document: &mut GraphDocument, restores: Option<(u64, u64)>) -> Committed {
+        let (from_revision, from_state) = (document.revision, document.state_id);
+        document.revision += 1; // checked by `check_revision` before the first patch
+        let from_semantic = document.semantic_state_id;
+        let layout_only = self.tracker.layout_only();
+        document.state_id = restores.map(|state| state.0).unwrap_or_else(fresh_state_id);
+        document.semantic_state_id = restores.map(|state| state.1).unwrap_or_else(|| {
+            if layout_only {
+                from_semantic
+            } else {
+                fresh_state_id()
+            }
+        });
+        let change_set =
+            self.tracker
+                .finish(document, from_revision, from_state, from_semantic, true);
+        self.inverses.reverse();
+        Committed {
+            change_set,
+            inverse: Inverse {
+                applies_to: document.state_id,
+                restores: from_state,
+                restores_semantic: from_semantic,
+                patches: self.inverses,
+            },
+        }
+    }
+
+    /// Checks one command against the current state and applies its patches.
+    fn command(
+        &mut self,
+        document: &mut GraphDocument,
+        command: DocCommand,
+    ) -> Result<(), TxError> {
+        self.commands += 1;
+        match command {
+            DocCommand::AddNode { body, node } => {
+                if document.locate_node(node.id).is_some() {
+                    return Err(TxError::NodeExists(node.id));
+                }
+                let index = document
+                    .body(body)
+                    .ok_or_else(|| missing_body(body))?
+                    .nodes
+                    .len();
+                self.patch(
+                    document,
+                    Patch::Node {
+                        body,
+                        id: node.id,
+                        entry: Some(Placed {
+                            index,
+                            value: Box::new(node),
+                        }),
+                    },
+                )
+            }
+            DocCommand::RemoveNodes { ids } => ids
+                .into_iter()
+                .try_for_each(|id| self.remove_node(document, id)),
+            DocCommand::Connect { edge } => {
+                if document.locate_edge(edge.id).is_some() {
+                    return Err(TxError::EdgeExists(edge.id));
+                }
+                let body = edge_body(&edge, |node| document.locate_node(node))?;
+                let index = document.body(body).map_or(0, |body| body.edges.len());
+                self.patch(
+                    document,
+                    Patch::Edge {
+                        body,
+                        id: edge.id,
+                        entry: Some(Placed { index, value: edge }),
+                    },
+                )
+            }
+            DocCommand::Disconnect { edge } => {
+                let body = document
+                    .locate_edge(edge)
+                    .ok_or(TxError::EdgeNotFound(edge))?;
+                self.patch(
+                    document,
+                    Patch::Edge {
+                        body,
+                        id: edge,
+                        entry: None,
+                    },
+                )
+            }
+            DocCommand::SetLiteral { port, literal } => {
+                self.modify_node(document, port.node, |node| {
+                    match literal {
+                        Some(literal) => node.inputs.insert(port.port, literal),
+                        None => node.inputs.remove(&port.port),
+                    };
+                    Ok(())
+                })
+            }
+            DocCommand::SetConfig {
+                node,
+                config_version,
+                config,
+            } => self.modify_node(document, node, |node| {
+                node.config_version = config_version;
+                node.config = config;
+                Ok(())
+            }),
+            DocCommand::SetTypeArgs { node, args } => self.modify_node(document, node, |node| {
+                node.type_args = args;
+                Ok(())
+            }),
+            DocCommand::SetNodeName { node, name } => self.modify_node(document, node, |node| {
+                if let Some(name) = name {
+                    node.extensions
+                        .insert("name".to_owned(), Json::String(name));
+                } else {
+                    node.extensions.remove("name");
+                }
+                Ok(())
+            }),
+            DocCommand::SetTypePins { node, pins } => self.modify_node(document, node, |node| {
+                node.type_pins = pins;
+                Ok(())
+            }),
+            DocCommand::InsertVariadic { node: id, port, at } => {
+                self.modify_node(document, id, |node| {
+                    let state = node.variadic.entry(port.clone()).or_insert(VariadicState {
+                        order: Vec::new(),
+                        next: 0,
+                    });
+                    if !state.is_valid() {
+                        return Err(TxError::InvalidVariadicState { node: id, port });
+                    }
+                    if at > state.order.len() {
+                        return Err(TxError::VariadicPositionOutOfRange {
+                            node: id,
+                            port,
+                            at,
+                            len: state.order.len(),
+                        });
+                    }
+                    let k = state.next;
+                    // Counters are never reused, so an exhausted counter fails instead of wrapping.
+                    state.next = k
+                        .checked_add(1)
+                        .ok_or(TxError::VariadicExhausted { node: id, port })?;
+                    state.order.insert(at, k);
+                    Ok(())
+                })
+            }
+            DocCommand::RemoveVariadic { node: id, port } => {
+                self.remove_variadic(document, id, port)
+            }
+            DocCommand::MoveVariadic { node: id, port, at } => {
+                self.modify_node(document, id, |node| {
+                    let missing = || TxError::VariadicPortNotFound {
+                        node: id,
+                        port: port.clone(),
+                    };
+                    let instance = port.instance().ok_or_else(missing)?;
+                    let state = node.variadic.get_mut(port.port()).ok_or_else(missing)?;
+                    if !state.is_valid() {
+                        return Err(TxError::InvalidVariadicState {
+                            node: id,
+                            port: port.port().clone(),
+                        });
+                    }
+                    let from = state
+                        .order
+                        .iter()
+                        .position(|&key| key == instance)
+                        .ok_or_else(missing)?;
+                    if at >= state.order.len() {
+                        return Err(TxError::VariadicPositionOutOfRange {
+                            node: id,
+                            port: port.port().clone(),
+                            at,
+                            len: state.order.len(),
+                        });
+                    }
+                    state.order.remove(from);
+                    state.order.insert(at, instance);
+                    Ok(())
+                })
+            }
+            DocCommand::UpsertVariable(decl) => {
+                let index = placement(&document.variables, &decl.id);
+                self.patch(
+                    document,
+                    Patch::Variable {
+                        id: decl.id,
+                        entry: Some(Placed { index, value: decl }),
+                    },
+                )
+            }
+            DocCommand::RemoveVariable(id) => {
+                if !document.variables.contains_key(&id) {
+                    return Err(TxError::VariableNotFound(id));
+                }
+                self.patch(document, Patch::Variable { id, entry: None })
+            }
+            DocCommand::UpsertEvent(decl) => {
+                let index = placement(&document.events, &decl.id);
+                self.patch(
+                    document,
+                    Patch::Event {
+                        id: decl.id,
+                        entry: Some(Placed { index, value: decl }),
+                    },
+                )
+            }
+            DocCommand::RemoveEvent(id) => {
+                if !document.events.contains_key(&id) {
+                    return Err(TxError::EventNotFound(id));
+                }
+                self.patch(document, Patch::Event { id, entry: None })
+            }
+            DocCommand::UpsertConnection(decl) => {
+                let index = placement(&document.connections, &decl.id);
+                self.patch(
+                    document,
+                    Patch::Connection {
+                        id: decl.id,
+                        entry: Some(Placed { index, value: decl }),
+                    },
+                )
+            }
+            DocCommand::RemoveConnection(id) => {
+                if !document.connections.contains_key(&id) {
+                    return Err(TxError::ConnectionNotFound(id));
+                }
+                self.patch(document, Patch::Connection { id, entry: None })
+            }
+            DocCommand::UpsertType(decl) => {
+                let index = placement(&document.types, &decl.id);
+                self.patch(
+                    document,
+                    Patch::Type {
+                        id: decl.id,
+                        entry: Some(Placed { index, value: decl }),
+                    },
+                )
+            }
+            DocCommand::RemoveType(id) => {
+                if !document.types.contains_key(&id) {
+                    return Err(TxError::TypeNotFound(id));
+                }
+                self.patch(document, Patch::Type { id, entry: None })
+            }
+            DocCommand::UpsertFunction(decl) => {
+                check_function_body(document, &decl)?;
+                let (id, index) = (decl.id, placement(&document.functions, &decl.id));
+                let entry = Some(Placed {
+                    index,
+                    value: Box::new(decl),
+                });
+                self.patch(document, Patch::Function { id, entry })
+            }
+            DocCommand::RemoveFunction(id) => {
+                if !document.functions.contains_key(&id) {
+                    return Err(TxError::FunctionNotFound(id));
+                }
+                self.patch(document, Patch::Function { id, entry: None })
+            }
+            DocCommand::Rebind { nodes, provider } => nodes.into_iter().try_for_each(|id| {
+                self.modify_node(document, id, |node| {
+                    node.provider = Some(provider.clone());
+                    Ok(())
+                })
+            }),
+            DocCommand::PutSignature { key, snapshot } => match document.signatures.get(&key) {
+                Some(existing) if *existing == snapshot => Ok(()),
+                Some(_) => Err(TxError::SignatureConflict(key)),
+                None => self.patch(
+                    document,
+                    Patch::Signature {
+                        key,
+                        entry: Some(Placed {
+                            index: 0,
+                            value: snapshot,
+                        }),
+                    },
+                ),
+            },
+            DocCommand::PutPackageLock(entry) => {
+                let key = (entry.id.clone(), entry.version.clone());
+                let locked = document
+                    .package_lock
+                    .iter()
+                    .find(|locked| (&locked.id, &locked.version) == (&key.0, &key.1));
+                match locked {
+                    Some(locked) if locked.content_digest == entry.content_digest => Ok(()),
+                    Some(_) => Err(TxError::PackageLockConflict {
+                        package: key.0,
+                        version: key.1,
+                    }),
+                    None => {
+                        let index = document.package_lock.len();
+                        self.patch(
+                            document,
+                            Patch::PackageLock {
+                                key,
+                                entry: Some(Placed {
+                                    index,
+                                    value: entry,
+                                }),
+                            },
+                        )
+                    }
+                }
+            }
+            DocCommand::PutTypeLock(entry) => {
+                match document
+                    .type_lock
+                    .iter()
+                    .find(|locked| locked.ty == entry.ty)
+                {
+                    Some(locked) if locked.codec == entry.codec => Ok(()),
+                    Some(_) => Err(TxError::TypeLockConflict(entry.ty)),
+                    None => {
+                        let index = document.type_lock.len();
+                        self.patch(
+                            document,
+                            Patch::TypeLock {
+                                key: entry.ty.clone(),
+                                entry: Some(Placed {
+                                    index,
+                                    value: entry,
+                                }),
+                            },
+                        )
+                    }
+                }
+            }
+            DocCommand::UpsertExport(export) => {
+                let index = document
+                    .exports
+                    .iter()
+                    .position(|existing| existing.id == export.id)
+                    .unwrap_or(document.exports.len());
+                self.patch(
+                    document,
+                    Patch::Export {
+                        key: export.id.clone(),
+                        entry: Some(Placed {
+                            index,
+                            value: export,
+                        }),
+                    },
+                )
+            }
+            DocCommand::RemoveExport { id } => {
+                if !document.exports.iter().any(|existing| existing.id == id) {
+                    return Err(TxError::ExportNotFound(id));
+                }
+                self.patch(
+                    document,
+                    Patch::Export {
+                        key: id,
+                        entry: None,
+                    },
+                )
+            }
+            DocCommand::SetActivation { node, policy } => {
+                self.modify_node(document, node, |node| {
+                    node.activation = policy;
+                    Ok(())
+                })
+            }
+            DocCommand::RemoveTypeLock(ty) => {
+                if !document.type_lock.iter().any(|locked| locked.ty == ty) {
+                    return Err(TxError::TypeLockNotFound(ty));
+                }
+                self.patch(
+                    document,
+                    Patch::TypeLock {
+                        key: ty,
+                        entry: None,
+                    },
+                )
+            }
+            DocCommand::SetSignature { node, key } => {
+                if !document.signatures.contains_key(&key) {
+                    return Err(TxError::SignatureNotFound(key));
+                }
+                self.modify_node(document, node, |node| {
+                    node.signature = Some(key);
+                    Ok(())
+                })
+            }
+            DocCommand::Layout(LayoutCommand::Set { path, value }) => {
+                if path.is_empty() {
+                    return Err(TxError::EmptyLayoutPath);
+                }
+                let index = editor_placement(&document.editor, &path);
+                self.patch(
+                    document,
+                    Patch::Editor {
+                        path,
+                        entry: value.map(|value| Placed { index, value }),
+                    },
+                )
+            }
+        }
+    }
+
+    /// Replaces a node in place with an edited copy; the edit may reject the change.
+    fn modify_node(
+        &mut self,
+        document: &mut GraphDocument,
+        id: NodeId,
+        edit: impl FnOnce(&mut NodeInstance) -> Result<(), TxError>,
+    ) -> Result<(), TxError> {
+        let body = document.locate_node(id).ok_or(TxError::NodeNotFound(id))?;
+        let nodes = &document.body(body).ok_or_else(|| missing_body(body))?.nodes;
+        let index = placement(nodes, &id);
+        let mut node = nodes[&id].clone();
+        edit(&mut node)?;
+        self.patch(
+            document,
+            Patch::Node {
+                body,
+                id,
+                entry: Some(Placed {
+                    index,
+                    value: Box::new(node),
+                }),
+            },
+        )
+    }
+
+    fn remove_node(&mut self, document: &mut GraphDocument, id: NodeId) -> Result<(), TxError> {
+        let body = document.locate_node(id).ok_or(TxError::NodeNotFound(id))?;
+        self.remove_edges_where(document, body, |edge| {
+            edge.from.node == id || edge.to.node == id
+        })?;
+        self.patch(
+            document,
+            Patch::Node {
+                body,
+                id,
+                entry: None,
+            },
+        )
+    }
+
+    fn remove_variadic(
+        &mut self,
+        document: &mut GraphDocument,
+        id: NodeId,
+        port: PortKey,
+    ) -> Result<(), TxError> {
+        let not_found = || TxError::VariadicPortNotFound {
+            node: id,
+            port: port.clone(),
+        };
+        let node = document.node(id).ok_or(TxError::NodeNotFound(id))?;
+        let k = port.instance().ok_or_else(not_found)?;
+        let listed = node
+            .variadic
+            .get(port.port())
+            .is_some_and(|state| state.order.contains(&k));
+        if !listed {
+            return Err(not_found());
+        }
+        let body = document.locate_node(id).ok_or(TxError::NodeNotFound(id))?;
+        let touches = |end: &PortRef| end.node == id && end.port == port;
+        self.remove_edges_where(document, body, |edge| {
+            touches(&edge.from) || touches(&edge.to)
+        })?;
+        self.modify_node(document, id, |node| {
+            if let Some(state) = node.variadic.get_mut(port.port()) {
+                state.order.retain(|&instance| instance != k);
+            }
+            node.inputs.remove(&port);
+            Ok(())
+        })
+    }
+
+    fn remove_edges_where(
+        &mut self,
+        document: &mut GraphDocument,
+        body: BodyRef,
+        matches: impl Fn(&Edge) -> bool,
+    ) -> Result<(), TxError> {
+        let edges: Vec<EdgeId> = document
+            .body(body)
+            .ok_or_else(|| missing_body(body))?
+            .edges
+            .values()
+            .filter(|edge| matches(edge))
+            .map(|edge| edge.id)
+            .collect();
+        edges.into_iter().try_for_each(|id| {
+            self.patch(
+                document,
+                Patch::Edge {
+                    body,
+                    id,
+                    entry: None,
+                },
+            )
+        })
+    }
+}
+
+fn missing_body(body: BodyRef) -> TxError {
+    match body {
+        BodyRef::Function(id) => TxError::FunctionNotFound(id),
+        BodyRef::Root => unreachable!("the root body always exists"),
+    }
+}
+
+/// The single body holding both endpoints of `edge`, located with `locate`.
+fn edge_body(edge: &Edge, locate: impl Fn(NodeId) -> Option<BodyRef>) -> Result<BodyRef, TxError> {
+    let endpoint = |node| {
+        locate(node).ok_or(TxError::EdgeEndpointMissing {
+            edge: edge.id,
+            node,
+        })
+    };
+    let (from, to) = (endpoint(edge.from.node)?, endpoint(edge.to.node)?);
+    if from == to {
+        Ok(from)
+    } else {
+        Err(TxError::CrossBodyEdge(edge.id))
+    }
+}
+
+/// A function body obeys the same rules as edits elsewhere: its IDs are not used by another
+/// body and its edges stay inside it.
+fn check_function_body(document: &GraphDocument, decl: &FunctionDecl) -> Result<(), TxError> {
+    let this = BodyRef::Function(decl.id);
+    for (key, node) in &decl.body.nodes {
+        if *key != node.id {
+            return Err(TxError::FunctionNodeKeyMismatch {
+                key: *key,
+                item: node.id,
+            });
+        }
+    }
+    for (key, edge) in &decl.body.edges {
+        if *key != edge.id {
+            return Err(TxError::FunctionEdgeKeyMismatch {
+                key: *key,
+                item: edge.id,
+            });
+        }
+    }
+    let foreign = |found: Option<BodyRef>| found.is_some_and(|body| body != this);
+    if let Some(id) = decl
+        .body
+        .nodes
+        .keys()
+        .find(|id| foreign(document.locate_node(**id)))
+    {
+        return Err(TxError::NodeExists(*id));
+    }
+    if let Some(id) = decl
+        .body
+        .edges
+        .keys()
+        .find(|id| foreign(document.locate_edge(**id)))
+    {
+        return Err(TxError::EdgeExists(*id));
+    }
+    let local = |node: NodeId| decl.body.nodes.contains_key(&node).then_some(this);
+    decl.body
+        .edges
+        .values()
+        .try_for_each(|edge| edge_body(edge, local).map(|_| ()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BodyRef;
+    use crate::document::NodeInstance;
+
+    fn branch(n: u8) -> NodeInstance {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("10000000-0000-4000-8000-{n:012}"), "definition_id": "core/branch",
+            "definition_version": 1, "config_version": 1, "config": {}
+        }))
+        .unwrap()
+    }
+
+    /// Two edits composed into one inverse go back in one step, and its own inverse
+    /// does both again.
+    #[test]
+    fn composed_inverses_undo_and_redo_two_edits_as_one() {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let start = (document.state_id(), document.semantic_state_id());
+        let add = |document: &mut GraphDocument, n| {
+            document
+                .apply([DocCommand::AddNode {
+                    body: BodyRef::Root,
+                    node: branch(n),
+                }])
+                .unwrap()
+        };
+        let first = add(&mut document, 1);
+        let second = add(&mut document, 2);
+        let after = document.state_id();
+        // Out of order they do not compose.
+        assert!(first.inverse.clone().then(second.inverse.clone()).is_none());
+        let both = second.inverse.then(first.inverse).unwrap();
+        assert_eq!(both.applies_to_state(), after);
+        let undone = document.revert(both).unwrap();
+        assert!(document.root().nodes.is_empty());
+        assert_eq!((document.state_id(), document.semantic_state_id()), start);
+        let _ = document.revert(undone.inverse).unwrap();
+        assert_eq!(document.root().nodes.len(), 2);
+        assert_eq!(document.state_id(), after);
+    }
+
+    #[test]
+    fn scratch_changes_are_not_committed_and_restore_the_retained_index() {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let mut index = crate::DocIndex::build(&document);
+        let before = (
+            document.revision(),
+            document.state_id(),
+            document.semantic_state_id(),
+        );
+        let change = crate::inference::persist::scratch_indexed(
+            &mut document,
+            &mut index,
+            [DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: branch(1),
+            }],
+            |trial, trial_index, change| {
+                assert!(!change.is_committed());
+                assert!(!change.layout_only());
+                assert_eq!(trial_index, &crate::DocIndex::build(trial));
+                change.clone()
+            },
+        )
+        .unwrap();
+        assert!(!change.is_committed());
+        assert_eq!(
+            (
+                document.revision(),
+                document.state_id(),
+                document.semantic_state_id()
+            ),
+            before
+        );
+        assert_eq!(index, crate::DocIndex::build(&document));
+    }
+
+    #[test]
+    fn scratch_rolls_back_when_the_command_iterator_panics() {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let before = (
+            crate::to_json(&document).unwrap(),
+            document.state_id(),
+            document.semantic_state_id(),
+        );
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let commands = std::iter::once(DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: branch(1),
+            })
+            .chain(std::iter::from_fn(|| -> Option<DocCommand> {
+                panic!("iterator failure")
+            }));
+            document.scratch(commands, |_, _| panic!("observer must not run"))
+        }));
+        assert!(result.is_err());
+        assert_eq!(
+            (
+                crate::to_json(&document).unwrap(),
+                document.state_id(),
+                document.semantic_state_id()
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn scratch_rolls_back_when_the_observer_panics() {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let _ = document
+            .apply([DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: branch(1),
+            }])
+            .unwrap();
+        let before = (
+            crate::to_json(&document).unwrap(),
+            document.revision,
+            document.state_id,
+        );
+        let unwound = catch_unwind(AssertUnwindSafe(|| {
+            document.scratch(
+                [DocCommand::AddNode {
+                    body: BodyRef::Root,
+                    node: branch(2),
+                }],
+                |trial, _| {
+                    assert_eq!(trial.root().nodes.len(), 2);
+                    panic!("observer failure")
+                },
+            )
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            (
+                crate::to_json(&document).unwrap(),
+                document.revision,
+                document.state_id
+            ),
+            before
+        );
+        // The restored document still edits and undoes normally.
+        let committed = document
+            .apply([DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: branch(2),
+            }])
+            .unwrap();
+        let _ = document.revert(committed.inverse).unwrap();
+        assert_eq!(document.root().nodes.len(), 1);
+        assert_eq!(
+            document.state_id, before.2,
+            "undo restores the original state"
+        );
+    }
+}

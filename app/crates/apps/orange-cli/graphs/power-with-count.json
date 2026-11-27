@@ -1,0 +1,332 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "90000000-0000-4000-8000-000000000001",
+  "revision": 1,
+  "package_lock": [
+    {
+      "id": "org.orange.math",
+      "version": "0.0.0",
+      "content_digest": "sha256:0a1d2c40b01100d64c99e21dc4a47e9bb2925539aa5d97b9521296b254cb0a52"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "70000000-0000-4000-8000-000000000001",
+      "name": "accumulator",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "70000000-0000-4000-8000-000000000002",
+      "name": "result",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "signatures": {
+    "sha256:3fc0dbb296db4508f841f087ac8bd80a0fb9edf0f28a250b2e109e36f9c99b23": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "a",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/i64@1"
+        },
+        {
+          "port_id": "b",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/i64@1"
+        },
+        {
+          "port_id": "product",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "computed"
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "80000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 4,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Calculate power"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000002",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "70000000-0000-4000-8000-000000000001"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "1"
+        }
+      },
+      "name": "Reset accumulator to 1"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000003",
+      "definition_id": "core/count",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "name": "Count exponent iterations"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000004",
+      "definition_id": "core/whole-number",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "4"
+        }
+      },
+      "name": "Exponent"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000005",
+      "definition_id": "core/whole-number",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "3"
+        }
+      },
+      "name": "Base"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000006",
+      "definition_id": "core/get-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "70000000-0000-4000-8000-000000000001"
+      },
+      "name": "Read accumulator"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000008",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "70000000-0000-4000-8000-000000000001"
+      },
+      "name": "Store next accumulator"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000009",
+      "definition_id": "core/get-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "70000000-0000-4000-8000-000000000001"
+      },
+      "name": "Read final accumulator"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000010",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "70000000-0000-4000-8000-000000000002"
+      },
+      "name": "Save result"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000007",
+      "definition_id": "org.orange.math/multiply",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "type_pins": {
+        "T": "core/i64@1"
+      },
+      "provider": {
+        "package": "org.orange.math",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:3fc0dbb296db4508f841f087ac8bd80a0fb9edf0f28a250b2e109e36f9c99b23",
+      "name": "Multiply by base"
+    }
+  ],
+  "edges": [
+    {
+      "id": "60000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000002",
+        "port": "in"
+      }
+    },
+    {
+      "id": "60000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000002",
+        "port": "then"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000003",
+        "port": "in"
+      }
+    },
+    {
+      "id": "60000000-0000-4000-8000-000000000003",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000004",
+        "port": "result"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000003",
+        "port": "count"
+      }
+    },
+    {
+      "id": "60000000-0000-4000-8000-000000000004",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000003",
+        "port": "body"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000008",
+        "port": "in"
+      }
+    },
+    {
+      "id": "60000000-0000-4000-8000-000000000008",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000003",
+        "port": "completed"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000010",
+        "port": "in"
+      }
+    },
+    {
+      "id": "60000000-0000-4000-8000-000000000009",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000009",
+        "port": "value"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000010",
+        "port": "value"
+      }
+    },
+    {
+      "id": "60000000-0000-4000-8000-000000000005",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000005",
+        "port": "result"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000007",
+        "port": "a"
+      }
+    },
+    {
+      "id": "60000000-0000-4000-8000-000000000006",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000006",
+        "port": "value"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000007",
+        "port": "b"
+      }
+    },
+    {
+      "id": "60000000-0000-4000-8000-000000000007",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000007",
+        "port": "product"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000008",
+        "port": "value"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "80000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "80000000-0000-4000-8000-000000000002": {
+        "x": 320,
+        "y": 0
+      },
+      "80000000-0000-4000-8000-000000000003": {
+        "x": 640,
+        "y": 0
+      },
+      "80000000-0000-4000-8000-000000000004": {
+        "x": 640,
+        "y": 250
+      },
+      "80000000-0000-4000-8000-000000000005": {
+        "x": 350,
+        "y": 415
+      },
+      "80000000-0000-4000-8000-000000000006": {
+        "x": 350,
+        "y": 600
+      },
+      "80000000-0000-4000-8000-000000000007": {
+        "x": 690,
+        "y": 416
+      },
+      "80000000-0000-4000-8000-000000000008": {
+        "x": 1020,
+        "y": 340
+      },
+      "80000000-0000-4000-8000-000000000009": {
+        "x": 1010,
+        "y": 130
+      },
+      "80000000-0000-4000-8000-000000000010": {
+        "x": 1350,
+        "y": 0
+      }
+    }
+  }
+}

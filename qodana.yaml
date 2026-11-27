@@ -1,0 +1,37 @@
+# Qodana static analysis (https://www.jetbrains.com/help/qodana/qodana-yaml.html).
+# Do not store secrets here: this file's contents appear in the report.
+version: "1.0"
+linter: qodana-rust
+
+profile:
+  name: qodana.starter
+  inspections:
+    # Disable license audit (Cargo is not supported by Qodana's license audit)
+    - inspection: CheckDependencyLicenses
+      enabled: false
+    # Every `http://` in the code is a scheme check, an error message, a test that a
+    # plain URL is refused, or a loopback test server.
+    - inspection: HttpUrlsUsage
+      enabled: false
+    # Enable duplicated code detection
+    - inspection: DuplicatedCode
+      enabled: true
+    # Agent worktrees, notes and build output are not part of the product.
+    - group: ALL
+      ignore:
+        - .claude
+        - .codex
+        - .agents
+        - .artifacts
+        - target
+
+# The Rust image has no C toolchain. Without one every build script (libc, serde,
+# proc-macro2, ...) fails, the Cargo project model loads degraded, and Qodana reports
+# the code it can no longer resolve as "possible project misconfiguration". cpal needs
+# the ALSA headers on Linux, as in .github/workflows/checks.yml.
+# Require the locked workspace to compile before Rust inspections run.
+bootstrap: >-
+  apt-get update &&
+  apt-get install --yes --no-install-recommends build-essential pkg-config libasound2-dev &&
+  rustup show &&
+  cargo check --locked --workspace --all-targets --all-features

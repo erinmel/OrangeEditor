@@ -1,0 +1,502 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "90000000-0000-4000-8000-000000000006",
+  "revision": 1,
+  "package_lock": [
+    {
+      "id": "org.orange.net",
+      "version": "0.0.0",
+      "content_digest": "sha256:f264fc68eb4ef10354ff58109a95740e364b438b95d21ce98dc3dca121efbfb3"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "name": "Outcome",
+      "type": "core/string@1",
+      "scope": "run",
+      "init": {
+        "type": "core/string@1",
+        "value": "Waiting"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "connections": [
+    {
+      "id": "40000000-0000-4000-8000-000000000003",
+      "name": "Local health endpoint",
+      "adapter": "org.orange.net/http",
+      "scope": "graph",
+      "settings": {
+        "base_url": "http://127.0.0.1:8080",
+        "timeout_ms": 1500
+      }
+    }
+  ],
+  "signatures": {
+    "sha256:cb362e6af9d762f6d63bc509f912a71e6827c3f780846ee80aa58eb4e62b4de8": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "method",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": "GET"
+          }
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "content",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "content_type",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "headers",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "header_fields",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/string@1>",
+          "default": {
+            "type": "core/map@1<core/string@1,core/string@1>",
+            "value": []
+          }
+        },
+        {
+          "port_id": "query",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/string@1>",
+          "default": {
+            "type": "core/map@1<core/string@1,core/string@1>",
+            "value": []
+          }
+        },
+        {
+          "port_id": "status",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "success",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response_headers",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/list@1<core/string@1>>",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 8,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Check endpoint"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "definition_id": "core/branch",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "name": "Was HTTP status successful?"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/string@1",
+          "value": "HTTP success"
+        }
+      },
+      "name": "Status accepted"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000005",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/string@1",
+          "value": "HTTP error status"
+        }
+      },
+      "name": "Status rejected"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000006",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/string@1",
+          "value": "Request failed after two attempts"
+        }
+      },
+      "name": "Retry exhausted"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "definition_id": "org.orange.net/http-request",
+      "definition_version": 2,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000003"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:cb362e6af9d762f6d63bc509f912a71e6827c3f780846ee80aa58eb4e62b4de8",
+      "inputs": {
+        "method": {
+          "type": "core/string@1",
+          "value": "GET"
+        },
+        "path": {
+          "type": "core/string@1",
+          "value": "/health"
+        }
+      },
+      "name": "GET /health · attempt 1"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000007",
+      "definition_id": "core/wait",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "inputs": {
+        "duration": {
+          "type": "core/duration@1",
+          "value": "250000000"
+        }
+      },
+      "name": "Wait 250 ms before retry"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000008",
+      "definition_id": "org.orange.net/http-request",
+      "definition_version": 2,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000003"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:cb362e6af9d762f6d63bc509f912a71e6827c3f780846ee80aa58eb4e62b4de8",
+      "inputs": {
+        "method": {
+          "type": "core/string@1",
+          "value": "GET"
+        },
+        "path": {
+          "type": "core/string@1",
+          "value": "/health"
+        }
+      },
+      "name": "GET /health · attempt 2"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000009",
+      "definition_id": "core/branch",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "name": "Was the retry successful?"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000010",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/string@1",
+          "value": "HTTP success after retry"
+        }
+      },
+      "name": "Retry accepted"
+    }
+  ],
+  "edges": [
+    {
+      "id": "30000000-0000-4000-8000-000000000004",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "true"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000005",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "false"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "success"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "condition"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000006",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "failed"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000007",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000007",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000007",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000008",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000008",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000008",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000009",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000009",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000008",
+        "port": "success"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000009",
+        "port": "condition"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000010",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000009",
+        "port": "true"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000010",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000011",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000009",
+        "port": "false"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000012",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000008",
+        "port": "failed"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000006",
+        "port": "in"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "10000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000002": {
+        "x": 320,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000003": {
+        "x": 640,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000004": {
+        "x": 960,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000005": {
+        "x": 1600,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000006": {
+        "x": 1280,
+        "y": 760
+      },
+      "10000000-0000-4000-8000-000000000007": {
+        "x": 640,
+        "y": 440
+      },
+      "10000000-0000-4000-8000-000000000008": {
+        "x": 960,
+        "y": 440
+      },
+      "10000000-0000-4000-8000-000000000009": {
+        "x": 1280,
+        "y": 440
+      },
+      "10000000-0000-4000-8000-000000000010": {
+        "x": 1600,
+        "y": 440
+      }
+    }
+  }
+}

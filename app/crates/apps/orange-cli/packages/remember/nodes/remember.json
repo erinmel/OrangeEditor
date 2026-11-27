@@ -1,0 +1,26 @@
+{
+  "definition_id": "org.example.tools/remember",
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "action",
+  "suspends": "never",
+  "determinism": "external",
+  "ports": [
+    {
+      "port_id": "value",
+      "direction": "input",
+      "kind": "data",
+      "type": "core/i64@1"
+    },
+    {
+      "port_id": "result",
+      "direction": "output",
+      "kind": "data",
+      "type": "core/i64@1",
+      "source": "execution",
+      "available_on": [
+        "then"
+      ]
+    }
+  ]
+}

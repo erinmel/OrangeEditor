@@ -1,16 +1,18 @@
 # OrangeEditor expansion system
 
-An expansion is installed into the running OrangeEditor application. It is not a Rust crate added by the user to OrangeEditor's Bevy build and not a development MCP/plugin. Bevy application plugins are internal composition; their startup lifecycle is not an unload protocol. This design owns install, compatibility, permissions, contribution registration, lifetime barriers and removal.
+An expansion is installed into the running OrangeEditor application. It is not a Rust crate compiled into OrangeEditor and not a development MCP/plugin. Crates that a downstream product links against the core are a separate, build-time extension path (ADR-21). This design owns install, compatibility, permissions, contribution registration, lifetime barriers and removal.
 
-Maintained expansion source lives under `plugins/<name>` in the [monorepo](15-monorepo-layout.md), with the versioned public SDK under `sdk`. Package versions/builds and application releases stay independent. Sharing a Git commit does not grant a package private host imports or bypass installation/permissions/provider locks.
+Maintained expansion source lives under `plugins/<name>` in the [monorepo](02-architecture.md), with the versioned public SDK under `sdk`. Package versions/builds and application releases stay independent. Sharing a Git commit does not grant a package private host imports or bypass installation/permissions/provider locks.
+
+ADR-22 narrows foundation delivery to generic capabilities. Specialized OBS/Twitch, TTS, webhook and browser-canvas integrations are independent plugins, not bundled release requirements. A plugin can add a typed event source (for example, a remote service notification) using owned bounded ingress, without adding scheduler rules. The SDK acceptance sample is synthetic and requires no live account. Plugins generating speech return an approved audio asset or bounded PCM stream to the existing selected-device playback service; they never write to an audio callback.
 
 ## Execution boundary decision
 
 | Boundary | Hot addition / portability | Failure and authority | Contribution/latency limits | Decision |
 |---|---|---|---|---|
-| Native Rust dylib/trait objects | Platform/compiler/build sensitive | Host memory/credentials/process privileges; native fault can terminate host | Broad raw UI/ECS access; low call cost; no stable external Rust ABI | Rejected public format |
+| Native Rust dylib/trait objects | Platform/compiler/build sensitive | Host memory/credentials/process privileges; native fault can terminate host | Broad raw UI/ECS access; low call cost; no stable external Rust ABI | **Start-time trusted tier** at the user's risk (ADR-03 amendment 2026-11-11); not an archive payload |
 | Stable C ABI library | Possible per-target bundles; explicit ABI structs required | Same in-process crash/authority limits; unload needs every pointer/thread/callback barrier | Broad native access, ownership hazards, per-platform release testing | Not initial public format |
-| Wasm Component Model | Portable validated component with versioned WIT-style host imports | Guest linear-memory isolation and checked imports; fuel/epoch/resource limits; host bug remains risk | Serialization/copy/call costs; no raw Bevy pointers or native callback code | **Primary installable format** |
+| Wasm Component Model | Portable validated component with versioned WIT-style host imports | Guest linear-memory isolation and checked imports; fuel/epoch/resource limits; host bug remains risk | Serialization/copy/call costs; no raw host pointers or native callback code | **Primary installable format** |
 | External worker | Native runtime/language flexibility; bundle per target | Crash boundary and killable process; OS access remains user authority unless actual OS sandbox is implemented | IPC cost, versioned bounded frames, declarative UI/scene bridge only | **Explicit-trust secondary tier** |
 | Statically linked bundled kernels/services | Shipped with app; cannot replace/unload code at runtime | Privileged host code; host crash not isolated | Cheap native kernels, audio callback/backend access | Documented bundled exception |
 
@@ -18,19 +20,36 @@ Rust ABI stability is not supplied by exported Rust symbols; stable foreign ABI 
 
 Guest permissions are **enforced host-service authority**: profiles/destinations, approved file roots, scene resources, UI contribution IDs and quotas. Guests receive no unrestricted WASI filesystem/network/environment imports by default. Do not confuse a permission manifest with enforcement. Native bundled code and trusted workers can bypass in-app policy through OS APIs; worker mode displays that trust distinction and is disabled by default for downloaded packages. An OS sandbox for workers requires a separate per-OS design and validation; it is not a 1.0 promise. Host service operations validate handles, path identity and destination after redirects/reconnects. Compromised runtime/host, hostile kernel or other processes with the same OS-user authority are outside the guest isolation guarantee.
 
+Binding request (2026-10-27): host kernel resolvers should implement `PureKernelResolver::resolve_binding` and `EntropyKernelResolver::resolve_entropy_binding`. They receive a `BindingRequest` holding only the node identity, the exact definition, the locked provider, the config version, the config, the signature and the pinned registry snapshot, built by the compiler after its exact-lock checks. Since 2026-10-28 these are the only methods a resolver implements; the document-wide `resolve` and `resolve_entropy` are now `ResolveInDocument` and `ResolveEntropyInDocument`, blanket-implemented conveniences that build the request first, so no resolver receives the whole document. This is a breaking change for resolvers that implemented only the old methods. Configuration is still interpreted at compile time by the adapter, and execution traits are unchanged.
+
 ## Contribution surface
+
+The table below is the selected extension contract. Current installed guest
+execution implements Pure, Action and Async nodes with concrete port types (K02c;
+effects 2026-11-10); since 1.1 their settings reach the instance through `settings`. The compiler and host also support package Entry
+nodes fed by trusted native service sources, including incoming WebSocket text.
+Installed Wasm guests still lack host service imports, iterators and resource contributions. Trusted host type registration implements records, enums and handle kinds;
+arbitrary package scalar representations/codecs and complete archive contribution
+activation remain open. Metadata registration alone does not prove execution support.
+
+An ordinary node declares ports, types, configuration and effects within an existing
+execution class. Special control rules belong to the host language release; a
+separate evaluation model belongs to a trusted downstream domain. Typed domain
+registration/dispatch and its external consumer probe remain the ADR-21 pre-G2 gate.
+Backend replacement uses an existing slot contract and grants no scheduler authority.
 
 | Contribution / replaceable slot | Wasm component | Trusted worker | Bundled native |
 |---|---|---|---|
 | Node implementation, types, codecs, reusable graph | Yes; bounded values/calls | Yes; same contracts over IPC | Yes; shared definitions |
 | Language surface ([11 §16](11-graph-language.md)): pure/volatile-entropy/action/async/entry/iterator definitions, constraint implementations for owned types, converters touching owned types | Yes; iterator `next` and async run as guest calls with host-mediated suspension | Yes | Yes |
 | Port kinds, control/zone intrinsics, scheduling/reentrancy modes, cycle or availability rules | No; host language release only | No | Host language release only |
+| Event-source provider | Typed payload and host-mediated owned subscription; no arbitrary OS hook or inline handler execution | Same ingress with native trust disclosure | Host input/timer/audio adapters; same event ownership |
 | Connection adapter/service provider | Yes; host transport/credential imports and leases | Yes; registers versioned broker-facing service adapter; may own native connection with trust disclosure | Yes |
-| File/audio backend provider | Non-real-time control/format policy through approved handles; cannot supply native callback | Yes; decoded PCM/control via bounded buffer bridge, never direct host callback | Yes; low-level OS/backend callback |
+| File/audio/input-trigger backend provider | Non-real-time control/format policy through approved handles; cannot supply native callback | Yes; decoded PCM/control via bounded buffer bridge, never direct host callback | Yes; low-level OS/backend callback |
 | Panels, settings, inspectors, value editors | Declarative widget tree, commands/actions, owned state | Same declarative contract | Same schema; host adapter privileged |
 | Translation catalogues and translatable UI text | Data-only FTL resources and namespaced TextRef/MessageRef | Same contract; no executable formatter injection | Same public contract for bundled text |
 | Scene objects/material parameters/behavior | Validated scene command batches/resource handles, P6 | Same bridge | Can implement renderer adapter, app release required |
-| Raw Bevy ECS access, custom render graph/shader pipeline/native widget code | No direct memory/system injection | No direct host ECS; can supply validated assets or own external service | Host-reviewed release feature only |
+| Raw host memory, custom render graph/shader pipeline/native widget code | No direct memory/system injection | No direct host internals; can supply validated assets or own external service | Host-reviewed release feature only |
 | Credential provider | Can contribute broker workflow for its granted namespace; raw secret export absent by default | Trusted worker provider possible, explicitly discloses native authority | OS vault adapters privileged |
 
 This supports extending or changing application behavior through stable contracts, including math node behavior, HTTP/connection policy providers, audio control/mixing provider choice and type editors. A custom renderer/backend that requires new host primitives first requires a compatible host release. "Expandable" does not mean arbitrary internal machine-code replacement.
@@ -46,30 +65,336 @@ Packages contributing text include `localization` and catalogue files per [13 §
 ```json
 {
   "format": "orange.plugin", "format_version": 1,
-  "id": "org.orange.obs", "version": "0.1.0", "publisher": "org.orange",
+  "id": "org.example.device", "version": "0.1.0", "publisher": "org.example",
   "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
   "localization": {"format_version": 1, "format": "fluent", "default_locale": "en", "catalogs": {"en": ["locales/en.ftl"]}, "arguments": {}},
   "execution": {"kind": "wasm-component", "entry": "component.wasm", "world": "orange:expansion/plugin@1.0.0"},
-  "dependencies": [{"id": "org.orange.websocket", "version": "0.1.0"}],
+  "dependencies": [{"id": "org.orange.websocket", "version": "0.1.0", "content_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"}],
   "contributions": {
-    "nodes": ["org.orange.obs/get-scenes", "org.orange.obs/set-scene", "org.orange.obs/on-program-scene-changed"],
-    "panels": ["org.orange.obs/session"],
-    "providers": [{"slot": "connection:org.orange.obs/session@1", "id": "obs-v5"}]
+    "nodes": ["org.example.device/get-status", "org.example.device/set-state", "org.example.device/on-state-changed"],
+    "panels": ["org.example.device/session"],
+    "providers": [{"slot": "connection:org.example.device/session@1", "id": "device-v1"}]
   },
   "permissions": [
-    {"kind": "connection.use", "profiles": ["obs-studio"], "operations": ["websocket.send", "websocket.receive"]},
-    {"kind": "auth.transform", "provider": "org.orange.obs/auth-challenge@1", "profiles": ["obs-studio"]}
+    {"kind": "connection.use", "profiles": ["local-device"], "operations": ["websocket.send", "websocket.receive"]},
+    {"kind": "auth.transform", "provider": "org.orange.auth/bearer@1", "profiles": ["local-device"]}
   ],
-  "integrity": {"algorithm": "sha256", "payload_digest": "2222222222222222222222222222222222222222222222222222222222222222"},
+  "integrity": {"algorithm": "sha256", "content_digest": "2222222222222222222222222222222222222222222222222222222222222222"},
   "license": "MIT"
 }
 ```
 
-Digest is synthetic. This OBS package owns the protocol implementation and has raw WebSocket send/receive authority for the granted profile; those grants do **not** enforce OBS method-level restrictions. It exposes a separate protocol-aware `connection:org.orange.obs/session@1` service which validates allowed method/event operations for downstream expansions. A third-party package granted only `obs.request`/`obs.subscribe` uses that checked service, not the raw socket. The host's namespaced auth transform is described in 05.
+Digest and package are synthetic. This sample device package implements a protocol over the granted WebSocket profile; raw send/receive grants do not enforce protocol operation restrictions. Its separate namespaced service validates allowed operations for other expansions. A consumer granted only typed device operations uses that checked service rather than receiving raw socket authority. Authentication uses host-supported broker operations; any new secret transform requires the explicit policy below and in 05. This sample is not a promised shipped device integration.
 
-Archive digest excludes manifest signature/digest fields under a specified canonicalization rule; WU-03 must finalize this rule and publish cross-language vectors before distributing packages. Publisher names alone are not identity proof. Signed packages verify signatures against explicitly trusted signing identities; local unsigned packages show origin/hash and require explicit trust. Integrity verifies bytes, not benign behavior. Dependency locks record exact version+digest; a package cannot claim another publisher's reserved namespace. Cycles/incompatible major host API fail before activation. Offline local installation is baseline; registry/marketplace is P6.
+Installed packages between sessions (2026-11-11; `orange-host`): a host given a
+package directory keeps each installed archive and the capabilities granted to it, and
+installs them again when it next starts (02). The `orange` command takes the directory
+as `--store <dir>`.
 
-SDK deliverables: versioned host/guest interfaces, JSON schemas, generated Rust guest bindings plus language-neutral wire documentation, conformance test runner, package validator, sample OBS extension, migration sample, signing/bundling instructions and minimal supported toolchain. Guest toolchain may differ from the host if its output meets the pinned component contract; native worker binaries declare target OS/architecture and wire version. Every SDK release publishes a compatibility matrix against Orange host API and a supported deprecation window (proposed two minor host releases, confirmed at API freeze). No semver range alone overrides a graph's exact provider lock.
+Declared permissions (2026-11-12): a manifest's `permissions` section is a list of
+`"log"`, `"files"` and `"http"`: the grants the package asks for. `Host::permissions`
+reads them from an archive without installing it, for an install dialog, and
+`Host::install` refuses a grant the package did not ask for, so a package never holds
+more than it declared and the user approved. A section with anything else is refused;
+no section asks for nothing. The `orange` command gives a package the grants it asks
+for that the command line also gives, and says which it asked for and did not get.
+
+Signing a feed (2026-11-12): `orange feed key <name>` generates an Ed25519 key, keeps
+the private half in the credential store under `<name>` and prints the `update.key`
+value; it never replaces an existing key. `orange feed sign <feed.json> <name>` checks
+that the file is a feed and writes `<feed.json>.sig`. The private key is never printed
+or written to a file by these commands.
+
+Signed update feeds (2026-11-12): a manifest's `update.key`, `ed25519:<64 hex>`, is the
+publisher's Ed25519 public key. The signature is over the exact feed bytes and is
+served as 128 hexadecimal digits at the feed URL followed by `.sig`. An application
+verifies it before it reads the feed (`orange_net::verify_feed`) and refuses the feed
+when the signature is missing or wrong; without a key the feed is trusted on its
+`https://` origin alone. The key travels in the installed package, so the first
+installation is the trust decision and every later feed must match it; changing the
+key needs a release signed with the old one. Archives are not signed separately: the
+signed feed carries each release's content digest.
+
+Granted access for components (2026-11-12; `orange-guest`, `sdk/wit`): the plugin
+world imports two more interfaces, each linked only with its grant, so a component
+that imports one without the grant is not instantiated. `files` (`Grants::files`)
+gives `read`, `write`, `list` and `remove` inside the package's own data directory,
+`<HostOptions::plugin_data_dir>/<package ID>`; a path is relative with `/` between
+plain names, and `..`, absolute and drive forms, device names and links leading out
+of the directory are refused. `http` (`Grants::http`) gives `send(request)` for an
+`https://` URL with the methods GET, HEAD, POST, PUT, PATCH and DELETE, carried out by
+the application's `HostOptions::plugin_http` client (`HttpClient`); the `orange`
+command's client follows no redirects. A read file and a response body are limited to
+the instance's transfer limit. Errors reach the guest as fixed words (`not-found`,
+`invalid-path`, `too-large`, `quota-exceeded`, `unavailable`, `invalid-request`,
+`not-allowed`, `failed`), never as
+operating-system or network text. Grants are given at installation
+(`--grant-files`, `--grant-http`) and stored with the package. An application can
+bound both (2026-11-13): `HostOptions::plugin_data_quota` is the most bytes each
+package's data directory may hold (a write that would pass it is `quota-exceeded`; a
+replaced file gives its bytes back) and `HostOptions::plugin_http_hosts` lists the
+hosts requests may go to, where `.example.org` allows every host under that domain
+(anything else is `not-allowed`); `orange` takes `--plugin-quota-mb` and
+`--plugin-host`. Without them there is no limit. Limits: the quota counts at most
+10,000 files. Pure evaluation and component initialization cannot use file or HTTP
+imports. Graph bindings expose host I/O only to Async nodes. An in-progress
+request occupies a worker and ends at its
+client's timeout; there are no sockets, clocks, random numbers, environment or
+processes for components.
+
+One engine also bounds concurrent stores, aggregate linear-memory bytes and
+aggregate table elements through `GuestLimits`. The defaults are 256 stores,
+512 MiB of linear memory and 262,144 elements. Dropping a store returns its
+capacity. Plugin calls check the combined input budget before copying values
+into the component and the output budget before returning them to a graph.
+
+Local HTTP, response headers and heavy compute (2026-11-24; `orange-guest`, `sdk/wit`,
+`orange-host`): a manifest's `permissions` may also list `"http-local"` and
+`"compute"`. `http-local` (`Grants::http_local`) links the same `http` import and
+reaches this computer and the local network over `http://` or `https://`:
+`localhost` and names under it, `.local` names, and address literals that are
+unspecified, loopback, private (10/8, 172.16/12, 192.168/16), shared (100.64/10),
+link-local or broadcast IPv4, or unspecified, loopback, unique-local `fc00::/7`,
+link-local or site-local IPv6, or IPv6 forms embedding such an IPv4 address
+(`orange_guest::is_local`, `is_local_address`). `http` alone reaches only public
+`https://` addresses: never a local name or literal, whatever the host list says, and
+the host list never limits `http-local`. The engine passes the client the request's
+`Reach` (2026-11-26), and the client connects only to resolved addresses that reach
+allows (`Reach::allows`), so a public name that resolves into the local network does
+not carry an `http` request there, and a local name does not carry an `http-local`
+request out. A request the grants do not reach is `not-allowed`; a scheme other than
+HTTP(S) or a malformed address is `invalid-request`; an address refused after
+resolving is `failed`. The `http.response` record carries `headers` (in the order
+received) before `body`; headers and body together must fit the transfer limit. An
+application's client must not follow redirects, or must check each new address the
+same way; `orange_net::fetch_parts` follows none, filters resolved addresses with the
+function it is given and connects directly, without a proxy from the environment.
+`compute` (`Grants::compute`) gives each call of that package's instances
+`HEAVY_COMPUTE_FACTOR` (16) times the engine's per-call fuel, transfer and input
+limits; memory and the engine's aggregate limits are unchanged. The `orange` command
+takes `--grant-http-local` and `--grant-compute`.
+
+Per-package access (2026-11-24; `orange-host`): what a package may reach is a
+`PackageAccess`: its `grants`, its own `http_hosts` and its own `data_quota`. A
+package's own list or quota replaces `HostOptions::plugin_http_hosts` or
+`HostOptions::plugin_data_quota` for it; without one the application's applies.
+`Host::install_with` installs with an access, `Host::access` reads it, and
+`Host::set_access` changes it later: a grant the manifest does not ask for is refused,
+and a revoked grant is not linked into instances made afterwards, so flows and
+previews opened afterwards cannot use it while running flows keep the instances they
+started with. The access is saved in `installed.json` beside the archive (`log`,
+`files`, `http`, `http-local`, `compute`, `http-hosts`, `data-quota`); an index
+written before these fields reads them as not granted and without own limits.
+`Host::requested_grants` returns what an installed package's manifest asks for and
+`Host::archive_key` names an archive without installing it.
+
+Plugin world 1.1 (2026-11-24; `sdk/wit`, `orange-guest`, `orange-sdk`, `orange-net`,
+`orange-host`): the package is `orange:expansion@1.1.0` and `host.api-version` answers
+(1, 1). It adds two imports and changes nothing 1.0 has, so components built against
+1.0 instantiate unchanged: Wasmtime 50 resolves component imports and exports by semver
+compatibility, and the 1.0 test components and `probe.wasm` run against the 1.1 host.
+`settings.get` (always linked) returns the JSON text of the node's saved `config`;
+package nodes may now have settings, which validation checks against their schema.
+Settings name declarations and never hold secrets. `websocket.send-text` and
+`send-binary` (the `"websocket"` permission, `Grants::websocket`, `--grant-websocket`)
+queue a message on the connection the node's settings name, for async nodes only. The
+host opens that connection like its own nodes' connections: the declared settings,
+credentials from the credential store after the graph's approval, the
+`ConnectionAuthorizer` policy for the graph and for each send, reconnection and the
+bounded outgoing queue all stay with the host, which hands the session to the guest for
+the one call (`Session::send_message`, `orange_sdk::Message`). The guest never sees the
+address or a token. A node that names no open connection gets `unavailable`, a full
+queue `quota-exceeded`, an oversized message `too-large`. Values keep their 1.0 form:
+interface types cannot be recursive, so records, enums, lists and maps cross as
+`orange.value.v1` literals the host checks against the registered type in both
+directions; changing the exported `value` variant would break every 1.0 component.
+Each node binding owns its instance, so a guest keeps per-instance state in its own
+memory between effect calls (`effects_keep_instance_state_and_report_their_own_errors`).
+Package triggers (2026-11-24): a package targeting the `plugin-events` world (`include
+plugin; export events`) contributes entry nodes. Its manifest lists them like other
+nodes, each a definition of kind `entry` that names a connection adapter and has at most
+one data output, `payload`, of a concrete type. Components of the `plugin` world, and
+every 1.0 component, simply contribute no trigger. The host starts a package trigger the
+way it starts its own: on the session of the connection the node's settings name,
+opened with the stored credentials after the graph's approval and allowed by the
+`ConnectionAuthorizer` (`ServiceOperation::Entry`). It is started only when the user
+granted the package `websocket`; without the grant the flow does not open. Each trigger
+node gets its own instance with its settings and no file, network or connection access,
+and the host registers it with `Session::listen_messages`. For each text or binary
+message, the host calls `events.receive` on that instance under the instance's fuel and
+input limits (a message over the input limit is refused before the guest sees it). The
+answer fires the node with its payload through the entry's bounded mailbox (a full
+mailbox drops that message, as for the host's own triggers), lets the message pass, or
+reports a fault on the node. A trapped instance stops listening. Closing or stopping the
+flow drops the listener, and the host closes the socket once nothing uses it. Messages
+are decided on the connection's own thread, so a slow package slows only its own
+connection, within its fuel. `Session::listen_messages` is part of the native ABI
+revision 10 (`orange_net`'s WebSocket session implements it).
+
+Full-access native plugins in the desktop (2026-11-24; `orange-desktop`): the desktop
+application loads `orange-native` libraries from `plugins` beside its preferences,
+only after the person allowed full access to that exact file. The approval keeps the
+file name and SHA-256 in `plugins/full-access.json`; a changed file asks again. The
+dialog states the risk in plain words, including that a native plugin can read the
+operating system's credential store as the person, so the vault's protection does not
+apply to it. A library is never loaded to describe it. The desktop also gives installed
+Wasm packages their data folders (`plugin-data` beside its preferences) and its network
+client (`orange_net::fetch_response`, no redirects), so the `files`, `http` and
+`http-local` grants reach something there. Native libraries still load at
+start (ADR-03 amendment 2026-11-11), so an approval or revocation applies from the next
+start. Graphs, exports and bundles still never hold secrets.
+
+
+Enabling and disabling (2026-11-12; `orange-host`): every package of a host, whatever
+its tier, can be switched off by ID and on again without removing it; the switch is
+saved beside the stored archives and applies from the next start (02, "Package
+switches"). The plugin interface revision in `orange_sdk::ABI` is 2 since
+`ServicePackage` carries a display name and description, 3 since it carries an
+update source, 4 (2026-11-15) since `ConnectionAdapter` has `choices` and
+`Presentation` carries `connection_adapter`, and 5 (2026-11-15) since
+`ConnectionAdapter` has `fields`, `probes` and `probe`, `SettingChoices` has `labels`
+and `Presentation` carries `then_label` and `paths`.
+
+Update feeds and removal (2026-11-11; `orange-packages`, `orange-host`): the document
+at a manifest's `update.feed` URL is
+`{"format": "orange.update-feed", "format_version": 1, "releases": [{"id", "version",
+"channel", "archive", "content_digest"}]}`. `channel` defaults to `stable`, `archive`
+is an `https://` URL and `content_digest` is `sha256:<64 hex>`. Unknown fields, more
+than 4,096 releases or more than 1 MiB refuse the feed, and one invalid release refuses
+all of it. `UpdateFeed::update_for(manifest)` returns the release of the installed
+package's ID and channel with the highest version above the installed one, comparing
+by Semantic Versioning precedence. The package crate only reads bytes; the application
+fetches them. `Host::install_release` refuses an archive whose content digest is not
+the announced one. A feed is not signed: its authority is the `https://` origin the
+installed package named, and packages are installed at the user's own risk. The
+`orange` command has `packages`, `remove <id> <version>` and `updates [--apply]`.
+`Host::uninstall` removes a version from the registry and from the package directory;
+it is refused while another installed package depends on it.
+
+Session start (2026-11-11): the host calls `Session::start` on every connection of a
+flow once all of that flow's triggers are attached, at opening and after a live edit;
+a shared session is called once per flow. A session that receives must not begin
+before the first call. The WebSocket session opens its socket only then. Before this
+it connected as soon as the document was prepared, and a server's first message could
+arrive before any trigger existed and be dropped.
+
+Native plugin libraries (2026-11-11; `orange-sdk`, `orange-native`): a plugin crate
+with `crate-type = ["cdylib"]` writes `orange_sdk::export_plugin!(package)`, where
+`package` is a function returning its `ServicePackage`. The macro exports
+`orange_plugin_abi`, returning `orange_sdk::ABI` (the text `orange-plugin <revision> sdk
+<version> rustc <release> <commit> <target>`), and `orange_plugin_package`, returning
+the boxed package. `orange_native::load(path)` opens the library, reads the ABI text
+before calling anything else, refuses a different text (`LoadError::Abi`), a library
+without the symbols (`NotAPlugin`) or a file the system cannot load (`Open`), and
+otherwise returns the package; `load_directory` does this for every library file of a
+directory in name order and reports each result separately. The application passes
+the packages to `Host::with_services`, so a loaded plugin's nodes, triggers and
+connection kinds behave exactly like built-in ones and are listed by `Host::nodes` and
+`Host::packages`. The `orange` command takes `--plugins <dir>`.
+`app/crates/dev/orange-plugin-example` is a complete plugin with one node. Limits: the ABI
+text cannot detect different dependency versions or features, so a plugin must be
+built with the application's lockfile; a panic across an exported C ABI or a process
+abort ends the process. The host contains ordinary Rust unwinds at compilation,
+preview, service invocation and the graph turn boundary. A kernel panic during a
+turn interrupts the run and starts cleanup. A library is never unloaded, is not
+loaded while the application runs, and cannot be
+removed with `Host::uninstall`; there is no manifest or grant for this tier.
+
+Types from a native plugin (2026-11-13 first part): `ServicePackage::record(name,
+fields)` and `enumeration(name, variants)` declare `<package id>/<name>@1`; `declare`
+takes a `TypeDecl` in full, for optional fields. The host registers the types of the
+active packages when it starts and refuses to start with a declaration that is not
+valid (an unknown field type, a name that is not valid, the same name twice). Ports of
+the package's nodes can then use the type, values travel as `Value::Record` with the
+fields in declared order, and the base record and enum nodes work on them.
+
+Types from an installed package (2026-11-13): each archive file `types/<name>.json`
+defines `<package id>/<name>@1`, as
+`{"kind": "record", "fields": [{"id": "x", "type": "core/f64@1", "optional": false}]}`
+or `{"kind": "enum", "variants": [{"id": "left"}, {"id": "at", "payload": "<type>"}]}`.
+The files are covered by the archive's content digest like every other file. An
+install publishes the types first, as a registry generation of its own
+(`PackageStore::publish_types` on `TypeRegistry::extended`), then the nodes; if the
+nodes are refused the type generation is rolled back, so a refused package leaves
+nothing. A type already registered with exactly the same schema is kept, which is how
+a newer version or a restart installs again; a different schema under the same name is
+refused. Types stay registered after their package is removed, like definitions, so
+values and documents that name them still decode. Not provided: codecs other than
+the structural one, schema versions beyond `@1`, and an editor description of a type.
+
+Streams from a native plugin (2026-11-13 last part): `ServicePackage::stream`
+adds a node whose one data output is `core/stream@1<T>`, implemented as
+`ServiceStream::open(call) -> Box<dyn Items>`; any iterator of
+`Result<Value, KernelFault>` is `Items`. `open` runs on a worker and the node
+continues once the stream is open. The host gives the run a pull producer: each
+demand of the graph (`next-item`, `for-each-item`, `collect`, a `tee` branch) runs one
+`next` on a worker and hands the item to the run on its own thread, so the producer is
+never ahead of the graph by more than one item and may block. Closing the stream, or
+stopping the flow, drops the items on a worker. A fault from `open` takes the node's
+failed route; a fault from `next` ends the stream with it. Not provided: streams from
+installed components, and a node with a stream beside other outputs.
+
+Updates for native plugin libraries (2026-11-12): `ServicePackage::update(feed, key)`
+names an update feed and an optional signing key. A feed release with `"target"` (a
+compiler target such as `x86_64-pc-windows-msvc`) announces a library for that target;
+its `content_digest` is the SHA-256 of the library file. `UpdateFeed::newer(current,
+channel, target)` selects such releases for `orange_sdk::TARGET` and never offers a
+library to an installed archive or the reverse. `orange updates --apply` downloads the
+library, compares the digest and calls `orange_native::replace`, which writes it as
+`<id>-<version>` with the library extension beside the loaded file and renames the
+loaded file by appending `.replaced`; the new library loads at the next start, where
+the ABI check applies as for any library. A package compiled into the application is
+reported, not replaced.
+
+Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
+`orange-sdk` and returns a `ServicePackage` holding its definition files, a
+`ServiceNode` per asynchronous node, a `ServiceSource` per trigger and a
+`ConnectionAdapter` per connection kind. The application passes it to
+`Host::with_services`. `Definition::uses(adapter)` marks a node as using a connection
+of that kind, so an editor binds a dropped node to one (2026-11-15);
+`Definition::input_default` gives an input a literal used when nothing is written or
+wired; `ConnectionAdapter::choices` lists the values a setting can take on this
+machine (such as audio devices, with `labels` naming values a person cannot read), and
+is called only when an editor asks. `ConnectionAdapter::fields` lists number settings
+an editor shows as fields, and `probe` gives a live reading (`Probe::read`, never
+waiting) taken apart from every flow while a person sets a connection up, stopped by
+dropping it (2026-11-15). `Definition::then_label` names a node's way on and
+`Definition::path_input` marks a text input that holds a file or folder. `Definition::port_description` gives a port one sentence of help, under the catalogue message `<node key>-port-<port key>` (2026-11-26). This tier is compiled into the application or loaded from a
+library at start (above): it is trusted, not sandboxed and not installed at run time. A plugin that must be installed into a running
+application is a Wasm component or a graph package.
+
+Native sources can publish or revoke a computed output using `Emitter::publish`
+and fire a named outcome using `Emitter::emit_on`. The resolved port includes
+the stable counter for a variadic instance. The host binds these callbacks to
+the running provider guard and its checked ports. The native ABI identifier
+is `orange-plugin 9` for the changed emitter layout. See [11](11-graph-language.md).
+It is `orange-plugin 10` (2026-11-24) since `Session` has `send_message`, and
+`orange-plugin 11` (2026-11-25) since `Presentation` carries `controls` and
+`hint_problems` (ADR-33). `Definition::setting_control`, `input_control` and `layout`
+write a definition's control hints with the `Control` and `Layout` builders. Card and
+Properties controls use the same hints, including slider guides, dial faces and
+localized dial captions. `orange check` warns about dropped hints.
+
+Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
+sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`
+(≤ 16), `homepage` and `repository` (`https://` URLs) and `keywords` (≤ 16 distinct
+lowercase `[a-z0-9-]` terms). Text has no control characters and no surrounding space;
+`name` and `description` are fallbacks for a host without the package's localization
+catalogue (13 §3). `update` is `{"feed": "https://…", "channel": "stable"}`: where the
+publisher announces versions of this package and which channel this build belongs to
+(default `stable`). A feed URL must be `https://`, at most 2,048 printable ASCII bytes,
+with a host and no user information. Both sections are covered by the content digest
+like the rest of the manifest. They are descriptive only: installation never contacts
+a URL. The feed format and the update check are described above; feed signatures are
+not defined. A bad field is `packages/manifest-metadata` and names the field.
+
+Manifest schema (K01, 2026-11-06; `orange-packages`): the manifest is strict JSON. Duplicate object keys and numbers other than integers within ±(2^53 − 1) are rejected at any depth, including uninterpreted sections, because readers disagree on them. `execution` is absent for a data-only package, `{"kind": "wasm-component", "entry", "world"}` with `world` = `orange:expansion/<name>@<x.y.z>`, or `{"kind": "worker", "wire_version": 1, "targets": [{"os": "windows"|"macos"|"linux", "arch": "x86_64"|"aarch64", "entry"}]}` with 1–16 distinct targets; any other kind, including native libraries, is refused. `contributions.panels` lists up to 256 distinct panel IDs `<package>/<[a-z][a-z0-9-]*>` in the package's own namespace; the declarative widget descriptor format is later UI work (ADR-08), so panels are identities only. `localization` follows 13 §3 exactly: format version 1, `fluent`, default locale `en` with an `en` catalogue, BCP 47-shaped tags unique ignoring case, non-empty lists of distinct `.ftl` files, `[a-z][a-z0-9-]*` message IDs and `[a-z][a-z0-9_]*` argument names typed from the 13 §3 vocabulary, with bounded counts. Every file reference is an archive path (below). Dependency locks are `{"id", "version", "content_digest": "sha256:<64 hex>"}`; installation refuses an active dependency whose content digest differs from the lock. `integrity.content_digest` (formerly `payload_digest`; the unreleased name has no reader) is the package's own content digest. `permissions` stays uninterpreted until grants (K03). Errors carry stable `packages/manifest-*` keys and redacted text.
+
+Canonical archive (K01, 2026-11-06; `orange-packages`): a `.orangeplug` file is the header `\x89OPKG\r\n\x1a`, layout version `u16 = 1`, flags `u16 = 0` and entry count `u32`, then per entry `path_len u16 | path | kind u8 = 0 | mode u8 = 0 | size u64 | bytes`, little-endian. `manifest.json` is the first entry; the others follow in strictly ascending path byte order and nothing follows the last. There is no compression: deflate has many valid encodings, so a canonical byte form would need a pinned encoder, and without it unpacked bytes never exceed archive bytes. Archive paths are relative ASCII `[A-Za-z0-9._-]` components separated by `/`, at most 240 bytes and 16 components, without `.`/`..`, empty components, trailing dots or Windows device names; two paths equal ignoring ASCII case, or a file that is also another entry's directory, are rejected. Kinds other than a regular file (directories, symbolic or hard links) and nonzero modes are rejected. The content digest is SHA-256 over `"orange.plugin/content/v1\0" | u64 len(M) | M | u32 n | n × (u16 len(path) | path | u64 size | SHA-256(bytes))`, where `M` is the RFC 8785 canonical JSON of the manifest without its `integrity` member and the entries are the archive's other files in order; it therefore covers every metadata byte, including dependency locks. `read_archive` streams entries through an `ArchiveSink`, checks every quota (`ArchiveLimits`: archive bytes, entries, per-file and total file bytes; defaults 256 MiB, 4,096, 128 MiB and 256 MiB, unmeasured) against declared sizes before reading an entry's bytes, never allocates by a declared size, requires each manifest-referenced file under its exact path, requires a component entry to start with the WebAssembly magic, refuses PE/ELF/Mach-O bytes outside declared worker targets, and finally compares the content digest; any failure aborts the sink. `DirectorySink` stages into a new directory under a plain (not linked or reparse-point) parent, creates every directory itself, opens files with `create_new`, flushes each, and deletes the directory on abort. `VerifiedArchive::require_digest` checks a document or dependency lock, and `into_contents` is the archive route to `PackageContents`. Cross-language vectors: `app/crates/platform/orange-packages/tests/fixtures/archive-v1.json`, reproduced by the Rust reader and by the independent Node encoder `tools/package-archive.mjs`. Definition and specialization file locations inside the archive, signatures and actual code loading remain open.
+
+The content digest excludes only the manifest's own `integrity.content_digest` value under the canonical rule below, which K01 fixes together with cross-language vectors; signatures, when added, are detached over that digest. Publisher names alone are not identity proof. Signed packages verify signatures against explicitly trusted signing identities; local unsigned packages show origin/hash and require explicit trust. Integrity verifies bytes, not benign behavior. Dependency locks record exact version+digest; a package cannot claim another publisher's reserved namespace. Cycles/incompatible major host API fail before activation. Offline local installation is baseline; registry/marketplace is P6.
+
+SDK deliverables: versioned host/guest interfaces, JSON schemas, generated Rust guest bindings plus language-neutral wire documentation, conformance test runner, package validator, synthetic node/event-source/editor extension, migration sample, signing/bundling instructions and minimal supported toolchain. Guest toolchain may differ from the host if its output meets the pinned component contract; native worker binaries declare target OS/architecture and wire version. Every SDK release publishes a compatibility matrix against Orange host API and a supported deprecation window (proposed two minor host releases, confirmed at API freeze). No semver range alone overrides a graph's exact provider lock.
 
 ## Installation, activation and override
 
@@ -96,7 +421,28 @@ Replaceable slots include `node:<definition>@<contract>`, `convert:<from>-><to>`
 
 When providers compete: no automatic last-installed-wins. User selects workspace/app defaults for **new bindings**; existing graph locks retain provider ID, package version/digest and contract. Explicit rebind previews affected nodes/types/config/resource changes, runs migration on a copy and validates the graph before commit. Missing selected provider blocks affected execution and preserves placeholders. Uninstall may propose a compatible bundled fallback, but executing it requires explicit rebind; there is no silent substitution. Diagnostics expose selected provider/registry generation and override provenance.
 
+Converter pair slots may contain distinct semantic entry contracts. An override implements the same converter ID/contract, preserving its endpoints, class, policies, errors and loss output. New-binding provider defaults are scoped to that entry contract; implementing an existing entry does not grant authority to register new foreign-to-foreign conversion semantics. Multiple providers for one entry do not increase the semantic conversion count used for auto-insertion ([11 §6](11-graph-language.md)).
+
+## Definition evolution
+
+A package version may stop shipping a definition and ship another in its place: a renamed node, renamed ports or config fields, or a new definition version whose contract changed. The new definition file lists what it replaces (`replaces`, [12 §6.4](12-graph-data-structures.md)). Opening a document rebuilds each node of a replaced definition that the host no longer has as a node of its replacement, keeping its values, wires and place, and reports the nodes it rebuilt. A replaced definition that is still installed is never moved, and two packages that disagree about one replacement are refused, so the result does not depend on install order. This is a load-time rewrite of the document, not a provider swap: running flows and locks of installed versions are untouched until the document is opened again.
+
+Built-in packages (the base nodes, clock, files, network and audio) carry their own version, `orange_model::catalog::BUILT_IN_PACKAGE_VERSION`, not the application's. Graphs lock it exactly, so releasing the application leaves saved graphs resolving. It changes only when a built-in package changes in a way locks must notice, together with the replacements above. Its content digest is derived from the package ID and that version, so a locked pair stays valid across builds.
+
+Built-in service packages declare replacements with `Definition::replaces`; archive definitions write the field directly. Config value upgrades beyond renamed fields (`config_version`) are not covered yet.
+
 ## Hot update/removal semantics
+
+The durable package store has one cooperating writer per directory. `FileJournal`
+acquires a nonblocking exclusive OS lock on the stable sibling
+`packages.journal.lock` before reading recovery state or removing stale compaction
+files. It retains that ownership through writes, compaction and failed reopen paths
+until the journal is dropped. Another owner refuses with a redacted journal error.
+Retirement explicitly unlocks after closing the append handle, so an inherited
+duplicate descriptor cannot prolong the writer's ownership beyond that retirement.
+The lock file remains on disk; OS ownership releases on process exit, so its presence
+is not a stale-lock indicator. Hosts must keep the store directory under their control.
+The record format remains 2 with no historical reader.
 
 Hot addition immediately publishes new contributions. **Hot replacement of running code is separate:** existing runs retain old snapshots/component instances; new graphs or explicitly rebound graphs select the new package version. A graph edit normally prepares a new run; live swapping an executing continuation is not supported in 1.0. Existing pending external side effects are never replayed to imitate migration.
 
@@ -108,4 +454,200 @@ Rollback restores previous registry generation/default selections, reinstates ol
 
 Resource limits (proposals for WU-03): 64 MiB component linear memory default, finite call fuel/deadline, max 1 MiB ordinary IPC frame, bounded host handles/tasks per grant. Streaming uses chunk handles rather than increasing every frame limit. Quotas are adjustable visible policy, tested with malformed/hostile packages. Guest trap faults its activation; repeated traps quarantine the instance/package and preserve the editor. Native host out-of-memory/crash cannot be promised recoverable by catching an ordinary Rust error.
 
-Requirements: FR-09, FR-22, FR-34–38, FR-41–42, FR-44–46. Validation V03/V09 plus NFR-01/06/09 in [06](06-quality-and-validation.md). ADR-03/06/07/16 in [08](08-decisions.md).
+Implementation status (2026-11-03; `orange-packages`): `PackageManifest::from_json` validates the format 1 fields above (exact version, sha256 payload digest, publisher-owned ID, own-namespace nodes, host API minor range, exact dependencies, typed `node:`/`convert:`/`connection:`/`audio:`/`editor:` slots) and rejects unknown fields; `execution`, `permissions`, `localization` and `panels` are retained uninterpreted (superseded for all but `permissions` by the K01 manifest schema above). `PackageStore` walks Discovered → Staged → Validated → Granted → Activating → Active, or Quarantined with the typed failure, and publishes each install, update, removal, revocation or rollback as a new `RegistrySnapshot` built from the current one; a failed step publishes nothing. Update keeps the previous version published beside the new one, so existing locks keep resolving, and moves new-binding defaults to the same provider ID; retiring the old version is a separate removal. Removal leaves a tombstone, keeps definitions as passive metadata and is refused while an active package depends on it; locked nodes report provider-unavailable. A published version keeps its digest for good: rollback leaves a version it un-installs as a Removed tombstone, so the same version cannot return with other bytes. Revocation applies to the digest: every version published with it is deactivated, the digest is blocked and rollback history is discarded. A `Journal` trait (in-memory implementation only) records steps; each commit record checkpoints the active set, published digests and revoked digests. `Recovery` reports that state plus abandoned half-staged versions, and `PackageStore::restore` rebuilds a store from it and the staged contents of the active versions. Not implemented: archives, grants, code instantiation, draining/barriers and non-node slot publication. Explicit rebind is `orange_model::rebind` ([12 §8](12-graph-data-structures.md)).
+
+Recovery and retention update (2026-11-05; `orange-packages`): `PackageStore::restore` stages the whole candidate against a private in-memory journal in dependency order, then makes exactly one atomic `Committed` append to the host journal. A failed append writes nothing and returns `TransactionError::Journal`, so the host may retry; a crash leaves either the old or the new complete checkpoint, never a prefix. Hosts must append atomically. `Journal::compact(checkpoint)` replaces earlier entries with one complete `Committed`; its default is a no-op and an implementation must be atomic (all earlier entries or exactly the checkpoint). Compaction drops per-step transitions, so a half-staged version is no longer reported abandoned: compact when no transaction is in flight. `PackageStore::compact_journal` writes the current state through it. `RetentionPolicy { max_rollback_generations }` (default 16, an unmeasured starting point; `0` disables rollback) bounds in-memory rollback history. Rollback beyond it is `RollbackWindowExceeded`; retirement releases only the store's reference, so a snapshot a plan still holds stays usable. Published digests and revocations are identity state and survive retirement. Re-selecting the current default is a no-op and creates no generation. Defaults are checkpointed ([12 §8](12-graph-data-structures.md)); package error text is redacted ([13 §8](13-internationalization.md)).
+
+Default-absence recovery (P01, 2026-11-05): a checkpoint records an exact selected provider **or explicit absence** for each controlled definition ([12 §8](12-graph-data-structures.md)). Removing or revoking a selected package provider therefore remains unselected after restart, even when the shipped base registry contains another default. Rollback restores its prior selection state and compaction retains explicit clears; unrelated base definitions keep their choices. This is new-binding policy only: existing graph locks and running provider snapshots never change. The current pre-beta checkpoint representation replaces its earlier unreleased form without compatibility readers or a migration layer. Durable journal implementations, executable instances and draining still require their own evidence.
+Durable journal (K01, corrected 2026-11-09; `orange-packages`): `FileJournal` implements `Journal` over `packages.journal` in a host-chosen directory. Current header is `OJOURNAL | version u16 = 2`; each record is `length u32 | CRC-32(length) u32 | CRC-32(payload) u32 | JSON`, little-endian. Protecting the length prevents accidental header corruption from hiding later identity/revocation commits as an apparent short tail. `append` writes and flushes a whole record; failure truncates its partial bytes, and failure of that cleanup closes the journal to further appends. `open` truncates only a physically short final header or payload and reports dropped bytes. A complete header/payload checksum mismatch, over-limit length or unsupported shape refuses open and preserves the log. CRC detects accidental corruption, not malicious rewriting. Recovery includes every complete record, including a durable commit whose acknowledgement was not observed before a crash; an interrupted install recovers the previous or new complete committed set and reports half-staged versions. `compact` writes and flushes one checkpoint to `packages.journal.tmp`, then renames it over the log; open deletes a stale temporary file. Format 2 replaces unreleased format 1 without a historical reader; other versions are refused without truncation. Error reasons contain operation/I/O kind only. Windows rename durability relies on NTFS metadata journaling because std provides no directory flush; Linux/macOS attempt a directory flush. Power-loss/per-filesystem qualification remains open.
+
+SDK surface (2026-11-03): `HOST_API_VERSION` (1.0) is the host API this foundation build offers; hosts pass it to `PackageStore::new`, which refuses a manifest whose range excludes it. Definition files decode with `NodeDefinition::from_json` (default 1 MiB, 1,024 ports) or `from_json_with_limits` ([12 §4](12-graph-data-structures.md)). `PackageContents::with_specializations(provider, definition, supported)` lists the argument sets a generic provider supports ([11 §5.5](11-graph-language.md)); the pair must be a declared `node:` contribution (`TransactionError::UndeclaredSpecialization` otherwise), and the list is published on that exact provider, so other instantiations report `E-NO-SPECIALIZATION`. Without a list the provider delegates to constraints. Which archive file carries the list is not specified yet; the host supplies it with the staged contents.
+
+Validation V03/V09 in [10](10-development.md). ADR-03/06/07/16 in [08](08-decisions.md).
+
+The N1a orange-bundled scalar implementation uses the shipped native exception above. Ordinary org.orange.math definitions remain replaceable through provider contracts, but its native resolver binds only the exact selected native package/version/digest and supported scalar specialization. Selecting a guest/worker provider never falls back to native math when that provider cannot be resolved. The scalar implementation adds no installer, hot-loading mechanism or permission bypass for downloaded packages.
+
+Package interface, first world (K02b, 2026-11-08; `sdk/wit/orange-expansion.wit`):
+WIT package `orange:expansion@1.0.0`, world `plugin`. It imports `host` (always
+linked: `api-version -> (u16, u16)`, currently (1, 0)) and `log` (`write(message)`,
+linked only with the `log` grant), and exports `nodes.evaluate(definition, inputs) ->
+result<list<value>, node-error>`. A `value` is one Orange literal in the
+`orange.value.v1` codec: the JSON text of `{"type", "value"}` (or `"bits"` for floats),
+so literal-capable types, aggregates included, cross with exact float bits, map order and
+None. `node-error` carries a namespaced `code` and `message-key` only. The host
+(`orange_guest::GuestPlugin`) encodes inputs with their declared types, checks the
+output count, each output's exact type and both error identifiers, and reports any
+breach as `GuestError::OutputContract` without poisoning the instance; a value that
+does not have its declared type never reaches the guest (`InputContract`). A
+guest-reported node error is data (`GuestNodeError`), not a trap. Each instance links
+only granted interfaces, so a component importing `log` without the grant fails to
+instantiate. Log entries are bounded (64 per instance, 1 KiB each). Guests are built
+with the Rust toolchain in `sdk/`: `wasm32-unknown-unknown`, `wit-bindgen` 0.63.0 for
+guest bindings and `orange-componentize` (`wit-component` 0.262.0) to produce the
+component; wit-component keeps only the imports a guest actually uses. Resources,
+streams, async, events, panels and service imports are later interface versions.
+
+Binary values and effects (2026-11-10, replacing the first unreleased world in place):
+`value` is a variant. `literal(string)` is the `orange.value.v1` text above and can
+carry any value. `bytes(list<u8>)` carries `core/bytes@1`, and `i32-list`, `i64-list`,
+`u32-list`, `u64-list`, `f32-list` and `f64-list` carry `core/list@1<T>` of that
+scalar, so audio blocks and pixel data cross without text conversion. The host sends
+these types in their binary case whenever it holds them densely and as a literal
+otherwise; a guest may return either form. A binary case is accepted only for exactly
+its own type; any other use is `OutputContract`. The world also exports
+`effects.execute(definition, inputs) -> result<list<value>, node-error>` for Action
+and Async nodes. Unlike `evaluate` it is never folded, cached or repeated, so a guest
+may keep state in its instance. `GuestPlugin::execute` shares the value, error, fuel,
+transfer and cancellation contract of `evaluate`.
+
+Graph-implemented package nodes (2026-11-10; `orange-host`): a node made in the editor
+is published without code. Its manifest provider has the reserved ID `graph`, and the
+archive carries `graphs/<name>.json` beside `nodes/<name>.json`:
+`{"format": "orange.graph-node", "format_version": 1, "function": <function
+declaration, 11 §14>, "variables": [<local variable declarations>]}`. The package needs
+no `execution` section, and one package may mix graph and component providers. The
+function's kind and data ports must equal the node definition's; the body may use core
+nodes and any package nodes installed before it, and may declare local variables only,
+so each call has its own state and nothing leaks into the calling document.
+
+Installation decodes every graph, then validates them together, linked, against the
+registry including the package's own definitions; a contract mismatch is `Graph` and a
+failing body is `GraphInvalid` with its diagnostics, and neither is published. A
+document uses such a node like any other, locked to its exact provider, and the saved
+document never contains the body. When the host checks or opens a document it links an
+in-memory copy: each graph-implemented node becomes a `core/call` of the package's
+function with the same node ID, literals and edges, and the function and its local
+variables are added once. From there validation, compilation and execution are those
+of graph functions; there is no boundary to cross and no per-call copying.
+
+Bodies built on other packages, and connections (2026-11-11): a graph file may carry
+`"signatures"` and `"package_lock"`, copied from the document its body was authored in.
+Linking adds them where the calling document lacks them, which is what lets a body use
+another package's nodes; without them such a body does not validate. A node whose
+definition sets `"connection": true` is implemented by a graph file with
+`"connection": "<id>"`: a stand-in ID that the body's own nodes name in their
+`connection` field. The two must agree or the package is refused. Each use of the node
+names a real connection of its document, and linking gives each distinct connection its
+own copy of the function, with the stand-in replaced and with function, node and edge
+IDs derived from the original ID and the connection, so one diagram can use the node on
+several connections. At installation the body is validated against a stand-in
+declaration. When the host validates a document it states that package nodes inside
+function bodies write no graph variable, which holds for every execution tier because
+package code has no access to a run's variables.
+
+Trigger nodes made as graphs (2026-11-11): a node of kind `entry` with a `payload`
+output is implemented by a graph file with a `"trigger"` object instead of a function:
+`{"event": "<stand-in id>", "nodes": [...], "edges": [...]}`. The nodes are root nodes
+that start at some other entry (a timer, a manual entry, another package's trigger)
+and end in `core/emit` on the stand-in event. Linking gives each use of the node its
+own copy of the fragment and its own run-scope event, with node, edge and event IDs
+derived from the using node, replaces the stand-in connection with the one the use
+names, and turns the using node into `core/on-event` of that event; it keeps its ID,
+its `then` outcome and its `payload` output, so its edges stay. A fragment is
+validated at installation against stand-in declarations. Graph files are checked on a
+throwaway store before the package is published, because a published version is
+permanent: a refused package can be corrected and installed under the same version.
+A package with declared dependencies is still checked after publication and rolled
+back, and then keeps its version's digest. A trigger without a payload
+cannot be made this way, since an event carries one.
+
+Limits: function and body node IDs are the publisher's, so two versions of
+one graph package cannot be linked into the same document; trace events name body
+nodes that the calling document does not contain.
+
+`orange_host::pack` builds an archive from a manifest and files, computing the content
+digest; `orange pack <dir> <out.orangeplug>` does the same from a directory.
+
+Definition files and installation (2026-11-10; `orange-host`): each node a manifest
+contributes, `<package>/<name>`, is described by the archive file `nodes/<name>.json`
+in the `NodeDefinition` format. `Host::install` reads and digest-checks those files,
+refuses a file that defines another ID, prepares the component for each provider ID
+before publishing anything, then installs through `PackageStore`. A package provider
+becomes the choice for new nodes of a definition only when no provider is chosen yet;
+an existing choice is never replaced by installing. Flows already running keep the
+providers they were compiled with. The host's store is in memory for now.
+
+Package effect nodes in graphs (2026-11-10): `WithGuests<R>` also implements
+`EffectResolver`. An Action node of a loaded package gets an inline action kernel and
+runs on the run's own thread inside a pump. An Async node gets no kernel: the run
+issues an ordinary effect request whose `context` is that node's `GuestEffect`. The
+host recovers it with `guest_effect(&request.context)`, calls `GuestEffect::run` off
+the run's thread and passes the result to `Run::complete_effect`; `cancellation`
+interrupts it when the effect's lease is cancelled. Each node binding owns one guest
+instance for the life of its plan and calls on it are serialized, so every request of
+one node reaches the same state. A guest-reported error becomes the node's own fault
+and takes its `failed` route. Exec ports carry no value and are not passed to the
+guest; event ports and non-empty config are refused at binding.
+
+Package nodes in graphs (K02c, 2026-11-08; `orange_guest`): `GuestPackage::from_archive`
+takes a `VerifiedArchive` and the files its `MemorySink` received, requires a
+`wasm-component` execution section whose world is `orange:expansion/plugin@1.x`, a
+declared provider ID and the entry file, compiles the component, and records the exact
+provider key (package ID, version, verified content digest, provider ID) the package
+store publishes for it. `WithGuests<R>` wraps a host resolver: a binding whose locked
+provider is a loaded package's key gets a guest kernel; every other binding goes to
+`R` (for example `MathPackage`), and a loaded package's provider never falls back to
+`R`. Pure guest bindings (effect bindings are described above) need empty config and concrete port types; each
+binding owns one guest instance, so a trap faults that node's binding and later folds
+report `core/PackageFault` / `core/guest-poisoned`. A guest node error becomes the
+kernel fault with the guest's own validated namespaced code and message key, each
+at most 128 bytes. Identifiers use shared owned text, released when the last fault,
+plan, result or journal owner drops; there is no process-wide identifier table.
+Invalid or overlong identifiers map to `core/PackageFault`; a guest fault is
+`core/PackageFault` with the `GuestError`
+key. Constant folding and data demands run guest kernels like bundled ones. Guest
+entropy, actions, async, events and generic (non-concrete) package nodes are later
+work; grants come from the host until manifest permissions are interpreted (K03).
+
+Verified payload correction (2026-11-09):
+`VerifiedArchive::verify_file` checks independently stored bytes against the exact
+entry's size and SHA-256. `GuestPackage::from_archive` checks before compilation
+and refuses a mismatched sink with `GuestLoadError::Integrity`. Reusing a
+`MemorySink` replaces its previous archive at the next manifest, removes old-only
+paths and keeps one archive's storage; failure clears that staging set. Verified
+metadata and arbitrary payload bytes cannot be mixed under a provider lock.
+
+Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance::cancellation` and
+`GuestPlugin::cancellation` return a cloneable `GuestCancellation` scoped to that
+instance's entire lifetime, not a reusable operation ID. `cancel` sets a monotonic
+flag and wakes epoch checks. A cancellation observed before entry or in running
+guest code reports `GuestTrap::Interrupted`, poisons the instance, and later calls
+report `GuestError::Poisoned`. Discard that instance; handles never reset or retarget.
+An old handle may keep its engine alive but cannot cancel another store. Merely
+dropping a handle does not cancel work. `is_cancelled` reports the local request;
+an engine-wide interruption is separately reported by the executing instance.
+
+The host must periodically call `GuestEngine::advance_epoch` while guest workers
+run. A single wakeup can race Wasmtime's deadline renewal after a callback, so it
+is not a reliable ticker. The per-store callback interrupts only a cancelled store
+and lets peers continue. `GuestEngine::interrupt` remains an explicit broadcast
+to calls already running; idle instances renew their broadcast baseline before a
+later call. Epoch cadence and worker ownership are host policy; there is no
+wall-time latency qualification. Fuel is still charged independently. Epochs cannot
+preempt a blocked host import. Service-import cancellation, C11 lease integration,
+manifest authority enforcement and package revocation remain separate gates.
+
+Guest resource correction (2026-11-09; review F2/F3/F4/F7):
+both instance constructors use one store-owned limiter. `memory_bytes` is the total
+of initial linear memories and successful growth; `table_elements` is the total
+initial/grown table entries. Denial reserves no capacity; allocation failure refunds
+its reservation. Defaults are64MiB memory,65,536 table elements,64 memories/tables/
+core instances,10million execution fuel and512KiB Wasm stack. These are adjustable
+unqualified policy values, not process RSS bounds. The selected no-threads Wasmtime
+feature profile rejects shared memory, whose growth bypasses the synchronous limiter.
+
+`GuestLimits::transfer_bytes` defaults to1MiB of Wasmtime hostcall fuel for each
+guest-to-host import or result. Canonical list/string storage is admitted before
+copying, independently of execution fuel and linear memory. Exhaustion traps and
+poisons that instance under the existing redacted `GuestTrap::Other` mapping.
+Wasmtime48.0.8 already defaults to128MiB per transfer; the review's original claim
+of an unbounded copy was incorrect. OrangeEditor now selects an explicit limit.
+This is nominal runtime accounting, including encoded text and list descriptors,
+not an exact allocator/transcoding peak or an aggregate of all imports in a call.
+Retained logs remain64entries of1KiB, separately. Decoded plugin outputs also share
+one `transfer_bytes` nominal value budget; decoding checks minimum container slots
+before reserve and includes record identities and absent field slots. Decoded-output
+refusal reports `OutputContract` without poisoning or publication. Added Rust limit
+fields are unfrozen API changes; WIT and saved formats stay unchanged. Cancellation
+verification uses observed live callbacks and host ticks, replacing the redundant
+sleep-based interruption test.

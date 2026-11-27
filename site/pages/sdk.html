@@ -1,0 +1,29 @@
+<h2 id="choose-an-api">Choose the API for your job</h2>
+<ul>
+<li><strong>Integrate the canvas:</strong> follow the <a href="../egui/#canvas-only">canvas-only example</a> and add the editor panels you need. Use <a href="../egui/#customize-appearance">colors and styles</a>, <a href="../egui/#fonts-and-formatting">fonts and formatting</a>, and <a href="../egui/#icons-and-labels">icons and labels</a> to fit your app.</li>
+<li><strong>Use widgets on their own:</strong> start with the <a href="../controls/">shared controls reference</a>.</li>
+<li><strong>Run graphs headlessly:</strong> start with <a href="../embedding/">embedding the runtime</a>.</li>
+<li><strong>Extend the node catalogue:</strong> start with <a href="../custom-nodes/">making a custom node</a>, then use the package guide and the Rust or Wasm API below.</li>
+</ul>
+<h2 id="rust-api">Rust API reference</h2>
+<table><thead><tr><th>Surface</th><th>Start here</th></tr></thead><tbody>
+<tr><td><a href="../api/orange_host/">orange-host</a></td><td><code>Host</code>, <code>HostOptions</code>, <code>Draft</code>, <code>GraphView</code>, <code>FlowId</code>, <code>Events</code>, and <code>PackageAccess</code>.</td></tr>
+<tr><td><a href="../api/orange_editor_ui/">orange-editor-ui</a></td><td><code>Editor</code>, <code>FileRequest</code>, panel composition, theme, icons, and localization hooks.</td></tr>
+<tr><td><a href="../api/orange_ui_controls/">orange-ui-controls</a></td><td>Standalone egui widgets, meter inputs, controls, and icons.</td></tr>
+<tr><td><a href="../api/orange_sdk/">orange-sdk</a></td><td><code>Definition</code>, <code>ServicePackage</code>, <code>ServiceNode</code>, <code>ServiceSource</code>, <code>ConnectionAdapter</code>, <code>Call</code>, and <code>Value</code>.</td></tr>
+</tbody></table>
+<p>Generate the same reference from a repository checkout:</p>
+<pre><code>cargo doc --no-deps --locked -p orange-host -p orange-editor-ui -p orange-ui-controls -p orange-sdk</code></pre>
+<h2 id="wasm-interface">Wasm guest interface</h2>
+<p>The guest interface is <a href="@source/sdk/wit/orange-expansion.wit"><code>orange:expansion@1.1.0</code></a>. Use the <code>plugin</code> world for the guest exports and host imports. Guest calls exchange typed values. Composite values use the checked <code>orange.value.v1</code> literal representation. <code>settings.get</code> supplies saved node configuration and optional capabilities are linked according to the package’s grants.</p>
+<p>The <a href="@source/sdk/guests/probe/src/lib.rs">probe implementation</a> exercises those bindings. For the separate native tier, the <a href="@tree/app/crates/dev/orange-plugin-example">native example</a> demonstrates <code>export_plugin!</code>. Native libraries run with the host process’s authority and must be built against the same compiler and lockfile.</p>
+<h2 id="contracts">Versioned contracts</h2>
+<ul>
+<li><a href="@source/docs/11-graph-language.md">Graph language</a> — types, scheduling, node kinds, functions and extension rules.</li>
+<li><a href="@source/docs/12-graph-data-structures.md">Graph file format</a> — document JSON, typed values, signatures and locks.</li>
+<li><a href="@source/docs/04-expansion-plugins.md">Expansion packages</a> — manifests, permissions, providers and lifecycle.</li>
+<li><a href="@source/docs/13-internationalization.md">Internationalization</a> — Fluent catalogues, namespaced text, arguments and locale fallbacks.</li>
+<li><a href="@source/docs/02-architecture.md#embedding-surface">Embedding contract</a> — the supported application boundary and source compatibility.</li>
+</ul>
+<h2 id="machine-readable-reference">Machine-readable reference</h2>
+<p>Use <a href="../nodes.json">nodes.json</a> for stable node identities, labels and purposes in English, Spanish and Japanese, search aliases, and declared ports. The <a href="../llms.txt">plain-text documentation index</a> points to guides and API entry points. <a href="../sitemap.xml">Sitemap</a>.</p>

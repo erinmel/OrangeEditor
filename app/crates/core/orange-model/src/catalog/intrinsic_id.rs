@@ -1,0 +1,100 @@
+//! Exact definition IDs of every language intrinsic (11 §3) and the `core/convert` special
+//! form. Every other module names intrinsics through these constants, never literals.
+
+pub const ON_START: &str = "core/on-start";
+pub const ON_STOP: &str = "core/on-stop";
+pub const ON_MANUAL: &str = "core/on-manual";
+pub const ON_TIMER: &str = "core/on-timer";
+pub const ON_TIMEOUT: &str = "core/on-timeout";
+pub const CALL: &str = "core/call";
+pub const FUNCTION_ENTRY: &str = "core/function-entry";
+pub const FUNCTION_OUTPUTS: &str = "core/function-outputs";
+pub const RETURN: &str = "core/return";
+pub const GET_VARIABLE: &str = "core/get-variable";
+pub const ON_VARIABLE_CHANGED: &str = "core/on-variable-changed";
+pub const ON_WATCH: &str = "core/on-watch";
+pub const RISING_EDGE: &str = "core/rising-edge";
+pub const FALLING_EDGE: &str = "core/falling-edge";
+pub const CHANGE_BEYOND_TOLERANCE: &str = "core/change-beyond-tolerance";
+
+pub fn is_watch(id: &str) -> bool {
+    matches!(
+        id,
+        ON_WATCH | RISING_EDGE | FALLING_EDGE | CHANGE_BEYOND_TOLERANCE
+    )
+}
+pub const CLOSE_HANDLE: &str = "core/close-handle";
+pub const NEXT_ITEM: &str = "core/next-item";
+pub const COLLECT: &str = "core/collect";
+pub const FOR_EACH_ITEM: &str = "core/for-each-item";
+pub const CLOSE_STREAM: &str = "core/close-stream";
+pub const TEE: &str = "core/tee";
+pub const NOW: &str = "core/now";
+pub const SET_VARIABLE: &str = "core/set-variable";
+pub const UPDATE_VARIABLE: &str = "core/update-variable";
+pub const INCREMENT_COUNTER: &str = "core/increment-counter";
+pub const DECREMENT_COUNTER: &str = "core/decrement-counter";
+
+pub fn counter_operation(id: &str) -> Option<&'static str> {
+    match id {
+        INCREMENT_COUNTER => Some("add"),
+        DECREMENT_COUNTER => Some("sub"),
+        _ => None,
+    }
+}
+
+pub fn is_counter_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "core/i32@1" | "core/i64@1" | "core/u32@1" | "core/u64@1"
+    )
+}
+pub const SET_SHARED: &str = "core/set-shared";
+pub const UPDATE_SHARED: &str = "core/update-shared";
+pub const ON_EVENT: &str = "core/on-event";
+pub const EMIT: &str = "core/emit";
+pub const BRANCH: &str = "core/branch";
+pub const SWITCH: &str = "core/switch";
+pub const SEQUENCE: &str = "core/sequence";
+pub const FORK: &str = "core/fork";
+pub const FOR_EACH: &str = "core/for-each";
+pub const COUNT: &str = "core/count";
+pub const FOR_RANGE: &str = "core/for-range";
+pub const WHILE: &str = "core/while";
+pub const BREAK: &str = "core/break";
+pub const CONTINUE: &str = "core/continue";
+pub const GATE: &str = "core/gate";
+pub const DO_ONCE: &str = "core/do-once";
+pub const FLIP_FLOP: &str = "core/flip-flop";
+pub const YIELD: &str = "core/yield";
+pub const WAIT: &str = "core/wait";
+pub const AWAIT_EVENT: &str = "core/await-event";
+pub const REGISTER: &str = "core/register";
+pub const SELECT: &str = "core/select";
+pub const AND: &str = "core/and";
+pub const OR: &str = "core/or";
+pub const ALL_CONDITIONS: &str = "core/all-conditions";
+pub const ANY_CONDITIONS: &str = "core/any-conditions";
+pub const COALESCE: &str = "core/coalesce";
+pub const TRY: &str = "core/try";
+pub const MATCH_RESULT: &str = "core/match-result";
+pub const MATCH_OPTION: &str = "core/match-option";
+pub const REPEAT_BEGIN: &str = "core/repeat-begin";
+pub const REPEAT_END: &str = "core/repeat-end";
+pub const MAP_BEGIN: &str = "core/map-begin";
+pub const MAP_END: &str = "core/map-end";
+pub const FOLD_BEGIN: &str = "core/fold-begin";
+pub const FOLD_END: &str = "core/fold-end";
+pub const FILTER_BEGIN: &str = "core/filter-begin";
+pub const FILTER_END: &str = "core/filter-end";
+pub const NUMBER: &str = "core/number";
+pub const WHOLE_NUMBER: &str = "core/whole-number";
+pub const TEXT: &str = "core/text";
+pub const TRUE_OR_FALSE: &str = "core/true-or-false";
+pub const VALUE: &str = "core/value";
+/// Bridge Out: exposes its `value` input on a named channel without a wire or a flow.
+pub const BRIDGE_OUT: &str = "core/bridge-out";
+/// Bridge In: reads its Bridge Out's value when pulled, through the data edge that binds
+/// them. Neither starts a flow.
+pub const BRIDGE_IN: &str = "core/bridge-in";
+pub const CONVERT: &str = "core/convert";

@@ -1,0 +1,25 @@
+[package]
+name = "orange-editor-ui"
+description = "OrangeEditor editor interface: an egui library that any eframe or wgpu host can show"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "../../../build/locales.rs"
+
+[dependencies]
+egui.workspace = true
+orange-host = { path = "../../platform/orange-host", version = "=0.1.0-preview.1" }
+orange-ui-controls = { path = "../../platform/orange-ui-controls", version = "=0.1.0-preview.1", features = ["icons"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+documentation = []
+
+[dev-dependencies]
+orange-testkit = { path = "../../dev/orange-testkit", version = "=0.1.0-preview.1", features = ["ui"] }
+orange-audio = { path = "../../services/orange-audio", version = "=0.1.0-preview.1" }
+orange-net = { path = "../../services/orange-net", version = "=0.1.0-preview.1" }

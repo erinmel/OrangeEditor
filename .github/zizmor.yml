@@ -1,0 +1,5 @@
+# Workflow security audit configuration (checks.yml policy job).
+rules:
+  # Keep `./` reusable-workflow paths until actionlint validates the `$/` self-repository syntax.
+  self-repository:
+    disable: true

@@ -1,0 +1,1444 @@
+//! The OrangeEditor plugin SDK: what a Rust crate implements to add nodes, triggers and
+//! connection kinds to a host application.
+//!
+//! A plugin builds a [`ServicePackage`]: definition files for its nodes, a
+//! [`ServiceNode`] or [`ServiceSource`] behind each, and a [`ConnectionAdapter`] per
+//! connection kind. The application passes the package to its host. This crate has no
+//! package store, compiler front end or WebAssembly engine, so a plugin links only the
+//! graph model, the value types and the run's effect lease.
+//!
+//! This is the trusted tier for work that needs the operating system: sockets, files,
+//! devices. Nodes are asynchronous: a run issues a request and a worker thread performs
+//! it, so no plugin code runs on a flow's own thread.
+//!
+//! A connection is declared in a document or shared through the host. An adapter turns
+//! its settings into a [`Session`]; nodes that declare they use a connection receive the
+//! session the node's `connection` config field names.
+// Product code reports failures as typed errors; each remaining panic is a documented
+// internal invariant (10, "Panic policy").
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
+mod controls;
+mod lifecycle;
+pub use controls::{Control, Layout};
+pub use lifecycle::Lifecycle;
+pub use orange_kernel::{FaultText, KernelFault};
+pub use orange_model::Value;
+pub use orange_model::catalog::{
+    BUILT_IN_PACKAGE_VERSION, DefinitionError, NodeDefinition, Presentation, TextRef,
+};
+pub use orange_model::document::DefinitionRef;
+pub use orange_model::id::PortKey;
+pub use orange_model::replace::Replacement;
+pub use orange_model::value::{JsonText, ListRepr, MapRepr, RecordRepr};
+pub use orange_runtime::EffectLease;
+use serde_json::{Map, Value as Json};
+use std::any::Any;
+use std::sync::Arc;
+
+/// Prefix of a credential reference in connection settings: `credential://<name>`.
+pub const SECRET_PREFIX: &str = "credential://";
+
+/// Whether `name` can name a secret: 1 to 128 bytes of `a-z`, `0-9`, `.`, `_`, `-`
+/// and `/`, starting with a letter or digit.
+pub fn is_secret_name(name: &str) -> bool {
+    (1..=128).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-' | b'/')
+        })
+}
+
+/// Why a secret was not read or written. No variant carries secret text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SecretError {
+    /// No secret is stored under the name.
+    NotFound,
+    /// The name is not one [`is_secret_name`] accepts.
+    InvalidName,
+    /// The secret is empty or too long for the store.
+    InvalidSecret,
+    /// The store is locked, missing or failed; the text says which, without details.
+    Unavailable(&'static str),
+}
+impl std::fmt::Display for SecretError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("no credential is stored under that name"),
+            Self::InvalidName => f.write_str("the credential name is not valid"),
+            Self::InvalidSecret => f.write_str("the credential is empty or too long"),
+            Self::Unavailable(why) => write!(f, "the credential store is not available: {why}"),
+        }
+    }
+}
+impl std::error::Error for SecretError {}
+
+/// Where an application keeps credentials. The host reads from it when a connection's
+/// settings name a secret as `credential://<name>`; documents, packages and logs hold
+/// only that reference.
+pub trait SecretStore: std::fmt::Debug + Send + Sync + 'static {
+    /// The secret stored under `name`.
+    fn get(&self, name: &str) -> Result<String, SecretError>;
+    /// Stores a new value for a secret a connection was opened with, because the
+    /// service replaced it (a rotated refresh token). A store that cannot be written
+    /// refuses, which is the default; the connection then works until the application
+    /// stops and needs a new sign-in afterwards.
+    fn replace(&self, name: &str, secret: &str) -> Result<(), SecretError> {
+        let _ = (name, secret);
+        Err(SecretError::Unavailable("it cannot be written"))
+    }
+}
+
+/// How a session gives back a secret its service replaced. The host makes one for each
+/// connection it opens; the adapter names the setting the secret came in (a JSON
+/// pointer into the settings, such as `/oauth/refresh_token`) and the host stores the
+/// new value under the credential that setting referred to. A setting that held a
+/// plain value, not a reference, is not stored anywhere.
+#[derive(Clone, Default)]
+pub struct Renew(Option<Arc<Keep>>);
+type Keep = dyn Fn(&str, &str, &str) -> Result<(), SecretError> + Send + Sync;
+impl Renew {
+    /// A renewal that stores nothing.
+    pub fn none() -> Self {
+        Self(None)
+    }
+    pub fn new(
+        keep: impl Fn(&str, &str, &str) -> Result<(), SecretError> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Some(Arc::new(keep)))
+    }
+    /// Reports that the secret given in `setting` is now `secret`.
+    pub fn keep(&self, setting: &str, current: &str, secret: &str) -> Result<(), SecretError> {
+        self.0
+            .as_ref()
+            .map_or(Ok(()), |keep| keep(setting, current, secret))
+    }
+}
+impl std::fmt::Debug for Renew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Renew(host)"
+        } else {
+            "Renew(none)"
+        })
+    }
+}
+
+/// Provider ID of every node a service package implements.
+pub const SERVICE_PROVIDER: &str = "native";
+
+/// A live connection. The adapter that opened it defines what it holds; its nodes get
+/// it back through [`Session::as_any`]. Dropping the last reference closes it.
+pub trait Session: std::fmt::Debug + Send + Sync + 'static {
+    fn as_any(&self) -> &dyn Any;
+    /// Called each time a flow that uses the session has started all of its triggers,
+    /// so more than once for a session several flows share. A session that receives
+    /// should not begin before the first call: what arrives earlier has no trigger to
+    /// reach and would be lost. The default does nothing.
+    fn start(&self) {}
+    /// Queues one outbound message on a connection that carries messages, such as a
+    /// WebSocket: what a sandboxed package node sends through the host's own session,
+    /// whose address, credentials, reconnection and bounded queue stay with the host.
+    /// Queued is not delivered. The default refuses: the connection carries no messages.
+    fn send_message(&self, message: Message) -> Result<(), MessageError> {
+        let _ = message;
+        Err(MessageError::Unsupported)
+    }
+    /// Starts handing every message that arrives on the connection to `emitter`, as
+    /// `Value::Str` for text and `Value::Bytes` for binary, until the returned guard is
+    /// dropped: how the host feeds a sandboxed package's trigger nodes. `emitter` is
+    /// called on the connection's own thread and must not block; a `Busy` answer drops
+    /// that message, as an entry's bounded mailbox requires. The default refuses: the
+    /// connection carries no messages.
+    fn listen_messages(&self, emitter: Emitter) -> Result<Box<dyn Send>, MessageError> {
+        let _ = emitter;
+        Err(MessageError::Unsupported)
+    }
+}
+
+/// One outbound message for [`Session::send_message`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Message {
+    Text(Arc<str>),
+    Binary(Arc<[u8]>),
+}
+
+/// Why [`Session::send_message`] did not queue a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MessageError {
+    /// The connection does not carry messages.
+    Unsupported,
+    /// The connection's queue is full; the host bounds what waits to be sent.
+    Full,
+    /// The message is larger than the connection allows.
+    TooLarge,
+}
+impl std::fmt::Display for MessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unsupported => "the connection does not carry messages",
+            Self::Full => "the connection's queue is full",
+            Self::TooLarge => "the message is too large for the connection",
+        })
+    }
+}
+impl std::error::Error for MessageError {}
+
+/// Opens sessions of one adapter kind from declared settings.
+///
+/// `open` runs on the thread that opens a document and must not block on the network:
+/// an adapter that needs a handshake performs it on first use, from a worker.
+pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
+    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String>;
+    /// What the adapter is called and what it is for, for a person choosing one. The
+    /// default is empty: an editor then names it from its kind.
+    fn about(&self) -> AdapterAbout {
+        AdapterAbout::default()
+    }
+    /// Text settings an editor can show as fields, such as a URL or a password. A
+    /// [`secret`](SettingText::secret) one is typed masked and kept in the host's
+    /// credential store; the settings hold only its `credential://` reference. The
+    /// default offers none.
+    fn texts(&self) -> Vec<SettingText> {
+        Vec::new()
+    }
+    /// Secret field whose service protocol can rotate the existing credential.
+    /// This must also be a declared secret text setting, as a JSON pointer.
+    fn renewal_field(&self) -> Option<&'static str> {
+        None
+    }
+    /// True-or-false settings an editor can show as switches. The default offers none.
+    fn toggles(&self) -> Vec<SettingToggle> {
+        Vec::new()
+    }
+    /// [`open`](Self::open) for an adapter whose service can replace a secret it was
+    /// given: it keeps `renew` and reports each replacement. The host calls this one;
+    /// the default ignores `renew`.
+    fn open_renewing(
+        &self,
+        settings: &Map<String, Json>,
+        renew: Renew,
+    ) -> Result<Arc<dyn Session>, String> {
+        let _ = renew;
+        self.open(settings)
+    }
+    /// Settings an editor can offer as a list, each with the values this machine has
+    /// now, such as the audio devices for `device`. Called on the editor's thread when
+    /// it asks, never while a flow runs. The default offers none.
+    fn choices(&self) -> Vec<SettingChoices> {
+        Vec::new()
+    }
+    /// Number settings an editor can show as fields, such as an input's threshold.
+    /// The default offers none.
+    fn fields(&self) -> Vec<SettingField> {
+        Vec::new()
+    }
+    /// Whether [`probe`](Self::probe) has something to show, asked without opening
+    /// anything. The default says no.
+    fn probes(&self) -> bool {
+        false
+    }
+    /// A live reading of what a connection with `settings` would see, such as an input
+    /// device's level, for an editor to show while a person sets the connection up.
+    /// `None` when the adapter has nothing to show; an error says why it cannot.
+    /// Called on the editor's thread: it starts its work elsewhere and returns at once.
+    fn probe(&self, settings: &Map<String, Json>) -> Option<Result<Box<dyn Probe>, String>> {
+        let _ = settings;
+        None
+    }
+}
+
+/// A live reading from [`ConnectionAdapter::probe`]. Dropping it stops the work.
+pub trait Probe: Send + 'static {
+    /// The latest reading, or why there is none (the device could not be opened).
+    /// Never waits.
+    fn read(&self) -> Result<f64, String>;
+}
+
+/// A number setting of a connection, from [`ConnectionAdapter::fields`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingField {
+    /// The setting's name in the connection's settings object.
+    pub setting: String,
+    /// What it is called, such as "Threshold".
+    pub label: String,
+    /// One sentence on what it does.
+    pub help: String,
+    /// The unit typed in, such as `dBFS` or `ms`.
+    pub unit: String,
+    pub min: f64,
+    pub max: f64,
+    /// What leaving it out means; `None` when that depends on other settings.
+    pub default: Option<f64>,
+    /// Only whole numbers.
+    pub whole: bool,
+}
+
+/// What a connection adapter is, from [`ConnectionAdapter::about`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdapterAbout {
+    /// What it is called, such as "Web service (HTTP)".
+    pub label: String,
+    /// One sentence on what a connection of it is for.
+    pub purpose: String,
+}
+
+/// A text setting of a connection, from [`ConnectionAdapter::texts`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingText {
+    /// Where it is in the settings: its name, or names joined by `/` for one inside an
+    /// object, such as `basic/password`.
+    pub setting: String,
+    /// What it is called, such as "Password".
+    pub label: String,
+    /// One sentence on what it does.
+    pub help: String,
+    /// An example shown while it is empty.
+    pub hint: String,
+    /// It holds a secret: typed masked and kept in the credential store.
+    pub secret: bool,
+    /// The connection cannot open without it.
+    pub required: bool,
+    /// A list of texts, typed one per line, such as topics to subscribe to.
+    pub list: bool,
+}
+
+/// A true-or-false setting of a connection, from [`ConnectionAdapter::toggles`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingToggle {
+    /// The setting's name in the connection's settings object.
+    pub setting: String,
+    pub label: String,
+    pub help: String,
+    /// What leaving it out means.
+    pub default: bool,
+}
+
+/// The values a connection setting can take on this machine, from
+/// [`ConnectionAdapter::choices`]. An absent setting means `unset` (such as "System
+/// default"); `values` are offered as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingChoices {
+    /// The setting's name in the connection's settings object.
+    pub setting: String,
+    /// What leaving the setting out means.
+    pub unset: String,
+    pub values: Vec<String>,
+    /// What each of `values` is called, in the same order, when the value is an ID a
+    /// person cannot read; empty shows the values themselves.
+    pub labels: Vec<String>,
+    /// Why the values could not be listed, when they could not.
+    pub problem: Option<String>,
+}
+
+/// One execution of a service node, on a worker thread.
+pub struct Call<'a> {
+    /// The node's data inputs in declared order.
+    pub inputs: &'a [Value],
+    /// The session of the connection the node names, when its definition uses one.
+    pub session: Option<&'a dyn Session>,
+    /// Cancelled when the run no longer wants the result; long work should poll it.
+    pub lease: &'a EffectLease,
+}
+impl std::fmt::Debug for Call<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Call")
+            .field("inputs", &self.inputs.len())
+            .field("session", &self.session.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The implementation of one asynchronous service node. It returns the node's data
+/// outputs in declared order, or a fault that takes the node's `failed` route.
+pub trait ServiceNode: Send + Sync + 'static {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault>;
+    /// For a node made with [`ServicePackage::stream`]: opens its stream. An ordinary
+    /// node has none.
+    fn items(&self, call: &Call<'_>) -> Option<Result<Box<dyn Items>, KernelFault>> {
+        let _ = call;
+        None
+    }
+}
+
+/// Why an [`Emitter`] did not deliver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmitError {
+    /// The flow's mailbox is full. The source decides whether to retry or drop.
+    Busy,
+    /// The flow has ended; the source should stop.
+    Closed,
+}
+
+/// Fires one entry node of one flow. Cloneable and usable from any thread; firing never
+/// blocks. What a paused or busy flow does with a firing is the entry's own policy.
+#[derive(Clone)]
+pub struct Emitter {
+    fire: Arc<Fire>,
+    fault: Option<Arc<ReportFault>>,
+    outputs: Option<Arc<EntryOutputs>>,
+}
+struct EntryOutputs {
+    fire: Box<FireOutput>,
+    publish: Box<PublishOutput>,
+}
+/// Fires the entry through one of its named outputs.
+type FireOutput = dyn Fn(&PortKey) -> Result<(), EmitError> + Send + Sync;
+/// Sets or clears the value one of the entry's outputs carries.
+type PublishOutput = dyn Fn(&PortKey, Option<Value>) -> Result<(), EmitError> + Send + Sync;
+type Fire = dyn Fn(Option<Value>) -> Result<(), EmitError> + Send + Sync;
+type ReportFault = dyn Fn(KernelFault) -> Result<(), EmitError> + Send + Sync;
+impl std::fmt::Debug for Emitter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Emitter").finish_non_exhaustive()
+    }
+}
+impl Emitter {
+    /// Wraps the host's way of firing one entry node. Hosts call this; a plugin only
+    /// receives emitters.
+    pub fn new(
+        fire: impl Fn(Option<Value>) -> Result<(), EmitError> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            fire: Arc::new(fire),
+            fault: None,
+            outputs: None,
+        }
+    }
+    /// Wraps the host's firing and diagnostic callbacks for this entry.
+    pub fn with_faults(
+        fire: impl Fn(Option<Value>) -> Result<(), EmitError> + Send + Sync + 'static,
+        fault: impl Fn(KernelFault) -> Result<(), EmitError> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            fire: Arc::new(fire),
+            fault: Some(Arc::new(fault)),
+            outputs: None,
+        }
+    }
+    /// Bind the checked execution and continuous outputs of this source.
+    #[must_use]
+    pub fn with_outputs(
+        mut self,
+        fire: impl Fn(&PortKey) -> Result<(), EmitError> + Send + Sync + 'static,
+        publish: impl Fn(&PortKey, Option<Value>) -> Result<(), EmitError> + Send + Sync + 'static,
+    ) -> Self {
+        self.outputs = Some(Arc::new(EntryOutputs {
+            fire: Box::new(fire),
+            publish: Box::new(publish),
+        }));
+        self
+    }
+    /// Fire one named execution output.
+    pub fn emit_on(&self, port: &PortKey) -> Result<(), EmitError> {
+        (self.outputs.as_ref().ok_or(EmitError::Closed)?.fire)(port)
+    }
+    /// Publish or revoke a continuous entry output.
+    pub fn publish(&self, port: &PortKey, value: Option<Value>) -> Result<(), EmitError> {
+        (self.outputs.as_ref().ok_or(EmitError::Closed)?.publish)(port, value)
+    }
+    /// Fires the entry with its payload, or `None` for an entry that declares none.
+    pub fn emit(&self, payload: Option<Value>) -> Result<(), EmitError> {
+        (self.fire)(payload)
+    }
+    /// Reports a typed fault from an already-started source without firing it.
+    pub fn fault(&self, fault: KernelFault) -> Result<(), EmitError> {
+        self.fault.as_ref().map_or(Ok(()), |report| report(fault))
+    }
+}
+
+/// The entry nodes listening to one source, such as a connection's incoming messages.
+/// A session keeps one of these; each entry that starts on the session is added with
+/// [`Listeners::listen`], and the source fires them with [`Listeners::emit`]. `T` is
+/// whatever the source needs to tell its listeners apart, such as text or binary.
+pub struct Listeners<T = ()> {
+    entries: std::sync::Mutex<Vec<(u64, T, Emitter)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+impl<T> Default for Listeners<T> {
+    fn default() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(Vec::new()),
+            next: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+impl<T> std::fmt::Debug for Listeners<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listeners").finish_non_exhaustive()
+    }
+}
+impl<T: Send + 'static> Listeners<T> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn entries(&self) -> std::sync::MutexGuard<'_, Vec<(u64, T, Emitter)>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Adds a listener and returns the guard a [`ServiceSource`] hands back: dropping
+    /// it removes the listener. `owner` is what holds these listeners, usually the
+    /// session's shared state, and `of` finds them in it.
+    pub fn listen<S: Send + Sync + 'static>(
+        owner: Arc<S>,
+        of: fn(&S) -> &Self,
+        tag: T,
+        emitter: Emitter,
+    ) -> Box<dyn Send> {
+        struct Guard<S, T: Send + 'static>(Arc<S>, fn(&S) -> &Listeners<T>, u64);
+        impl<S, T: Send + 'static> Drop for Guard<S, T> {
+            fn drop(&mut self) {
+                let listeners = self.1;
+                listeners(&self.0)
+                    .entries()
+                    .retain(|(id, ..)| *id != self.2);
+            }
+        }
+        let listeners = of(&owner);
+        let id = listeners
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        listeners.entries().push((id, tag, emitter));
+        Box::new(Guard(owner, of, id))
+    }
+
+    /// Fires every listener for which `payload` gives a value. A flow that has ended
+    /// is forgotten; one whose mailbox is full misses this firing, as its bounded
+    /// mailbox requires.
+    pub fn emit(&self, payload: impl Fn(&T) -> Option<Value>) {
+        self.entries().retain(|(_, tag, emitter)| {
+            payload(tag).is_none_or(|value| emitter.emit(Some(value)) != Err(EmitError::Closed))
+        });
+    }
+
+    /// The emitters now listening, for a source that must not lose a firing and so
+    /// handles a full mailbox itself.
+    pub fn emitters(&self) -> Vec<Emitter> {
+        self.entries()
+            .iter()
+            .map(|(_, _, emitter)| emitter.clone())
+            .collect()
+    }
+}
+
+/// The items of a stream a node produces, pulled one at a time. `next` runs on a
+/// worker thread and may block; it is called again only after the graph has taken the
+/// previous item, so a slow graph slows the producer instead of filling memory. `None`
+/// ends the stream; an error ends it with that fault. The value is dropped when the
+/// graph closes the stream or stops. Any iterator of item results is one.
+pub trait Items: Send + 'static {
+    fn next(&mut self) -> Option<Result<Value, KernelFault>>;
+}
+impl<I> Items for I
+where
+    I: Iterator<Item = Result<Value, KernelFault>> + Send + 'static,
+{
+    fn next(&mut self) -> Option<Result<Value, KernelFault>> {
+        Iterator::next(self)
+    }
+}
+
+/// The implementation of a node whose one data output is a stream
+/// (`core/stream@1<T>`). `open` runs on a worker thread like [`ServiceNode::run`] and
+/// returns the items; the node continues as soon as the stream is open.
+pub trait ServiceStream: std::fmt::Debug + Send + Sync + 'static {
+    fn open(&self, call: &Call<'_>) -> Result<Box<dyn Items>, KernelFault>;
+}
+
+/// A stream node in the list of a package's nodes.
+#[derive(Debug)]
+struct Streaming(Arc<dyn ServiceStream>);
+impl ServiceNode for Streaming {
+    fn run(&self, _call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        Err(KernelFault {
+            code: FaultText::Static("org.orange.sdk/Stream"),
+            message_key: FaultText::Static("org.orange.sdk/stream-node"),
+            message: "The node produces a stream and the application did not open it.",
+        })
+    }
+    fn items(&self, call: &Call<'_>) -> Option<Result<Box<dyn Items>, KernelFault>> {
+        Some(self.0.open(call))
+    }
+}
+
+/// The values a source's data inputs have, by input name: what a node's wires carry
+/// when the run arms its source (11 §10.5).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Arguments(Vec<(String, Value)>, u64);
+impl Arguments {
+    /// Arguments from input names and values, as the host hands them over.
+    pub fn new(values: Vec<(String, Value)>) -> Self {
+        Self(values, 0)
+    }
+    /// Identifies the run providing the arguments, for ownership of live resources.
+    pub fn with_run_id(mut self, run_id: u64) -> Self {
+        self.1 = run_id;
+        self
+    }
+    /// The run this source belongs to. Zero denotes standalone SDK arguments.
+    pub fn run_id(&self) -> u64 {
+        self.1
+    }
+    /// The value of input `name`.
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.0
+            .iter()
+            .find_map(|(input, value)| (input == name).then_some(value))
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.0.iter().map(|(name, value)| (name.as_str(), value))
+    }
+}
+
+/// Publishes the value of one live node of one flow. Cloneable and usable from any
+/// thread; publishing never blocks. The run keeps only the latest value, so a burst
+/// is read as its last value.
+#[derive(Clone)]
+pub struct Publisher(Arc<Publish>);
+type Publish = dyn Fn(Value) -> Result<(), EmitError> + Send + Sync;
+impl std::fmt::Debug for Publisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Publisher").finish_non_exhaustive()
+    }
+}
+impl Publisher {
+    /// Wraps the host's way of publishing one live node's value. Hosts call this; a
+    /// plugin only receives publishers.
+    pub fn new(publish: impl Fn(Value) -> Result<(), EmitError> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(publish))
+    }
+    /// Publishes the node's value now.
+    pub fn publish(&self, value: Value) -> Result<(), EmitError> {
+        self.0(value)
+    }
+}
+
+/// The implementation of one live node ([`Definition::read`]): something outside the
+/// graph whose value the graph reads, such as a sound's level.
+///
+/// It is started when its flow runs, with the node's settings and the values of its
+/// data inputs, and started again (the previous guard dropped first) whenever those
+/// change. It must not block. Dropping the guard stops it.
+pub trait LiveSource: Send + Sync + 'static {
+    fn start(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        arguments: &Arguments,
+        publisher: Publisher,
+    ) -> Result<Box<dyn Send>, String>;
+}
+
+/// The implementation of one entry node: something outside the graph that fires it.
+///
+/// A source is started once per entry node when its flow opens and must not block. It
+/// returns a guard; dropping the guard stops the source for that node. Implement
+/// [`start`](Self::start), or [`start_with`](Self::start_with) for an entry whose own
+/// settings (its definition's `config_schema`) say how it fires.
+pub trait ServiceSource: Send + Sync + 'static {
+    fn start(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let _ = (session, emitter);
+        Err("the entry needs its settings to start".to_owned())
+    }
+    /// Starts the source with the entry node's settings. By default it ignores them.
+    fn start_with(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let _ = settings;
+        self.start(session, emitter)
+    }
+    /// Starts the source of an entry with data inputs, with their values. It is started
+    /// again, the previous guard dropped first, whenever they change. By default the
+    /// arguments are ignored.
+    fn start_with_arguments(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        arguments: &Arguments,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let _ = arguments;
+        self.start_with(session, settings, emitter)
+    }
+}
+
+/// Builds the definition file text of a service node, so a package states what is
+/// particular to each node and nothing else. [`ServicePackage::node`] and
+/// [`ServicePackage::source`] take the result of [`build`](Self::build).
+///
+/// Definitions default to version 1 and take their label, description and category
+/// keys from its ID, and is marked as reaching outside the graph. A node is
+/// asynchronous; an entry has a `then` outcome and at most one `payload` output.
+#[derive(Debug, Clone)]
+pub struct Definition {
+    package: String,
+    json: Map<String, Json>,
+    ports: Vec<Json>,
+}
+impl Definition {
+    fn new(package: &str, name: &str, label: &str, entry: bool) -> Self {
+        let id = format!("{package}/{name}");
+        let mut json = Map::new();
+        let mut set = |key: &str, value: Json| {
+            let _ = json.insert(key.to_owned(), value);
+        };
+        set(
+            "label",
+            serde_json::json!({"key": format!("{id}-label"), "fallback": label}),
+        );
+        set("definition_id", Json::String(id));
+        set("definition_version", 1.into());
+        set("config_version", 1.into());
+        set("determinism", "external".into());
+        if entry {
+            set("kind", "entry".into());
+        } else {
+            set("kind", "async".into());
+            set("suspends", "always".into());
+        }
+        Self {
+            package: package.to_owned(),
+            json,
+            ports: Vec::new(),
+        }
+    }
+    /// An asynchronous node `<package>/<name>` shown as `label`.
+    pub fn node(package: &str, name: &str, label: &str) -> Self {
+        Self::new(package, name, label, false)
+    }
+    /// An entry node `<package>/<name>` shown as `label`.
+    pub fn entry(package: &str, name: &str, label: &str) -> Self {
+        Self::new(package, name, label, true)
+    }
+    /// Sets a node definition version. Keep older definitions registered when
+    /// saved graphs must continue to resolve their exact version.
+    #[must_use]
+    pub fn version(mut self, version: u32) -> Self {
+        let _ = self
+            .json
+            .insert("definition_version".to_owned(), version.into());
+        self
+    }
+    /// A live node `<package>/<name>` shown as `label`: a value its provider publishes,
+    /// declared with [`live`](Self::live), that the graph reads anywhere like a variable.
+    /// Its data inputs are the arguments its [`LiveSource`] is started with.
+    pub fn read(package: &str, name: &str, label: &str) -> Self {
+        let mut definition = Self::new(package, name, label, false);
+        let _ = definition.json.insert("kind".to_owned(), "volatile".into());
+        let _ = definition.json.remove("suspends");
+        let _ = definition
+            .json
+            .insert("volatility".to_owned(), "live".into());
+        definition
+    }
+    /// The one value of a live node.
+    #[must_use]
+    pub fn live(mut self, name: &str, ty: &str) -> Self {
+        self.ports
+            .push(serde_json::json!({"port_id": name, "direction": "output",
+            "kind": "data", "type": ty, "source": "computed"}));
+        self
+    }
+    /// A finite set of instance outputs on a native source. With a type these are
+    /// continuous data values. Otherwise each instance is a named execution route.
+    #[must_use]
+    pub fn source_outputs(mut self, name: &str, ty: Option<&str>, max: u16) -> Self {
+        let mut port = match ty {
+            Some(ty) => serde_json::json!({"kind": "data", "type": ty, "source": "computed"}),
+            None => serde_json::json!({"kind": "exec"}),
+        };
+        port["port_id"] = name.into();
+        port["direction"] = "output".into();
+        port["variadic"] = serde_json::json!({"min": 0, "max": max});
+        self.ports.push(port);
+        self
+    }
+    /// One sentence on what the node does.
+    #[must_use]
+    pub fn description(mut self, text: &str) -> Self {
+        let key = format!(
+            "{}-description",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        let _ = self.json.insert(
+            "description".to_owned(),
+            serde_json::json!({"key": key, "fallback": text}),
+        );
+        self
+    }
+    /// What port `name` is for, in one sentence: the help editors show for it and the
+    /// node reference lists. Its catalogue message is `<node key>-port-<port key>`,
+    /// such as `org-orange-net-http-request-port-method`. Describes every port of that
+    /// name added so far, so call it after adding the port.
+    #[must_use]
+    pub fn port_description(mut self, name: &str, text: &str) -> Self {
+        let key = format!(
+            "{}-port-{name}",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        for port in self.ports.iter_mut().filter(|port| port["port_id"] == name) {
+            port["description"] = serde_json::json!({"key": key, "fallback": text});
+        }
+        self
+    }
+    /// The palette category: `slug` names it within the package and `label` shows it.
+    #[must_use]
+    pub fn category(mut self, slug: &str, label: &str) -> Self {
+        let id = format!("{}/category-{slug}", self.package);
+        self.editor(
+            "category",
+            serde_json::json!({"key": id, "fallback": label}),
+        );
+        self.editor("category_id", id.into());
+        self
+    }
+    /// The node uses the connection its `connection` config field names.
+    #[must_use]
+    pub fn connection(mut self) -> Self {
+        let _ = self.json.insert("connection".to_owned(), true.into());
+        self
+    }
+    /// The node uses a connection of adapter kind `adapter`, named by its `connection`
+    /// config field. An editor adding the node binds it to such a connection, declaring
+    /// one when the document has none.
+    #[must_use]
+    pub fn uses(mut self, adapter: &str) -> Self {
+        self.editor("connection_adapter", adapter.into());
+        self.connection()
+    }
+    /// What the node's `then` output is called on a card, when "Exit" would mislead:
+    /// "Queued" for a node that continues once a message is queued, not delivered.
+    #[must_use]
+    pub fn then_label(mut self, label: &str) -> Self {
+        let key = format!(
+            "{}-then",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        self.editor(
+            "then_label",
+            serde_json::json!({"key": key, "fallback": label}),
+        );
+        self
+    }
+    /// The text input `port` holds a path on this machine: an editor offers the
+    /// system's chooser beside it, for a folder when `folder`, else for a file with one
+    /// of `extensions` (any file when empty).
+    #[must_use]
+    pub fn path_input(self, port: &str, folder: bool, extensions: &[&str]) -> Self {
+        self.path_hint(
+            serde_json::json!({"port": port, "folder": folder, "extensions": extensions}),
+        )
+    }
+    /// The text input `port` names a file the node writes, such as a recording: an
+    /// editor offers the system's save chooser beside it, for a file with one of
+    /// `extensions` (any file when empty).
+    #[must_use]
+    pub fn save_path_input(self, port: &str, extensions: &[&str]) -> Self {
+        self.path_hint(serde_json::json!({"port": port, "save": true, "extensions": extensions}))
+    }
+    fn path_hint(mut self, path: Json) -> Self {
+        let editor = self
+            .json
+            .entry("editor")
+            .or_insert_with(|| Json::Object(Map::new()));
+        if let Json::Object(editor) = editor
+            && let Json::Array(paths) = editor
+                .entry("paths")
+                .or_insert_with(|| Json::Array(Vec::new()))
+        {
+            paths.push(path);
+        }
+        self
+    }
+    fn editor(&mut self, key: &str, value: Json) {
+        let editor = self
+            .json
+            .entry("editor")
+            .or_insert_with(|| Json::Object(Map::new()));
+        if let Json::Object(editor) = editor {
+            let _ = editor.insert(key.to_owned(), value);
+        }
+    }
+    /// Other words a person may search for the node by, comma separated: "sound,
+    /// music" for Play sound. Its message key is `<id>-keywords`, so a catalogue
+    /// ([`ServicePackage::messages`]) gives them in another language.
+    #[must_use]
+    pub fn keywords(mut self, words: &str) -> Self {
+        let key = format!(
+            "{}-keywords",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        self.editor(
+            "keywords",
+            serde_json::json!({"key": key, "fallback": words}),
+        );
+        self
+    }
+    /// How an editor should present setting `name` (ADR-33), such as a dial.
+    #[must_use]
+    pub fn setting_control(self, name: &str, control: Control) -> Self {
+        self.control_hint("settings", name, control)
+    }
+    /// How an editor should present data input `name` (ADR-33), such as a slider.
+    #[must_use]
+    pub fn input_control(self, name: &str, control: Control) -> Self {
+        self.control_hint("inputs", name, control)
+    }
+    fn control_hint(mut self, kind: &str, name: &str, control: Control) -> Self {
+        let editor = self
+            .json
+            .entry("editor")
+            .or_insert_with(|| Json::Object(Map::new()));
+        if let Json::Object(editor) = editor
+            && let Json::Object(controls) = editor
+                .entry("controls")
+                .or_insert_with(|| Json::Object(Map::new()))
+            && let Json::Object(fields) = controls
+                .entry(kind)
+                .or_insert_with(|| Json::Object(Map::new()))
+        {
+            let _ = fields.insert(name.to_owned(), control.into_json());
+        }
+        self
+    }
+    /// Where the node's fields go on its card, and the visual it shows (ADR-33).
+    #[must_use]
+    pub fn layout(mut self, layout: Layout) -> Self {
+        self.editor("layout", layout.into_json());
+        self
+    }
+    /// Keep this definition available to saved graphs while omitting it from node search.
+    #[must_use]
+    pub fn hidden(mut self) -> Self {
+        self.editor("hidden", true.into());
+        self
+    }
+    /// A setting of the node itself, kept in its config and shown in an editor's
+    /// properties: `schema` is its JSON schema, such as
+    /// `{"type": "number", "minimum": 0}`. Settings suit what is fixed while a flow
+    /// runs, such as an entry's threshold; values that change belong on inputs.
+    #[must_use]
+    pub fn setting(mut self, name: &str, schema: Json) -> Self {
+        let config = self
+            .json
+            .entry("config_schema")
+            .or_insert_with(|| serde_json::json!({"type": "object", "properties": {}}));
+        if let Some(properties) = config.get_mut("properties").and_then(Json::as_object_mut) {
+            let _ = properties.insert(name.to_owned(), schema);
+        }
+        self
+    }
+    /// A data input of type `ty`, such as `core/string@1`. Inputs reach
+    /// [`Call::inputs`] in the order they are added.
+    #[must_use]
+    pub fn input(mut self, name: &str, ty: &str) -> Self {
+        self.ports
+            .push(serde_json::json!({"port_id": name, "direction": "input",
+            "kind": "data", "type": ty}));
+        self
+    }
+    /// A group of zero to max data inputs of one type. The graph supplies an
+    /// ordered instance of the port for each argument added to the node.
+    #[must_use]
+    pub fn variadic_input(mut self, name: &str, ty: &str, max: u16) -> Self {
+        self.ports.push(serde_json::json!({
+            "port_id": name, "direction": "input", "kind": "data", "type": ty,
+            "variadic": {"min": 0, "max": max}
+        }));
+        self
+    }
+
+    /// Adds variadic input slots that each use `default` while unwired and empty.
+    #[must_use]
+    pub fn variadic_input_default(mut self, name: &str, ty: &str, max: u16, default: Json) -> Self {
+        self.ports.push(serde_json::json!({
+            "port_id": name, "direction": "input", "kind": "data", "type": ty,
+            "variadic": {"min": 0, "max": max}, "default": default
+        }));
+        self
+    }
+
+    /// A data input like [`input`](Self::input) that takes `default`, a literal such as
+    /// `{"type": "core/u64@1", "value": "0"}`, when nothing is written or wired to it.
+    #[must_use]
+    pub fn input_default(mut self, name: &str, ty: &str, default: Json) -> Self {
+        self.ports
+            .push(serde_json::json!({"port_id": name, "direction": "input",
+            "kind": "data", "type": ty, "default": default}));
+        self
+    }
+    /// A data output of type `ty`, available when the node continues. Outputs are
+    /// returned in the order they are added.
+    #[must_use]
+    pub fn output(mut self, name: &str, ty: &str) -> Self {
+        self.ports
+            .push(serde_json::json!({"port_id": name, "direction": "output",
+            "kind": "data", "type": ty, "source": "execution", "available_on": ["then"]}));
+        self
+    }
+    /// The `payload` output of an entry: the value each firing carries.
+    #[must_use]
+    pub fn payload(mut self, ty: &str) -> Self {
+        self.ports.push(
+            serde_json::json!({"port_id": "payload", "direction": "output",
+            "kind": "data", "type": ty, "source": "payload"}),
+        );
+        self
+    }
+    /// This node takes the place of `<package>/<name>` version `version`, which the
+    /// package no longer ships. `ports` lists the ports renamed since, old to new. A
+    /// document that still has nodes of the old definition gets nodes of this one when
+    /// it is opened, with their values and wires kept.
+    #[must_use]
+    pub fn replaces(mut self, name: &str, version: u32, ports: &[(&str, &str)]) -> Self {
+        let ports: Map<String, Json> = ports
+            .iter()
+            .map(|(old, new)| ((*old).to_owned(), Json::from(*new)))
+            .collect();
+        let entry = serde_json::json!({
+            "definition_id": format!("{}/{name}", self.package),
+            "definition_version": version,
+            "ports": ports,
+        });
+        match self.json.get_mut("replaces") {
+            Some(Json::Array(list)) => list.push(entry),
+            _ => {
+                let _ = self
+                    .json
+                    .insert("replaces".to_owned(), Json::Array(vec![entry]));
+            }
+        }
+        self
+    }
+    /// The definition file text.
+    pub fn build(mut self) -> String {
+        let _ = self
+            .json
+            .insert("ports".to_owned(), Json::Array(self.ports));
+        Json::Object(self.json).to_string()
+    }
+}
+
+/// A set of native nodes and connection adapters built into the application.
+pub struct ServicePackage {
+    id: String,
+    version: String,
+    name: Option<String>,
+    description: Option<String>,
+    update_feed: Option<String>,
+    update_key: Option<String>,
+    nodes: Vec<(NodeDefinition, Arc<dyn ServiceNode>)>,
+    sources: Vec<(NodeDefinition, Arc<dyn ServiceSource>)>,
+    lives: Vec<(NodeDefinition, Arc<dyn LiveSource>)>,
+    adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
+    presentations: Vec<(DefinitionRef, Presentation)>,
+    replacements: Vec<Replacement>,
+    types: Vec<TypeDecl>,
+    catalogs: Vec<(String, String)>,
+}
+
+/// A type a package adds: a record with named fields or an enum with variants. Its
+/// full name is `<package id>/<name>@1`; field and payload types are type expressions
+/// such as `core/f64@1` or another type of the package. Values are
+/// [`Value::Record`] with the fields in declared order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeDecl {
+    Record {
+        name: String,
+        /// Each field's ID, its type and whether it may be absent.
+        fields: Vec<(String, String, bool)>,
+    },
+    Enum {
+        name: String,
+        /// Each variant's ID and the type of its payload, if it carries one.
+        variants: Vec<(String, Option<String>)>,
+    },
+}
+impl std::fmt::Debug for ServicePackage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServicePackage")
+            .field("id", &self.id)
+            .field("version", &self.version)
+            .field("nodes", &self.nodes.len())
+            .field("adapters", &self.adapters.len())
+            .finish()
+    }
+}
+impl ServicePackage {
+    /// `id` is the package namespace its definitions and adapter kinds live in.
+    pub fn new(id: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            version: version.into(),
+            name: None,
+            description: None,
+            update_feed: None,
+            update_key: None,
+            nodes: Vec::new(),
+            sources: Vec::new(),
+            lives: Vec::new(),
+            adapters: Vec::new(),
+            presentations: Vec::new(),
+            replacements: Vec::new(),
+            types: Vec::new(),
+            catalogs: Vec::new(),
+        }
+    }
+    /// Adds a record type `<package id>/<name>@1` with required fields, each an ID and
+    /// a type. The host checks the declaration when it starts and refuses to start
+    /// with one that is not valid.
+    pub fn record(mut self, name: &str, fields: &[(&str, &str)]) -> Self {
+        self.types.push(TypeDecl::Record {
+            name: name.to_owned(),
+            fields: fields
+                .iter()
+                .map(|(id, ty)| ((*id).to_owned(), (*ty).to_owned(), false))
+                .collect(),
+        });
+        self
+    }
+    /// Adds an enum type `<package id>/<name>@1`; a variant is an ID and the type of
+    /// its payload, if it carries one.
+    pub fn enumeration(mut self, name: &str, variants: &[(&str, Option<&str>)]) -> Self {
+        self.types.push(TypeDecl::Enum {
+            name: name.to_owned(),
+            variants: variants
+                .iter()
+                .map(|(id, payload)| ((*id).to_owned(), payload.map(str::to_owned)))
+                .collect(),
+        });
+        self
+    }
+    /// Adds a type declared in full, such as a record with optional fields.
+    pub fn declare(mut self, declaration: TypeDecl) -> Self {
+        self.types.push(declaration);
+        self
+    }
+    /// The types this package adds.
+    pub fn types(&self) -> &[TypeDecl] {
+        &self.types
+    }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+    /// Sets what a package list shows for this package: a display name and one
+    /// paragraph on what it adds.
+    pub fn about(mut self, name: impl Into<String>, description: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self.description = Some(description.into());
+        self
+    }
+    /// Names where newer versions of this package are announced: the `https://` URL of
+    /// an update feed and, optionally, the publisher's feed-signing key
+    /// (`ed25519:<64 hex>`). An application reads the feed and offers releases built
+    /// for its [`TARGET`].
+    pub fn update(mut self, feed: impl Into<String>, key: Option<&str>) -> Self {
+        self.update_feed = Some(feed.into());
+        self.update_key = key.map(str::to_owned);
+        self
+    }
+    /// The update feed URL and signing key, when [`update`](Self::update) set them.
+    pub fn update_source(&self) -> Option<(&str, Option<&str>)> {
+        Some((self.update_feed.as_deref()?, self.update_key.as_deref()))
+    }
+    /// The display name, when [`about`](Self::about) set one.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+    /// What the package adds, when [`about`](Self::about) said so.
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    /// The asynchronous nodes, each with its definition.
+    pub fn nodes(&self) -> &[(NodeDefinition, Arc<dyn ServiceNode>)] {
+        &self.nodes
+    }
+    /// The entry nodes, each with its definition.
+    pub fn sources(&self) -> &[(NodeDefinition, Arc<dyn ServiceSource>)] {
+        &self.sources
+    }
+    /// The live nodes, each with its definition.
+    pub fn lives(&self) -> &[(NodeDefinition, Arc<dyn LiveSource>)] {
+        &self.lives
+    }
+    /// The connection adapters by adapter kind.
+    pub fn adapters(&self) -> &[(String, Arc<dyn ConnectionAdapter>)] {
+        &self.adapters
+    }
+    /// What each definition file says about showing its node.
+    pub fn presentations(&self) -> &[(DefinitionRef, Presentation)] {
+        &self.presentations
+    }
+    /// Adds the package's text in language `locale` (such as `es`): Fluent messages
+    /// whose IDs are message keys with `/`, `.` and `_` written as `-`, so
+    /// `org.example.demo/fetch-label` is `org-example-demo-fetch-label`. Labels,
+    /// descriptions, categories and keywords are looked up there before their English
+    /// text.
+    #[must_use]
+    pub fn messages(mut self, locale: &str, catalog: &str) -> Self {
+        self.catalogs.push((locale.to_owned(), catalog.to_owned()));
+        self
+    }
+    /// Adds every `(locale, Fluent text)` pair, such as the list `app/build/locales.rs`
+    /// makes of a crate's `locales/<tag>/*.ftl` files.
+    #[must_use]
+    pub fn with_catalogs(self, catalogs: &[(&str, &str)]) -> Self {
+        catalogs.iter().fold(self, |package, (locale, catalog)| {
+            package.messages(locale, catalog)
+        })
+    }
+    /// The catalogues [`messages`](Self::messages) added, as (language, text).
+    pub fn catalogs(&self) -> &[(String, String)] {
+        &self.catalogs
+    }
+    /// The older definitions the package's definition files say their nodes replace.
+    pub fn replacements(&self) -> &[Replacement] {
+        &self.replacements
+    }
+    /// Reads a definition file and keeps what it says besides the contract.
+    fn read(&mut self, definition: &str) -> Result<NodeDefinition, DefinitionError> {
+        let file = NodeDefinition::read_file(definition)?;
+        self.presentations
+            .push((file.definition.definition.clone(), file.presentation));
+        self.replacements.extend(file.replaces);
+        Ok(file.definition)
+    }
+    /// Adds an asynchronous node from its definition file text.
+    pub fn node(
+        mut self,
+        definition: &str,
+        node: impl ServiceNode,
+    ) -> Result<Self, DefinitionError> {
+        let definition = self.read(definition)?;
+        self.nodes.push((definition, Arc::new(node)));
+        Ok(self)
+    }
+    /// Adds a node whose one data output is a stream, from its definition file text:
+    /// an asynchronous node with an output of type `core/stream@1<T>`.
+    pub fn stream(
+        self,
+        definition: &str,
+        stream: impl ServiceStream,
+    ) -> Result<Self, DefinitionError> {
+        self.node(definition, Streaming(Arc::new(stream)))
+    }
+    /// Adds an entry node from its definition file text. The definition's kind is
+    /// `entry`; it has a `then` outcome and at most one data output, `payload`.
+    pub fn source(
+        mut self,
+        definition: &str,
+        source: impl ServiceSource,
+    ) -> Result<Self, DefinitionError> {
+        let definition = self.read(definition)?;
+        self.sources.push((definition, Arc::new(source)));
+        Ok(self)
+    }
+    /// Adds a live node from its definition file text ([`Definition::read`]).
+    pub fn live(
+        mut self,
+        definition: &str,
+        source: impl LiveSource,
+    ) -> Result<Self, DefinitionError> {
+        let definition = self.read(definition)?;
+        self.lives.push((definition, Arc::new(source)));
+        Ok(self)
+    }
+    /// Adds the adapter for connections whose `adapter` is `kind`.
+    pub fn adapter(mut self, kind: impl Into<String>, adapter: impl ConnectionAdapter) -> Self {
+        self.adapters.push((kind.into(), Arc::new(adapter)));
+        self
+    }
+}
+
+/// Identifies the build a plugin library is compatible with: the SDK's interface
+/// revision and version, the exact compiler and the target. A library exports the
+/// value it was compiled with and a host loads it only when it equals the host's own.
+///
+/// Equal text is necessary, not sufficient: a plugin must also resolve the SDK's
+/// dependencies to the same versions and features as the host, because their types
+/// cross the boundary too. Building the plugin against the host's lockfile ensures it.
+pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
+    concat!(
+        // The interface revision: raise it when a type or trait a plugin library
+        // exchanges with its host changes shape.
+        "orange-plugin 11",
+        " sdk ",
+        env!("CARGO_PKG_VERSION"),
+        " rustc ",
+        env!("ORANGE_SDK_RUSTC"),
+        " ",
+        env!("ORANGE_SDK_TARGET"),
+        "\0"
+    )
+    .as_bytes(),
+) {
+    Ok(text) => text,
+    Err(_) => panic!("the plugin ABI text contains a NUL byte"),
+};
+
+/// The compiler target this SDK was built for, such as `x86_64-pc-windows-msvc`: the
+/// target a native plugin library release must name to be offered as an update.
+pub const TARGET: &str = env!("ORANGE_SDK_TARGET");
+
+/// Name of the symbol a plugin library exports for [`ABI`].
+pub const ABI_SYMBOL: &str = "orange_plugin_abi";
+/// Name of the symbol a plugin library exports for its [`ServicePackage`].
+pub const PACKAGE_SYMBOL: &str = "orange_plugin_package";
+
+/// Makes a `cdylib` crate a native plugin library: exports the function that returns
+/// its [`ServicePackage`] and the [`ABI`] it was built with.
+///
+/// ```no_run
+/// fn package() -> orange_sdk::ServicePackage {
+///     orange_sdk::ServicePackage::new("org.example.demo", "1.0.0")
+/// }
+/// orange_sdk::export_plugin!(package);
+/// ```
+///
+/// A native plugin runs inside the application with all of its rights; nothing limits
+/// what it does, and a panic in it ends the application. Use once per library.
+#[macro_export]
+macro_rules! export_plugin {
+    ($package:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn orange_plugin_abi() -> *const ::core::ffi::c_char {
+            $crate::ABI.as_ptr()
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn orange_plugin_package() -> *mut ::core::ffi::c_void {
+            let package: $crate::ServicePackage = $package();
+            ::std::boxed::Box::into_raw(::std::boxed::Box::new(package)).cast()
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_built_definition_is_the_file_a_package_would_write_by_hand() {
+        let built = Definition::node("org.example.demo", "fetch", "Fetch")
+            .description("Fetches a thing.")
+            .category("demo", "Demo")
+            .connection()
+            .input("path", "core/string@1")
+            .output("status", "core/i64@1")
+            .build();
+        let by_hand = serde_json::json!({
+            "definition_id": "org.example.demo/fetch",
+            "label": {"key": "org.example.demo/fetch-label", "fallback": "Fetch"},
+            "description": {"key": "org.example.demo/fetch-description",
+                "fallback": "Fetches a thing."},
+            "editor": {"category_id": "org.example.demo/category-demo",
+                "category": {"key": "org.example.demo/category-demo", "fallback": "Demo"}},
+            "definition_version": 1, "config_version": 1,
+            "kind": "async", "suspends": "always", "determinism": "external",
+            "connection": true,
+            "ports": [
+                {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
+                {"port_id": "status", "direction": "output", "kind": "data", "type": "core/i64@1",
+                    "source": "execution", "available_on": ["then"]}
+            ]
+        });
+        assert_eq!(serde_json::from_str::<Json>(&built).unwrap(), by_hand);
+        // The host's own reader accepts it, with its text.
+        let (definition, presentation) = NodeDefinition::described(&built).unwrap();
+        assert_eq!(definition.definition.id.as_str(), "org.example.demo/fetch");
+        let _ = presentation;
+
+        let entry = Definition::entry("org.example.demo", "on-thing", "On thing")
+            .payload("core/string@1")
+            .build();
+        let entry: Json = serde_json::from_str(&entry).unwrap();
+        assert_eq!(entry["kind"], "entry");
+        assert!(entry.get("suspends").is_none());
+        assert_eq!(entry["ports"][0]["source"], "payload");
+        assert!(NodeDefinition::described(&entry.to_string()).is_ok());
+    }
+
+    #[test]
+    fn a_port_description_is_a_text_reference_the_host_reads() {
+        let built = Definition::node("org.example.demo", "fetch", "Fetch")
+            .input("path", "core/string@1")
+            .port_description("path", "Where to fetch from.")
+            .port_description("missing", "Describes nothing.")
+            .build();
+        let json: Json = serde_json::from_str(&built).unwrap();
+        assert_eq!(
+            json["ports"][0]["description"],
+            serde_json::json!({"key": "org.example.demo/fetch-port-path",
+                "fallback": "Where to fetch from."})
+        );
+        assert_eq!(json["ports"].as_array().unwrap().len(), 1);
+        // The host accepts it; its port views read the text (orange-host port help tests).
+        assert!(NodeDefinition::described(&built).is_ok());
+    }
+
+    #[derive(Debug)]
+    struct Nothing;
+    impl ServiceNode for Nothing {
+        fn run(&self, _: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn a_package_keeps_what_its_definitions_replace() {
+        let meter = Definition::node("org.example.demo", "band-level", "Band level")
+            .replaces("level", 1, &[("stream", "signal")])
+            .replaces("input-level", 1, &[])
+            .input("signal", "core/f64@1")
+            .build();
+        let package = ServicePackage::new("org.example.demo", "2.0.0")
+            .node(&meter, Nothing)
+            .unwrap();
+        let replaced: Vec<_> = package
+            .replacements()
+            .iter()
+            .map(|step| {
+                (
+                    step.from.id.as_str().to_owned(),
+                    step.from.version,
+                    step.to.id.as_str().to_owned(),
+                    step.ports.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            replaced,
+            [
+                (
+                    "org.example.demo/level".to_owned(),
+                    1,
+                    "org.example.demo/band-level".to_owned(),
+                    1
+                ),
+                (
+                    "org.example.demo/input-level".to_owned(),
+                    1,
+                    "org.example.demo/band-level".to_owned(),
+                    0
+                ),
+            ]
+        );
+    }
+}

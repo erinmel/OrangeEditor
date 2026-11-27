@@ -1,5 +1,522 @@
 # Data, compilation and execution contracts
 
+Current effect/reactivity/stream additions (2026-11-06): the bounded profiles below
+extend the earlier execution evidence; they do not complete concrete services,
+incremental authoring preview or graph stream iteration. Verification is in [10](10-development.md).
+
+## Trusted execution boundary (C11a/C09a, 2026-11-06)
+
+### Persistent-value bootstrap (C13, 2026-11-08)
+
+The host explicitly selects persistent run/workspace variable IDs. Clean Stopped
+Runs and immutable Workspace publications produce bounded version1 value
+checkpoints; local, resource, stream, error/result and unsupported recursive values
+are excluded. The format preserves exact float bits, opaque JSON text and
+uninitialized/Option/missing distinctions through native codecs. Unknown fields,
+duplicate keys/IDs, unsupported versions and over-quota artifacts are refused.
+
+Restore validates graph namespace, selected declaration scope/persistence, exact
+types, resolved schemas, codec identities and declared package/provider locks
+before constructing a fresh actor. Selected values replace initializers before
+state/frame/Watch initialization; other state initializes normally. Existing
+actors and source bytes never change on refusal. Workspace restoration creates a
+new identity/version0, leaving old runs/snapshots/commands pinned to their owner.
+There is no in-place live restore or migration of stack, clock, seed counters,
+timers, queues, bus leases, resources or effect requests. Capture/import/startup
+executes no provider callback. Fresh On Start actions execute only on later
+explicit pumping; this is value carryover rather than continuation/event replay.
+
+The host owns selection sensitivity, artifact storage/integrity and any stop-save
+policy; there is no automatic save or OS storage operation. SHA-256 checks
+compatibility, not authorization. Runtime startup quotas still apply in addition
+to the artifact limits. The closed structural schema, exact framing/vector,
+limits and scope are in[20](20-value-checkpoints.md); executed verification is in10.
+
+### Cross-run workspace events (C12c, 2026-11-08)
+
+`WorkspaceBus` is an exclusively borrowed native host actor. It pins a workspace
+identity, event IDs and ordinary payload schemas from the host document/registry;
+foreign domains, unsupported/resource payloads and incompatible plan schemas
+are refused without invoking executable providers. A Run starts with a compatible
+workspace snapshot and explicitly attaches one bus endpoint. Only its checked
+workspace events can be sent; only checked On Event/potential Await references
+subscribe. Bus identity and Run identity never reuse. Broadcast targets **other
+runs**, excluding its source. No changes to saved event/Emit signatures are made.
+
+`Run::pump_with_workspace_bus(&mut bus, budget)` borrows that bus while executing
+bounded native fan-out. Workspace Emit remains a synchronous Action: it commits
+admission before `then`, or takes its normal failed route. It never waits for a
+host acknowledgement or executes a receiving graph inline. Ordinary Running
+pumps reject workspace-event plans without the matching bus before graph work;
+plain cancellation/drain pumps remain available, and Emit while draining fails
+with RunStopping. No bus pointer, shared graph lock, worker, OS operation or
+provider callback is stored or introduced by this bridge.
+
+The host takes each recipient's FIFO `WorkspaceDelivery` and consumes it with
+`Run::ingest_workspace`; a boxed refusal returns the same authentic message for
+retry/drop. Messages cannot be constructed/cloned by downstream code. Ingestion
+checks exact endpoint identity, open lifetime, increasing accepted bus sequence,
+causal depth and Run admission bounds before changing queues/order. It uses the
+ordinary transactional handler-plus-Await admission, retaining Queue/Drop/Replace/
+Parallel semantics and timeout/cancellation rules. The receiving graph runs on
+later pumps. Ordinary registered host sources cannot bypass workspace transport.
+
+The immutable envelope has workspace/bus/event/source/target identity, original
+source node/scope, per-source-node sequence, checked global bus ingestion sequence,
+cause/depth and source virtual time. Run EventMetadata stores a compact source
+origin plus its existing event/cause/depth/source sequence and recipient ingestion
+order/time; source time never advances the recipient clock. The source Run
+qualifies cause identities. Causal depth is preserved across the bus and checked
+again at the recipient. This profile adds no host wall-clock source.
+
+Each endpoint has explicit finite item/byte queue bounds. Fault refuses the whole
+emission; DropNewest deliberately skips that recipient; DropOldest removes the
+minimal prefix needed for both bounds; CoalesceLatest clears its pending queue
+only on overflow. Backpressure is invalid. Type, causal and single-payload hard
+limits still precede loss. Every disposition and new lifetime reservation is staged
+before any eviction. Hard refusal leaves fan-out queues/source/global sequences
+unchanged, apart from the bus refusal counter and prior closed-endpoint reaping.
+Accepted loss still advances source/global sequence. Bus transport counters and
+Run handler/waiter counters describe separate admissions.
+
+Defaults:4096 events,16MiB schema,1024 endpoints,256 items/1MiB per queue,1MiB per
+payload,4096 retained items/64MiB aggregate bytes,causal depth64. Explicit endpoint
+queues must fit those host ceilings. Global leases include **host-drained inflight
+messages**, schema and endpoint metadata; endpoint/message holders retain their
+leases after bus/Run drop until their last owner drops. Old/new queue staging is
+conservative and may need room for both. Run stop/fault observation/disposal/drop,
+host revocation and bus drop close a monotonic endpoint signal immediately; the
+next bus boundary reaps physical queues. Already admitted Run deliveries keep
+ordinary Run ownership; graceful stop drains them, while cancel retires them.
+Return/Race retire their actual waiters through existing region cleanup. A caught
+provider panic closes the endpoint when interruption is observed at the next Run
+boundary. Nominal bounds exclude pinned registry, host-made Value copies,
+allocator/RSS and physical latency claims. C05 refuses workspace-event plans.
+Supported-value checkpoints remain C13 work. Verification is in10.
+
+**Host transport (2026-11-26, ADR-35).** `orange-host` owns one `WorkspaceBus`,
+built by `Host::share_variables` from the declaring document when it has
+workspace events, beside the shared-variable `Workspace`. A run whose plan has
+workspace events starts in the workspace and attaches with the default
+`WorkspaceQueue` (256 items, 1 MiB, fault on overflow) when the host opens or
+replaces its flow. A document whose events do not match the declaration does not
+open. Each turn, with the bus held, the flow admits its pending deliveries, pumps
+through `RunDriver::turn_with_workspace_bus`, then wakes the other flows if it
+enqueued anything. A delivery refused for capacity waits for the next turn; one
+refused because the run or endpoint closed is dropped. Deliveries waiting for a
+replaced run are not carried to its successor.
+
+### Graph workspace values (C12b, 2026-11-07)
+
+The control compiler now lowers workspace Get in root/called scopes and exact
+Set-shared/Update-shared using the existing native typed operations. Shared
+initializers are owned once by Workspace and never copied into a Run's variable
+cells. The ordinary Run constructor refuses plans with shared values; the host
+uses `Run::start_in_workspace` with an exact compatible immutable snapshot.
+Saved contracts, types and provider pins remain unchanged.
+
+The host drives `take_shared` → `Workspace::apply_shared` → `complete_shared`.
+Requests and receipts have private construction, no Clone and no conversion from
+a committed receipt back to a request. Exclusive Workspace ownership serializes
+the commit. Ordinary effect take/completion APIs cannot consume these commands.
+Each request is handed out once; a wrong-workspace, cancellation or quota refusal
+returns the original input for retry/rejection. A successful receipt contains
+immutable old/new/exchanged views; successful completion reserves both outputs
+and publication before queuing the continuation. It installs the committed
+snapshot before `then`, retaining an already newer installed publication.
+No host ingress executes graph code inline. The host can explicitly deliver
+newer snapshots to other runs using `publish_workspace`; no background observer
+or global mutable read is implied. Get reads the latest **accepted** publication
+at consumption start and retains that epoch's frozen potential inputs across
+subsequent pump slices. Uninitialized Get/Update has the existing graph fault.
+
+Cancellation before host commit makes the command stale. A commit already
+accepted by the host is never rolled back by cancellation, quota refusal or graph
+retirement; a canceled continuation cannot publish its results. A permanent
+completion refusal can be retired with a checked graph fault through
+`fail_shared_receipt`, or by stopping the run. This never recreates an executable
+write. Fault metadata has the same effect quotas and can itself be refused.
+`fail_shared` rejects an uncommitted request without mutating Workspace.
+
+The shared projection separately obeys `max_state_bytes` and the Run aggregate
+budget; Workspace's full roots/cells retain their own lifetime leases. Taking a
+request reserves its payload and metadata against the Run budget before handing
+it out; cancellation/disposal does not refund that external holder until it drops.
+Snapshot replacement conservatively stages old and new reservations together.
+Arbitrary host-made value copies and allocator/RSS costs remain outside nominal
+accounting. C05 refuses shared plans rather than replaying external mutations.
+Cross-run event transport/lease cleanup, checkpoint restore and physical
+qualification remain open. Executed verification is in10.
+
+### Host workspace value actor (C12a, 2026-11-07)
+
+`orange_runtime::Workspace` is an exclusively mutated host actor for workspace
+variable declarations. It initializes once from a document and pinned registry,
+accepting only the currently supported control-domain bodies,
+resolves ordinary executable ValueShapes, and decodes optional initializers with
+the existing bounded literal codec. Local/run declarations are excluded. Unknown,
+recursive/unsupported or resource/stream shapes and invalid/over-quota initializers
+are refused. Names/initializers in a later compatible document never reset existing
+shared values. Compatibility checks exact variable IDs, type expressions and
+resolved structural shape/schema facts; this is not hot schema migration or an
+execution/provider grant.
+
+`set` and `update` serialize through exclusive host ownership and return an immutable
+`WorkspaceCommit` with the newly published snapshot, old/new value views, written,
+optional exchanged and changed metadata. Update reuses the ordinary Run's native
+Add/Sub, Min/Max, And/Or/Xor, Append and Compare-and-set computation. Whole operand/
+result type and quota checks precede publication. An uninitialized Update refuses;
+Set initializes. CAS requires an exact host Eq shape, respects map-order-independent
+equality and never invents Eq for raw floats/package-only constraints. Mismatch
+does not write or advance version. Successful writes, including equal replacements,
+advance a checked nonwrapping version; `changed` uses host Eq, or is None when no
+language Eq implementation exists. Failed type/quota/arithmetic/version checks
+leave the current snapshot and reservations unchanged.
+
+Snapshots contain immutable Arc cells under a private nonreused workspace identity.
+Unchanged cells share one reservation across generations. Every root's map metadata,
+schema metadata and versioned cell values have aggregate leases. Old snapshots and
+commit views keep their leases after actor drop until their last reader drops;
+`WorkspaceMeter` owns only a read-only accounting observer. Arbitrary value copies
+made by the host are host-owned; snapshot/receipt clones retain the original leases.
+Debug/errors omit values, config, labels and provider formatting.
+
+Defaults: 4096 variables, 16 MiB schema metadata, 16 MiB per value/current value
+state, and 64 MiB total retained reservations. The aggregate includes historical
+generations still held by readers. Staging conservatively retains the old root/
+value while admitting the next, so replacement may require space for both even
+without external readers. Counts are nominal, excluding pinned registry/allocator/
+RSS cost; they do not prove physical performance. Host calls establish commit order;
+there is no internal thread, shared graph lock, OS service or persistence.
+
+This is C12a's value actor. Graph workspace Get, asynchronous Set-shared/Update-shared,
+read-your-writes before graph `then`, bounded cross-run event bus/lease cleanup and
+checkpoint restore remain subsequent integration. Ordinary Run/compiler workspace
+restrictions are still in force. Standalone workspace mutations are outside C05's
+sealed Run history; replay must never resend them. Contracts/shape representation
+are in 11/12 and executed checks in 10. Whole C12/core/NFR gates are not inferred.
+
+### Effect-free authoring preview (C07b, 2026-11-07)
+
+`orange_compiler::PurePreview<R>` owns its trusted pure resolver, bounded fold
+cache and latest immutable `PreviewSnapshot`. `update` requires fresh successful
+semantic analysis and applies ordinary compiler admission/type/provider/constant
+quotas before publication. It previews persisted export roots, including supported
+graph-local Pure calls. Unrelated controls/services/volatile nodes remain inert;
+every potential dependency of a selected export, including an unselected lazy
+alternative, must be pure. No EffectResolver, Run, service acquisition, state/clock
+read or entropy callback exists in this profile. Seeded/stateful preview and data
+iteration zones remain outside this pure-export compiler profile.
+
+The existing constant folder retains ordinary lazy demand, typed slots, steps,
+diagnostics and fault provenance. At its fold boundary a cache hit requires exact
+node metadata, fresh specialized signature, bound input/output port order, scope
+identity and immutable input values under the same registry generation. Matching
+uses structural values, not language Eq or a hash as authority. Config/type/input
+changes recompute; unchanged results in unrelated cones remain cached. An edge
+rewire to equal values can reuse its consumer. Unselected arms never execute.
+Cached faults recreate ordinary ConstError diagnostics; inherited faults/Try keep
+their current producer identity. Full graph admission and metadata traversal may
+still occur; callback reuse does not qualify incremental validation or timing.
+
+Each function invocation has its own cache scope. The complete admitted call-site
+layout is compared before using scope indices; changed ancestry/layout explicitly
+clears the cache. Graph identity and registry generation changes also reset it.
+The session retains its resolver; each locked provider's semantics must remain
+immutable. Prior snapshots and running plans keep their own provider/context pins;
+updating authoring never mutates an existing Run or recompiles its frozen plan.
+
+`PreviewLimits` defaults to 20,000 entries/16 MiB of nominal cache storage, separate
+from the publication's CompileLimits. Charges include fixed entry/call metadata,
+bounded serialized node/signature/port metadata and typed retained inputs/results.
+Metadata is counted before cloning without creating a temporary JSON value.
+Unavailable cache capacity skips retention, preserving graph results; zero limits
+disable caching. Successful publication removes entries not demanded in that
+update. These are nominal bounds, excluding allocator/RSS and externally retained
+snapshots, not physical memory qualification. Stats report actual folds/reuses,
+uncached computations, current entries/bytes, reset reason, request and publication.
+
+Only a successful final cancellation checkpoint publishes. An ordinary failed
+update clears the cache and latest publication; external old snapshots remain
+immutable and enforce their own document/registry freshness on `evaluate`.
+An open-update guard survives provider/resolver panic; the next update discards
+interrupted cache state before recovery. Snapshot/session Debug omits values,
+configuration, provider formatting and resolver internals. The host owns worker
+scheduling and stale-result presentation. There is no editor thread, executor,
+graph mutation, dependency/feature/format change or physical NFR claim. Checks are in 10.
+
+### Bounded reference-only recording and replay (C05, 2026-11-07)
+
+`RecordedRun::start` owns a fresh Run and pins its exact immutable compiled plan,
+provider snapshot, seed, options and `ENTROPY_ALGORITHM`. Only immutable `inspect`
+is exposed; mutations pass through recorded pump budgets, clock advancement,
+manual triggers, source registration/revocation, host ingestion, Async request
+handoff/completion and explicit stop. Internal timers, Emit/Await, Watch, entropy
+and local computation are recomputed. Refused ordinary operations retain their
+typed outcomes, preserving source order, complete-once rules and overflow counters.
+Process-specific run identities are remapped, including foreign-token refusals;
+source generations, operation sequences, node IDs and arrival order stay semantic.
+
+Every synchronous trusted Action reserves an entry before its callback and records
+its safe fault or typed result reference inside the enclosing pump command. Replay
+substitutes that result without invoking the callback. Async request handoffs are
+consumed internally and recorded results use the ordinary completion boundary;
+no request reaches an external executor. Replay returns read-only inspection and
+cannot expose pending requests or continue as live execution. Stop before accepted
+result publication still wins. Replay uses exact recorded host/pump boundaries;
+independent recordings at different budgets must preserve language semantics.
+`begin_replay` returns a read-only `ReplayPlayback`; each `step` executes at most
+one saved host command with that command's original pump work bound. Premature
+finish is refused and divergence permanently invalidates that playback. The
+`replay` convenience method intentionally executes the whole finite prefix in one
+call; an interactive host can drive `step` on its existing worker instead.
+A step interruption guard also refuses finish/resume after a caught host archive
+panic, including when that command was the last entry and no Run pump had started.
+
+`ReplayArchive` is an explicit trusted host sensitivity/integrity boundary. It
+captures values under host policy and resolves immutable `ReplayPayloadRef`
+identities; both callbacks must be bounded/nonblocking. Journal entries contain
+references, scalar metadata and safe redacted fault envelopes, never captured values,
+credentials, formatted payloads or an archive owner. The archive must preserve exact
+values or return `Excluded`; changing a string to a redacted string changes graph
+semantics and cannot qualify exact replay. Missing references and invalid typed
+results fail closed. Archive authentication, retention, credentials and storage
+quotas remain host-owned, outside Run/journal accounting. Plan/context references
+remain pinned in memory; no credential bytes are exported as a log format. Debug
+shows metadata/counts only and never invokes archive/provider formatters.
+
+`ReplayOptions` defaults to 8192 fixed entries/2 MiB of entry and fault-text storage. Count/byte
+overflow or allocation refusal is checked before Run starts. A full journal refuses
+a host command before mutation and increments `full_refusals`; it never evicts old
+records. If an Action cannot reserve inside a pump, it does not run and the run
+faults `RunError::ReplayFailed`, leaving the journal incomplete. Shared fault
+identifiers count toward `max_bytes` as well as fixed entry storage. A fault-result
+storage refusal after a callback/completion invalidates the recording; the effect
+may already have executed and must never be retried to repair the journal. Archive exclusion/
+failure after an already executed callback also invalidates the recording; it cannot
+undo that real effect. Placeholders and the pump interruption guard prevent sealing
+after a caught panic. `finish` seals a complete prefix and returns the original live
+Run separately; it does not claim the whole Run is Stopped. `abort` abandons the
+journal, requests immediate stop independently of capacity and returns the Run for
+remaining bounded cleanup. Stats expose entry count, nominal reserved bytes, full
+refusals and completeness; archive/plan/allocator/RSS cost is excluded.
+
+This profile accepts ordinary typed value effects and explicit virtual time/stop.
+Live CancelToken timing and resource/stream operations/results are refused before
+start; no sockets, handles, producers or arbitrary live continuations are restored.
+The sealed history reuses its exact in-process plan, with normal document/registry
+freshness checks. It is not a portable serialized log, recompiled-plan hash format,
+credential archive or checkpoint. Portable version/provider identity and concrete
+adapter replay remain separate integration gates. Executed checks are in 10;
+physical recording overhead/latency/RSS qualification remains deferred.
+
+### Bounded Tee and push bridges (C10, 2026-11-07)
+
+`Run::open_push_stream(item_type, StreamBufferOptions)` acquires a run-owned
+affine stream and a cloneable `PushStreamSource`. `push_stream(source, sequence,
+&value)` admits a whole typed item in host call order without graph execution.
+Sequences are nonzero and strictly increasing; gaps are allowed. A bad sequence,
+type, item/aggregate quota or Backpressure/Full refusal changes neither queues nor
+accepted sequence, so the same sequence can be corrected/retried. A deliberate
+drop accepts its sequence. `finish_push_stream` stops admission and drains accepted
+queues before End; `fail_push_stream` discards unread queues and supplies a safe
+redacted producer fault. Shared fault identifiers count toward bridge and pending
+delivery retention; insufficient space produces a static `core/LimitExceeded`
+fault while preserving bounded cleanup. New items require Running; finish/fail also work while
+Draining so an already accepted read can terminate. The source's monotonic
+`is_closed` signal means its consumer resource has closed, and owns no queued data.
+
+`tee_stream` consumes one unclaimed stream and returns two independent affine
+streams. Graph `core/tee` uses the same hub (11 §12). Refusal before acquisition
+preserves consuming authority. The hub owns its upstream independently of its
+original acquisition region; each branch has normal dynamic ownership, including
+function argument/Return transfer. Closing one branch discards that branch's queue
+and unblocks the other. Closing the last branch closes upstream once. Normal End
+drains each queue; producer failure or Fault overflow discards unread queues and
+fails both consumers. Host bridge revocation also discards accepted unpublished
+results through ordinary resource invalidation. Nested Tee is bounded at 32 levels.
+
+Every consumer has a finite queue with positive `capacity` and `max_bytes`, and one
+of `StreamOverflow::{Backpressure, DropOldest, DropNewest, Fault}`. Backpressure
+refuses a full push or suspends a pull without polling upstream. Drop policies
+affect only full consumers. Fault overflow terminates the hub with
+`core/QueueOverflow`, without partial new delivery. All branch policies, allocation
+and joint aggregate growth are admitted before fan-out mutation. Queue limits
+exclude the one already accepted immutable C09a pending result per consumer; that
+result retains its separate item/aggregate charge and is never overwritten or
+evicted. A variable-sized upstream item can occupy one separately aggregate-leased
+staging slot while a slow branch frees bytes. There is no further upstream pull
+until that item can be admitted.
+
+Options default to 64 items/1 MiB/Backpressure. Run limits
+`max_stream_bridge_items` (1024) and `max_stream_bridge_bytes` (16 MiB) cap each
+consumer queue; `max_resources`, `max_stream_item_bytes` and aggregate limits also
+apply. These additive public RunLimits fields require downstream struct literals
+to update. No dependency, feature, saved format or provider-lock change is needed.
+
+Bridge admission/completion only schedules actor work. One bridge pump work item
+reads upstream at most once and can hand off to both waiting consumers. External
+`complete_stream` cannot inject results into bridge-owned demands. Ready/source
+indexes retain live identities only; no completed history or worker/executor is
+introduced. `stream_bridge_stats`/`stream_bridges` expose type, source sequence,
+staged bytes and accepted/delivered/dropped/queued counters, never payloads.
+Delivered counts handoff into consumer ownership, including an accepted pending
+result, rather than execution of its graph continuation. Fault/close discards count
+as drops. Stats disappear when the last branch retires. Concrete push adapters and
+physical timing/RSS qualification remain open; mandatory correctness checks are in 10.
+
+### Graph stream execution (C09b, 2026-11-07)
+
+Direct `Value::Stream` aliases reuse authenticated run/generation/kind/region
+evidence and the existing pull-stream resource slab. `stream_value(handle)` exposes
+a host stream without claiming or pulling. `complete_effect_stream(id, item_type,
+producer)` atomically acquires a pending Async's sole typed stream result for its
+executing region. Any refusal returns the original producer unclosed in
+`EffectStreamRefused`; type/resource/metadata/result quota failures release staging
+and leave a valid pending effect retryable. Host-issued run streams retain their
+Run owner until a function argument explicitly transfers affine ownership.
+
+The executable nodes and exact ports/config are in 11 §12. Consumer authority is
+claimed by activation/function-frame/control-node identity, independent of alias
+cloning. Next Item reentry uses the same claim; normal end has an authenticated
+terminal marker so repeated reads return None without touching a reused slot.
+Stream arguments move ownership into a graph-local Action/Async callee and
+unreturned streams close there; returned streams use C08b Return transfer and
+post-cleanup publication checks. Arbitrary effect stream inputs and nested
+resource shapes remain refused.
+
+A separate actor directory owns parked strands, prepared stream inputs and their
+state/aggregate holds. It indexes exact stream/demand identities for host wakeup,
+uses a ready queue for bounded collection work and removes retired indexes.
+Completions only admit and wake; a later pump publishes. Ready stream work follows
+due timers and effect completions, before Await/event dispatch. Each read is a work item,
+and collection advances one read per item before publishing its whole typed list.
+Partial collection and buffered results retain the existing separate stream quotas
+and aggregate leases. Iterator item/index frames reserve activation/aggregate
+storage and stay immutable while descendants or cancellation cleanup retain them.
+
+The host schedules another turn when a service stream completes after the
+pump, including when it has no other input. Cancelling a stream does not wait for
+an in-flight worker pull. The worker retains the producer until that pull returns,
+and the run rejects any late completion for the closed demand.
+
+No next pull occurs while the current body owns any work. Break/Return/Race/stop
+close unfinished consumers/cursors, even when acquisition belonged to an ancestor;
+Continue retains the cursor until body cleanup completes. Host revocation cancels
+accepted unpublished work. Producer panic closes the stream before unwinding into
+the existing interrupted-pump policy.
+
+`RunOwnership::stream_reads` counts parked graph operations. Direct aliases remain
+16 nominal bytes and shared evidence/terminal metadata is aggregate-leased until
+its last alias drops, including external invalidated aliases. There is no OS
+executor, polling, service implementation, tee or push bridge in this increment.
+Physical timing/RSS qualification is deferred; mandatory correctness checks remain.
+
+### Graph resource ownership (C08b, 2026-11-07)
+
+Direct `core/handle@1<K>` values now cross trusted effect ports and graph-local
+Action/Async function interfaces, and `core/close-handle@1` consumes them. `K` must
+resolve to a registered handle kind. This profile admits a handle result only as
+an effect's sole data result. It adds no resource containers, variable/register/
+event storage, pure handle kernels, persistence or graph stream operations.
+
+`Run::resource_value` exposes an existing host resource as an authenticated alias;
+the resource retains its run owner. `complete_effect_resource(id, kind, object)`
+acquires a new resource for the pending Async's dynamic region and admits its
+sole typed result atomically. Wrong identity/type, resource capacity, metadata or
+result quota refusals return the object unclosed in `EffectResourceRefused` and
+release any staged reservations. A valid pending effect stays pending for retry;
+stale identities cannot be revived. No continuation executes
+inside completion admission. The host still handles real service acquisition and
+any late worker result after cancellation.
+
+Cloning a value creates an alias, never an additional resource owner. Execution
+checks private issuing evidence, canonical alias identity, run, live generation,
+exact kind and owner ancestry before effect/function consumption or publication.
+Descendants borrow ancestor resources; sibling scopes cannot publish each other's
+resources. Successful Return transfers returned callee-owned resources to the
+caller before callee cancellation; borrowed ancestor/run resources retain their
+owner. Results are checked again after Return cleanup, which may have closed one.
+
+Normal region retirement closes its unreturned resources newest first with
+`ScopeEnded`. Cancellation moves resources from pruned descendants to the surviving
+cleanup barrier, so connected cleanup can still close aliases; barrier retirement
+closes the remainder. `core/close-handle` is a synchronous, cleanup-safe Action,
+with one `handle: core/handle@1<$K>` input, no data outputs/config, and ordinary
+`then`/`failed`. Closing an authentic already-closed alias succeeds idempotently;
+other invalid references fail. Host close removes the entry before its closer,
+invalidates all aliases, cancels effects borrowing/returning it and schedules their
+failure on a later pump, including an accepted unpublished completion. Late worker
+success cannot publish. A panicking scope closer does not skip the other closers.
+Closers run on the actor/calling host stack and must be trusted, bounded and
+nonblocking; none of this is OS isolation or wall-clock preemption.
+
+Each direct retained alias has the ordinary 16-byte nominal value charge. Issued
+metadata has a separate run-aggregate lease shared by aliases; it survives close/
+disposal while an external alias remains, then refunds when the last alias drops.
+It keeps no resource object alive. Public `HandleValue` metadata/construction and
+Rust identity Eq/Hash grant no runtime authority, language Eq/map-key support or
+literal/serialization codec. `Value` remains at most 16 bytes. The saved graph
+format, dependencies and provider locks are unchanged. Checks and limits are in 10.
+
+### Trusted effect commands
+
+`compile_control_with_effects` takes a separate inert `EffectResolver` in addition
+to the existing pure/entropy resolver. `compile_control` keeps its previous profile.
+A binding's port order and Action/Async mode must match the fresh signature; its
+immutable `context: Arc<dyn Any + Send + Sync>` must retain the exact executable
+generation, compiled config and capability references. `route: u64` is only a
+host dispatch hint. Updating a route table must not retarget an existing context.
+Binding and compilation never execute actions, acquire services or submit commands.
+
+Async commands remain owned by the run until completion/cancellation. `take_effect`
+hands each command out once with Arc-owned typed inputs, an opaque `EffectId`
+and a monotonic read-only lifetime lease. The identity combines the existing
+process-unique Run ID and a checked, never-reused operation sequence. The host
+executes on its own bounded executor and calls `complete_effect` with borrowed
+results or a safe `KernelFault` with bounded static/shared identifiers and a static
+fallback. Whole-result type/count/byte/state/aggregate
+admission precedes any copy or mutation. A rejected result can be corrected and
+retried; an accepted result is complete-once. Admission does not run a continuation;
+one later pump work item publishes the result and follows `then` or `failed`.
+Cancellation wins if the owner retires before publication, including after result
+acceptance. Cancelled/late completions cannot touch a reused frame or slot.
+
+`max_pending_effects` defaults to 256 and includes accepted unpublished results.
+`max_effect_bytes` defaults to 16 MiB and charges retained inputs and results
+together, also against activation state and run aggregate leases. Input reservation
+is conservatively retained through completion admission. Command/ready directories
+hold identities only; removing an operation removes all indexes and refunds leases.
+Operation cancellation uses the existing region walk, including Race/Return/stop,
+and connected cleanup retains its usual deadlines/fuel. The host signal does not
+kill a worker, revoke authority or guarantee a remote write was rolled back. A host
+that still owns a request owns its Arc inputs/context outside the run's accounting.
+Trusted Action callbacks must be bounded/nonblocking; callback interruption is
+governed by the existing terminal pump-unwind policy, not OS isolation.
+
+The host stream API admits a `PullStream` without calling it, using the same C08a
+generational resource slab and `max_resources`. Refusal returns the producer
+unclosed. Item types must resolve to the existing executable value shapes; streams
+cannot contain handles/streams. One uncloneable consumer claims the resource once.
+Each `StreamNextId` includes the stream resource's run/slot/kind/generation and a
+checked nonwrapping demand sequence. A trusted producer's `next` must initiate
+bounded work and return promptly; Pending is completed by the host, with no polling
+or executor inside the core. A producer panic retires that stream before unwinding.
+Explicit close is idempotent for its issued consumer, including after run stop.
+
+`max_stream_item_bytes` defaults to 1 MiB. Each stream retains at most one pending
+result, charged to the run aggregate; refused asynchronous results can be retried
+without consuming the identity. Returned host-owned items are outside run retention.
+Collection stores its partial values inside the resource, charges them to the run
+aggregate and obeys `max_stream_collect_items` (4096) and
+`max_stream_collect_bytes` (16 MiB). `collect_stream` consumes only its caller's read
+budget and preserves pending identity/partial ownership between slices. End/fault,
+over-bound collection, close or terminal run cleanup releases the producer and all
+partial/result reservations. Streaming without collection has length-independent
+buffering. These are nominal limits, not allocator/RSS or physical timing evidence.
+
+Current executable scope (2026-11-06): checked data/iteration zones, structured control/Fork, graph-local functions and bounded run-scoped On Event/Emit with Queue, Drop, Replace and Parallel policies plus typed Await Event in 11 §10. Earlier dated checkpoints retain their historical limitations. The C04/C06 and C11a/C07a/C09a amendments add host/manual/timer ingress, virtual clock reads, variable-change/Watch notifications, trusted effects and host pull streams. Replay, incremental preview, graph stream nodes, resource-valued results, concrete services, workspace state/checkpoints and full qualification remain open.
+
 This is the proposed v1 contract baseline. JSON examples are documentation, not executed schemas. **Graph semantics are normative in [11](11-graph-language.md)** (node kinds, ports, types, conversions, regions, cycles, ordering, events, state) and **layouts are normative in [12](12-graph-data-structures.md)**. This document keeps the value policy, persistence, compiler pipeline and run lifecycle. On conflict, 11/12 govern and this document must be corrected. IDs use a constrained ASCII namespace (`org.orange.math/add-i64`) and immutable UUID instance/member IDs where user-created; examples shorten instance IDs to `n1`, `v1` for readability. Display labels may change without changing IDs. Definition version, configuration version, codec version, graph format, provider/package version and host API version are separate compatibility axes.
 
 ## Value and type model
@@ -18,6 +535,24 @@ No implicit numeric widening, string parsing or bool/numeric conversions. Every 
 Seeded random is a `volatile` (`entropy`) node that uses a recorded algorithm/version and run seed. Each draw comes from `stream(seed, node_id, activation_seq, invocation_in_activation)`. It is evaluated once per epoch, so two inputs of one action see one value ([11 §7.4–7.6](11-graph-language.md)). Deterministic execution order is required for replay. Default interactive seed is generated per run and recorded in run metadata. Cryptographic random is a separate host capability and never marketed as reproducible.
 
 Internal values use small tagged inline scalars and immutable reference-counted buffers/strings/records for larger data. Clone shares immutable storage; mutation consumes ownership or uses copy-on-write. Lists of samples/bytes can use typed contiguous buffers. Host/guest transfers copy unless a specifically validated borrowed/buffer API applies; no general zero-copy promise across Wasm or worker boundaries. Custom codecs enforce depth/size/recursion budgets and return structured decode errors. Secret bytes are broker-owned, excluded from ordinary Value and inspection.
+
+### First bundled scalar kernels (N1a)
+
+`orange-bundled` publishes version-1/config-version-1 `org.orange.math/add`, `subtract`, `multiply`, `divide` and `not`. Numeric inputs are `a`, `b`; outputs are `sum`, `difference`, `product`, `quotient`, respectively. Not has `value: bool` and `result: bool`. They are pure computed-output definitions with no effects, suspension, clock, entropy or I/O. Generic numeric contracts remain replaceable, while the bundled provider explicitly lists only i32/i64/u32/u64/f32/f64 specializations. A package-owned `num` implementation never selects native scalar code.
+
+Numeric config uses `orange.config-schema/v1`: `int_overflow` is checked/wrapping/saturating (default checked), and `float_policy` is finite/ieee (default finite). Missing values adopt these fixed execution defaults without rewriting saved config; unknown properties/values or wrong JSON types are rejected before execution. Integer policy applies only to integer kernels and float policy only to float kernels. Not accepts an empty config only. Integer division by zero is always `core/DivideByZero`; signed MIN/-1 reports `core/NumericOverflow` in checked mode, yields MIN in wrapping mode and MAX in saturating mode. Division truncates toward zero. Finite float kernels check non-finite inputs first (`core/NonFinite`), then a zero divisor (`core/DivideByZero`), then non-finite results (`core/NonFinite`). Explicit IEEE policy permits NaN/infinity and zero division under native f32/f64 semantics. Operations retain their selected precision and signed zero; no implicit widening occurs. Determinism remains scoped to the locked native implementation/platform.
+
+The host authenticates the native build digest supplied to `MathPackage`; the library checks its canonical lowercase SHA-256 syntax, not executable authenticity. The provider is `org.orange.math`, package version equal to the crate version, ID `native-v1`. Resolver inputs include the exact locked ProviderKey and fresh type arguments; it rejects missing/different providers, versions and unsupported specializations rather than substituting bundled code. A resolved kernel retains an Arc to its registry snapshot across publication of later builds. Scalar evaluation has no registry lookups, string parsing or host calls. Wrong arity/value variants return a typed contract fault (`core/InternalFault`) without coercion or exposing inputs. This API executes individual scalar kernels only; graph validation evidence, plan publication, constant-error folding, lazy/control evaluation and run ownership remain separate responsibilities.
+
+### Bundled comparison kernels (2026-11-04)
+
+`orange-bundled` also publishes version-1/config-version-1 `org.orange.math/equal`, `not-equal` (`T: eq`) and `less`, `less-or-equal`, `greater`, `greater-or-equal` (`T: ord`): pure inputs `a`, `b: $T`, output `result: core/bool@1`, empty config. The provider implements them without a specialization list; `MathPackage::resolve_comparison` binds the exact provider once and accepts only host-owned semantics, else `BindingError::UnsupportedType` (compile: `CompileError::KernelUnsupportedType`). Evaluation walks the bound value shape only; inside the compiled plan a value outside it is `core/InternalFault`. The public `ResolvedComparison::evaluate` returns `KernelError::InputContract` for such a value, and for Equal/NotEqual it validates both complete inputs against the bound shape before comparing, so a differing length, tag, presence or earlier unequal element cannot hide an invalid later one (2026-11-05). The per-shape rules and refused shapes are in [11 §18, "Constraint comparison execution evidence"](11-graph-language.md).
+
+### Initial core converter execution (N1b)
+
+`resolve_core_conversion(snapshot, config, provider)` binds only the existing registered Core implementation of `core/i32-to-i64`, `core/i64-to-i32`, `core/f32-to-f64` or `core/f64-to-f32`, contract version 1. It checks endpoint types/class and complete saved options against the snapshot. It never fills new-binding defaults or substitutes Core for a selected package provider. `ResolvedConversion` retains the Arc snapshot and entry; `evaluate` accepts one Value of the source type and returns `ConversionOutput { result, loss }` or a typed `ConversionError`. Graph/node version checks and fresh analysis remain caller responsibilities. No graph compilation or constant-folding evidence is produced.
+
+The exact float range/NaN/rounding/loss rules are normative in [11 §6](11-graph-language.md). Loss metadata is always present on f64→f32 success, contains only `{"lost": boolean}` and compares original bits with exact widening of the output. It excludes raw values and is prebuilt as two shared immutable JSON Values at binding, so evaluation performs no JSON parsing, registry/name lookup or new buffer construction. Checked range failures use `core/OutOfRange`; wrong runtime Value variants use `core/InternalFault`. Integer/float widening and checked integer narrowing have no loss output. L02d (2026-11-08) extends Core execution to all 30 numeric pairs under the rules in 11 §6; package converter execution remains separate work.
 
 ## Definition, graph, profile and package consistency
 
@@ -91,28 +626,38 @@ The saved graph uses explicit type tags. i64/u64 are decimal strings in JSON, so
 
 Digests above and below are **synthetic format examples**, never installable artifacts or integrity evidence. Unknown JSON fields are preserved under a bounded opaque extension map; unknown major format is opened read-only, not rewritten. Missing providers/codecs preserve raw definition/config/payload/edges with an unresolved diagnostic. App has a basic decoder for the envelope even when custom codecs are absent. No arbitrary code runs simply because a document was opened.
 
-Connection example is workspace-scoped. `options` schema is owned by `org.orange.websocket/profile@1`; OBS is an application-protocol layer on this session, not an alternative transport. The broker may derive OBS challenge authentication without exporting the password to the plugin.
+Connection example is workspace-scoped. `options` schema is owned by `org.orange.websocket/profile@1`; the synthetic local device protocol is an application layer on that session, not an alternative transport. The broker applies the selected generic authentication policy without exporting the token to the plugin.
 
 ```json
 {
   "format": "orange.connection", "format_version": 1,
-  "id": "obs-studio", "scope": "workspace", "revision": 1,
+  "id": "local-device", "scope": "workspace", "revision": 1,
   "adapter": {"id": "org.orange.websocket/client", "schema_version": 1},
-  "endpoint": "ws://127.0.0.1:4455",
+  "endpoint": "ws://127.0.0.1:9001",
   "tls": {"mode": "not-applicable-loopback"},
-  "auth": {"kind": "org.orange.obs/auth-challenge@1", "credential_ref": "credential://user/obs-studio/password"},
+  "auth": {"kind": "org.orange.auth/bearer@1", "credential_ref": "credential://user/local-device/token"},
   "options": {"connect_timeout_ms": 5000, "max_message_bytes": 1048576, "subprotocols": []},
   "retry": {"mode": "connect-only", "max_attempts": 5, "base_delay_ms": 250, "jitter": true}
 }
 ```
 
-WSS/HTTPS is the default for remote endpoints; plaintext loopback is an explicit profile choice suitable for local OBS. A credential reference is an identifier, not permission or possession. Grants bind package identity, profile, operation and destination; importing this profile requires credential remapping. [04](04-expansion-plugins.md) defines a matching OBS package manifest.
+WSS/HTTPS is the default for remote endpoints; plaintext loopback is an explicit profile choice suitable for a user-configured local device. A credential reference is an identifier, not permission or possession. Grants bind package identity, profile, operation and destination; importing this profile requires credential remapping. [04](04-expansion-plugins.md) defines a synthetic expansion manifest; neither example commits the product to a specialized integration.
 
 Graph archive v1 contains `graph.json`, `package-lock.json` if externalized, and optional assets addressed by hashes; metadata remains readable without unpacking executable code. Initial implementation may use a directory bundle for development, with one validated archive transport for sharing. Reject traversal, symlinks/reparse redirects and decompression bombs. Save document plus lock into an immutable bundle generation and atomically replace a small current-generation manifest using a verified per-OS file primitive; never assume replacing populated directories is atomic. Embedded assets are optional, referenced files are not silently copied. Profile/credential storage stays outside the graph archive. [05](05-services-and-platforms.md) defines durability/recovery limits.
 
 Type migration: pure, versioned transforms operate on a copy, preserve IDs and record source/target versions. Definition/config migration cannot perform network/file side effects beyond the controlled document write. Preview changes and diagnostics before committing a provider rebind. Unknown variants/fields are never silently dropped. A failed migration retains original bytes and lock. Maximum document/depth/asset limits are adjustable policy with explicit refusal errors, not an unchecked parser allocation.
 
+Renaming display text does not change stable definition, port, field or variant IDs. Changing a stable ID requires an explicit migration under ADR-06/07; opening a document must not silently redirect its provider or rewrite its identities. The declarative mapping schema, collision/chain handling and migration commands remain to be specified and tested in WU-03 before SDK freeze. Existing migration policy is specified here; a working redirect or migration engine is not yet implemented.
+
 ## Compiler
+
+The structured-concurrency cohort implements Fork on the same logical actor. Child strands share activation locals, data fuel and entropy identities; they retain separate control positions. One pending data consumption owns that activation's evaluator until it publishes or fails, while other activations can interleave across host slices. This conservative scheduling keeps its prologue frozen and does not open replacement sibling epochs. All/detach region accounting distinguishes publishing `completed` from retiring the enclosing region: detached descendants still keep a Sequence step or loop body alive.
+
+Any releases its completed continuation once after the first complete branch region and retains the other children. Race releases it once while logically cancelling the losing regions and retiring their timer identities. Connected cancelled paths retain bounded cleanup ownership, so the enclosing region still waits for them. Ready-queue rotation uses strand identity, while local cells, entropy identity and trace activation identity remain shared.
+
+Break/Continue locate the current dynamic loop-body instance through the region ancestry, cancel every nested sibling and timer, then release the loop continuation after bounded cleanup. An unhandled strand error applies activation fail-fast even with the default continue entry policy: siblings are cancelled, while the run can remain live. A failure is never an ordinary any/race winner. Handled failed routes keep their existing graph error provenance.
+
+Fork equivalence uses a separate test source interpreter built from ordinary Rust futures and a bounded polling executor. It scans saved edges and implements structured scope/join rules without production plans, cursors, owner tables or join helpers. Ninety-six fixed-seed generated nested Fork/Sequence/Count/Wait graphs compare state, timestamped observable outcomes and handled-fault provenance at three pump budgets, including seeded data, sparse branch order and reversed storage. Generated timer deadlines deliberately separate competing outcomes; equal-time and cancellation edge cases have focused tests. The oracle shares model validation/literal codecs and the existing independent data reference evaluator; it is not an independent language validator or OS timing qualification.
 
 1. Parse envelope with size/depth checks; resolve exact package/type/provider locks against a registry snapshot.
 2. Validate schemas, signature snapshots, required inputs, the port connection matrix and cardinality ([11 §4](11-graph-language.md)), resource ownership and capability availability.
@@ -122,7 +667,14 @@ Type migration: pure, versioned transforms operate on a copy, preserve IDs and r
 6. Fold `const`-class values, eliminate unreachable pure work, cache or fuse eligible standard kernels, and prepare bounded pools. Never fold volatile (random/clock/state) or I/O nodes as pure, and never remove observable errors (a folded error is kept as a run-time error plus `W-CONST-ERROR`).
 7. Produce an immutable plan, source map and resource requirements. Edits invalidate the affected region roots and dependent type/effect analysis; layout edits never recompile.
 
-Pure data dependencies are pulled on demand from a consumption site (an exec node's input gathering, a loop condition, a Watch, an export or preview). Each consumption opens an epoch. State-read and clock volatile nodes are read in the epoch prologue, which gives one consistent snapshot. Memoization uses compile-time stability classes (`const` once per plan, `activation` once per activation, `epoch` once per epoch) held in bitsets, not keyed lookups, so the warm path neither hashes nor allocates (NFR-05). A pure error propagates to its consuming node, which takes its `failed` outcome with node provenance. Debug builds can retain intermediate values; production inspection is sampled and bounded.
+Compiler entry uses fresh semantic readiness (`is_ready_for_lowering`); a completed plan additionally requires compiler-owned constant evaluation and error preservation. The model validator does not manufacture that proof, so its final compilation-readiness predicate remains false until that phase exists. Admission quotas and cooperative cancellation for semantic analysis are specified in [12 §3.2](12-graph-data-structures.md).
+
+Pure data dependencies are pulled on demand from a consumption site (an exec node's input gathering, a loop condition, a Watch, an export or preview). Each consumption opens an epoch. State-read and clock volatile nodes are read in the epoch prologue, which gives one consistent snapshot. Memoization uses compile-time stability classes (`const` once per plan, `activation` once per activation, `epoch` once per epoch) held in bitsets, not keyed lookups, so the warm path neither hashes nor allocates. A pure error propagates to its consuming node, which takes its `failed` outcome with node provenance. Debug builds can retain intermediate values; production inspection is sampled and bounded.
+
+Opt-in port observation retains the last successful non-resource effect result
+for each named output. It includes unwired outputs and shares immutable values
+with the execution frame where one exists. Observation does not introduce a
+consumption site for pure dependencies.
 
 Cheap operations dispatch as direct compiled kernel IDs or cached function-table indices; no hashmap lookup/name parsing per invocation. Eligible native pure regions execute in one batch; guest-provided regions can be packaged as one component call when contracts permit. The compiler does not fuse across effect, error-observation, resource or debug-break boundaries. Tiny guest nodes are measured separately: crossing a Wasm boundary per add/string character is not a performance strategy. Standard built-in scalar math remains native; a selected guest replacement may cost more, and must report that cost rather than silently invoke another provider. No claim of Rust-over-C# speedup is made.
 
@@ -138,6 +690,41 @@ Persistent variables checkpoint only on explicit command or clean stop policy; n
 
 Events create activations through entry nodes. Reentrancy per entry is `queue` (default: serial FIFO by source-local sequence), `drop`, `replace` or bounded `parallel` ([11 §10](11-graph-language.md)). Custom events are declared per graph. Emit only enqueues, so a handler never runs inside the emitter. Event-chain loops are bounded by causal depth (proposed 64). No global ordering promise across unrelated remote sources; host assigns a monotonic ingestion sequence for inspection. Default event queue proposal: 256 events per subscription, 1 MiB aggregate metadata/payload references, with per-profile configurable bounds. Backpressure is used when the protocol permits it; otherwise user chooses drop-oldest, drop-newest, coalesce-latest or fault, with counters. Broker acknowledgement/flow control remains protocol-specific. Timer missed-tick policy is explicit skip/coalesce/catch-up-with-bound; default coalesce, monotonic clock.
 
+The host subtracts time spent in the current turn before sleeping for a run
+deadline, using the remaining virtual duration so paused time stays excluded.
+Live ports use absolute host deadlines for their sampling interval. Updates to
+the same port share a wakeup until the latest pending sample is consumed.
+
+### Run-scope Await Event (C03 contract, 2026-11-06)
+
+`core/await-event` uses a declared run-scope event's checked payload type. Its timeout is an optional `option<duration>` input. An absent/unconnected timeout or `None` waits indefinitely; a nonnegative `Some(duration)` uses checked virtual `now + duration`, with negative or overflowing values following Wait's `core/OutOfRange` failure path. A zero duration still suspends, then the due timer is observed at a later actor boundary. Timeout-input graph faults retain their original producer. The waiter payload is available only on `then`; clear stale Await Event output when rearming and on timeout.
+
+After the Await Event step returns the shared activation frame to the actor, register that same strand under a checked, non-reused run-local waiter token. Registration creates no new activation/root and owns the only parked copy of the strand. Event and timeout indexes carry identity only; they never duplicate the continuation. Registrations count against existing `RunLimits::max_strands`; timed registrations also count against `max_timers`. `Run::ownership.event_waiters` reports the number of live registrations. A due event, timeout, cancellation or stop removes all waiter directories and any timeout before it resumes or retires the strand. Await is not allowed during cancellation cleanup.
+
+Every successfully accepted Emit broadcasts to all waiters for that exact event that were registered before admission. There is no event history, backlog or retroactive delivery; a refused Emit wakes none. Event and timeout completion race under the existing actor order: due timers are processed before graph nodes at pump entry, so a timeout already due wins before an Emit node at that boundary; an event admitted before virtual time advances past its deadline wins and removes the timer. One checked token completes at most once, including after a loop re-arms the same strand. Event continuations are scheduled after Emit returns to the actor, never inline.
+
+Emit stages its complete On Event handler and Await waiter fan-out together. Payload/type/causal checks and aggregate item/byte/live-payload quotas must pass before any target queue, counter, timer removal or completion intent changes. Charge one nominal payload reservation per waiter, including the possible published output projection, without discounting shared buffers or cloning for every waiter before admission. Deferred waiter matches count in the existing pending item/byte and live event payload budgets. Publication transfers the reservation once into the existing activation's retained and aggregate state budgets; cancellation before publication increments dropped, and a failed accepted-completion publication faults/cancels the run using existing runtime failure handling.
+
+Await does not create a new causal root. Keep causal depth on each strand so matching an event advances only the resumed waiter to the maximum of its prior depth and the event's cause depth; timeout retains prior depth. Fork children inherit their strand's depth, and serial continuations after calls, loops and joins retain the maximum contributing lineage. Emit validates strand depth plus one for the produced envelope without changing the emitting strand's lineage. This prevents an Await chain from resetting the guard or changing a concurrent sibling's depth. Each completed waiter publication consumes one cooperative pump work item after due timers and before event-handler dispatch or graph nodes. When Emit exhausts the pump budget, accepted completions remain pending until the next pump or cancellation.
+
+Graceful stop drains accepted work, including existing Await registrations, to the configured deadline; no new Emit is accepted while Draining. Immediate stop, fault, Replace cancellation of an owner, deadline cleanup and disposal unregister waiters and discard accepted-but-unpublished completions before bounded cleanup/release. C03 itself adds no workspace bus, replay, OS timer or service framework. C04a separately selects host input for existing run-scoped event declarations below. The C03 execution evidence and limitations are recorded in 10.
+
+### Bounded host ingress (C04a contract, 2026-11-06; implementation evidence pending)
+
+The host may register a source for an event in the pinned plan's checked run-scoped `EventDeclId` table, subject to `RunLimits::max_host_sources` (default 64). Registration returns an opaque cloneable `RunEventSource` bound to the existing non-reused `Run::id` and checked, never-reused `HostSourceId`. The handle exposes `id` and `event` only; it has no public constructor or Serde form. `revoke_event_source` is idempotent for a closed same-run handle, frees active registration capacity, and prevents future ingress through that handle. Accepted queue/waiter work remains owned by its existing lifecycle and is not retracted by revocation. Unknown, workspace-scope or unreferenced event IDs cannot be registered. `RunOwnership::host_sources` reports active registrations. Source storage is bounded by the explicit host-source limit and removes retired registration records; IDs do not reuse and no history vector grows with registration count.
+
+`Run::ingest_event(source, source_seq, &payload, wall_ns)` is synchronous admission only. It checks owner Run identity, Run state, active registration, nonzero strictly increasing source sequence (gaps are allowed), the event's checked type/nominal charge and complete delivery quotas. It shares one staged handler-plus-Await admission path with graph Emit. A successful input, including a deliberate Drop/loss outcome, commits the next run ingestion sequence, the source sequence and payload-free `EventMetadata`; a refusal changes none of those values or target queues, timers, counters or replacement intents. For quota refusal only, the existing delivery-overflow counter increments once. Typed `IngressError` variants are `WrongRun`, `NotRunning`, `UnknownEvent`, `SourceLimit`, `IdentityExhausted`, `RevokedSource`, `SequenceNotIncreasing`, `InvalidPayload` and `DeliveryLimit`; errors contain no payload or arbitrary host text. `NotRunning` reuses `core/event-run-stopping`, `DeliveryLimit` reuses `core/event-limit-exceeded`, and other ingress errors use stable `core/ingress-*` keys with safe static fallbacks (13). No new rejection-history counter is retained.
+
+The public event origin is tagged: graph metadata carries source node/scope and `cause: Some(activation)`; host metadata carries `HostSourceId` and `cause: None`. Host payloads use cause depth zero and `Run::now` for monotonic time. `wall_ns` is optional and supplied by the host; runtime makes no OS clock read. The host method call linearizes ingress. If it accepts an event before `pump` processes an already-due Await timeout, the event wins and detaches the timeout; if the timeout was already processed, the later event cannot resume that waiter. This states actor call order only, not a wall-clock guarantee or replay contract.
+
+Host ingress does not execute graph nodes, publish an Await continuation or walk cancellation inline. A host-triggered Replace cancellation intent is drained at the next pump actor boundary before due timers, handler dispatch or graph instructions, after whole-run cancellation observation. `pump(0)` executes no node and no cancellation walk, but reports ready while a pending host Replace intent remains. Existing graph Emit retains its post-step cancellation boundary, and Await publication remains one budgeted pump item. Normal graceful/immediate stop, fault cleanup and disposal revoke active source registrations; a pump-interrupted Run rejects input before explicit cleanup and releases registrations during stop/disposal. Accepted-work behavior remains governed by existing run lifecycle rules. `Run::trigger` admits host triggers of root `core/on-manual` entries through this same staged handler admission, with origin `Manual` and no source registration (11 §10.2). Root `core/on-timer`/`core/on-timeout` entries are armed when the run starts and admit their due ticks through the same admission when a pump handles due timers, with exact `coalesce`/`skip`/`catch-up` missed counts on the virtual clock (11 §10.2). `core/now` reads the run's virtual clock as a per-epoch host input (11 §10.2). OS adapters, services, workspace bus, replay and reactive notifications remain separate increments. The selected contract has no execution or NFR qualification until implementation is independently validated and recorded in 10.
+
+C01 executable reentrancy (2026-11-06): Queue, Drop and Parallel are checked control-plan policies for run-scoped On Event. Drop is busy when either a pending delivery or a still-owned root exists; a busy delivery is deliberately dropped without an overflow or retained payload. Parallel dispatches up to its positive `max_parallel`, then leaves accepted deliveries in its separately bounded pending FIFO. Payload/type/causal validation still precedes the policy decision. All-handler ingress admission remains transactional, including counters: a later Fault overflow or hard ingress quota refusal cannot partially apply an earlier Drop. Root slots and active payload reservations remain live through descendant ownership and bounded cleanup. All ordinary activation/frame/state/aggregate value limits still apply; these cooperative bounds do not establish wall-clock latency. Replace was outside this C01 checkpoint and is defined by C02 below.
+
+C02 serial replacement (2026-11-06): Replace has one active-root slot and one effective pending slot regardless of larger positive saved `capacity`. A valid admitted incoming envelope always supersedes the prior pending envelope, independently of the configured `fault` or lossy overflow selector; host backpressure remains unsupported. Latest-only eviction counts dropped deliveries, not capacity overflows. Admission stages the complete matching-handler fanout before mutating queues, counters or cancellation intent, with pending-eviction credit only. The old active payload and its frame remain live reservations: if old plus new cannot coexist under a hard ingress limit, the Emit fails atomically and requests no targeted cancellation. A graph's separately configured failure/stop-run path may still stop the run.
+
+An admitted replacement requests the old root's cancellation once. The actor applies it only after the emitting strand and shared frame are restored and transferred/requeued/retired, before the next timer, event dispatch or graph node. This handles self-emission, called functions and Fork children without inline graph execution. Further emissions during cleanup replace only the latest pending envelope; they do not reset cleanup fuel, deadlines or cancellation state. The latest root becomes eligible only after the old root, owned descendants and retained function/iteration frames fully retire. A terminal self-emitter can retire naturally first; its stale request is ignored because root identities never reuse. Global cancellation clears targeted requests and pending latest deliveries. Graceful Draining rejects new Emits while draining accepted latest work to its deadline; ordinary cleanup truncation and immediate/fault/second-stop behavior remain unchanged. These are cooperative ownership and admission guarantees, not physical preemption or a performance qualification.
+
 ## Run lifecycle and async continuation
 
 ```mermaid
@@ -146,6 +733,10 @@ stateDiagram-v2
   Created --> Starting: validate + acquire
   Starting --> Running: commit owned resources
   Starting --> Faulted: acquisition failure
+  Running --> Paused: pause
+  Paused --> Running: resume
+  Paused --> Draining: graceful stop
+  Paused --> Cancelling: immediate stop / cancel
   Running --> Draining: graceful stop
   Running --> Cancelling: immediate stop / revoke
   Running --> Faulted: unhandled node fault
@@ -157,7 +748,9 @@ stateDiagram-v2
   Disposed --> [*]
 ```
 
-Pause is **not supported in 1.0** as a whole-run semantic: network peers and audio devices cannot be globally frozen. Debug breakpoints suspend eligible graph continuations, while owned subscriptions still obey bounded queue policy. Restart creates a new RunId/generation and reinitializes resources; stale completions are rejected.
+**Host pause (2026-11-09; ADR-14 amendment).** `Run::pause` holds a Running run at once; the run is one actor, so an unfinished segment, pending mutation or parked strand simply stays owned. `Run::resume` returns it to Running. While Paused: (1) the run observes no time — `advance_to` is refused with `RunError::Paused` (`core/run-paused`), so Wait, timer entries, Await timeouts and deadlines do not elapse and resume produces no catch-up; a host that wants the gap to count advances the clock after resuming, and the ordinary missed-tick policy applies; (2) `pump` executes no graph work and reports `operations: 0, ready: false, next_wakeup: None`, observing only whole-run cancellation; (3) new work is refused — `take_effect` yields nothing, and host stream opening, claiming and pulling and resource acquisition report their ordinary not-running refusal; (4) input and results of work already issued are admitted under their existing bounded policies: `ingest_event`, `trigger`, `ingest_workspace`, source registration, `push_stream`, effect and stream completions and workspace snapshot installation. Admission never runs graph code, so a full queue is a counted loss or the ordinary retryable refusal, not a run fault. The workspace bus endpoint stays open. Graceful stop from Paused starts On Stop and drains as from Running; immediate stop and the cancellation token cancel as usual. Pause does not change graph semantics. Resource owners are told (2026-11-10): `RunResource::pause` runs once per live resource, newest first, when the run pauses, and `RunResource::resume` oldest first when it resumes or begins a graceful stop; both default to no-ops and follow the rules of `close` (synchronous, bounded, nonblocking). A resource acquired while paused is paused as it is taken, and an immediate stop closes a paused resource without resuming it. `EffectLease::is_paused` is an advisory signal for work already handed out. Each entry chooses what it keeps of paused input through `while_paused` (`buffer`, `latest`, `drop`; [11 §10.1](11-graph-language.md)), and a host source registered with `PausedSource::Reject` is refused with `IngressError::Paused` so its sender keeps the item (11 §10.3) (2026-11-10). A push stream with `fault` overflow that is full while paused refuses with the retryable `StreamError::Full` and stages nothing, so its bridge survives the pause (2026-11-10). Work already handed to a host executor is not recalled, and network peers and audio devices are held only by the resource that owns them. Debug breakpoints remain separate future work. Restart creates a new RunId/generation and reinitializes resources; stale completions are rejected.
+
+**Run driver and mailbox (2026-11-10; ADR-14 amendment).** `RunDriver` owns one `Run` and one bounded mailbox; `RunInbox` is its cloneable, thread-safe sending side. Host threads send `HostInput` (event from a driver-registered source, manual trigger, effect result, pause, resume, stop) with a nonblocking `send` that hands the input back when the mailbox is full or closed. The owning thread calls `turn(host_ns, max_inputs, budget, refused)`, which lets host time pass, applies at most `max_inputs` inputs in mailbox arrival order, then pumps at most `budget` work items. Mailbox arrival order is therefore the actor arrival order of §10.3, and every turn pumps, so neither a busy source nor a busy graph can keep the other from running. The driver assigns each registered source its sequence. An input the run refuses is handed back to the `refused` callback with its reason, unchanged, so the host can retry it or answer its peer. Host time that passes while the run is Paused is not shown to it. The driver starts no thread and reads no clock. Limits: one driver feeds one run; a plan with workspace events needs the bus-aware pump and is not driven by it; pushed stream items and resource acquisition stay direct calls on the owning thread.
 
 Start is staged: validate plan/capabilities → acquire leases → activate subscriptions → publish Running. Partial failure unwinds acquired resources in reverse order. Graceful stop rejects new triggers, stops subscriptions, drains already accepted activations for a configurable deadline (proposed 2 s), then cancels leftovers. Immediate stop cancels children immediately. Default listener/request/reconnect tasks are children of run/session owners and do not detach silently. Stop waits for task/handle barriers, not for a rendered frame. App shutdown also stops the Tokio runtime, package workers and audio engine. A blocked OS call may outlive its logical run on a bounded worker; its result is discarded and the outstanding condition reported, never falsely described as physically interrupted.
 
@@ -180,4 +773,322 @@ sequenceDiagram
 
 Cancellation propagates parent → child; completion races resolve once through the continuation state machine. A stopped owner cannot receive new callbacks. Handle generation prevents stale use even if indices are reused. Unhandled errors fault that activation by default; entrypoint policy decides whether run remains subscribed or terminates. Fatal host integrity failures terminate safely; ordinary errors are not evidence that native crashes are isolated.
 
-Requirements: FR-04–16, FR-19, FR-34–38, FR-44–50. Test families V01/V02/V03/V05/V08 and the G-suite in [11 §18](11-graph-language.md). ADR-01/04/05/06/13–16 in [08](08-decisions.md).
+**Run-owned resources (C08a, 2026-11-06; extended by C08b above).** `Run::acquire_resource(kind, resource)` takes ownership of a host object (`RunResource`, `Send + Sync`) whose kind is a registered handle-kind type in the run's registry, and returns a `ResourceHandle` bound to that run. Only a `Running` run acquires; a refusal (`NotRunning`, `UnknownKind`, `ResourceLimit`, `IdentityExhausted`) hands the object back unclosed. `close_resource`, `resource_kind` and `resource_mut::<T>(handle, kind)` work in every state while the handle is live and refuse `WrongRun`, `StaleHandle` and `WrongKind`. The run calls `close` exactly once with its reason: `Closed` by the host or graph close, `ScopeEnded` when a graph owner retires, `RunStopped` or `RunFaulted` when the run reaches `Stopped` (newest acquisition first, after graceful drain or bounded cancellation cleanup), or `RunDropped` when a run is dropped still owning it. A panicking closer does not skip the others. `RunLimits::max_resources` (default 256) bounds live resources and `RunOwnership::resources` counts them. C08b adds direct graph aliases and region owners; concrete services remain separate.
+
+Test families V01/V02/V03/V05/V08 and the G-suite in [11 §18](11-graph-language.md). ADR-01/04/05/06/13–16 in [08](08-decisions.md).
+
+### Implemented pure-export compiler slice (E1a)
+
+compile_pure accepts a GraphDocument, Arc registry, unforgeable ValidationAnalysis, trusted resolver and CompileOptions. It rejects stale document state or registry generation before callbacks and requires is_ready_for_lowering. Every root node must be pure with supported data types, nonoptional data ports and computed outputs. Language-owned projections declare the lazy inputs they demand. Unsupported root semantics fail even without an export. Only export-reachable nodes bind and fold. Inputs resolve in order from the incoming edge, instance literal or fresh descriptor default. Iterative DFS follows persisted export order and declared input order, visiting shared dependencies once.
+
+Bounded eager variadic data inputs are admitted for pure kernel bindings.
+The compiler expands each variadic descriptor into concrete input keys in saved
+instance order, charges them against graph and slot limits, and checks that the
+kernel uses that exact order. This applies in pure preview, runtime data pulls,
+and graph-local function bodies.
+
+Each successful binding must declare exactly the fresh input/output port order. Fold outputs are type checked. The first input fault propagates without calling the dependent operation, retaining producer provenance. Each directly failing folded operation emits W-CONST-ERROR once. Pure dependency callbacks may still fold even when another input fault will determine the consumer result; callbacks must be deterministic and effect free. This is constant evaluation, not runtime pull scheduling.
+
+Graph/port admission, slot and operation counts, retained constant-byte accounting and cooperative cancellation are configurable. Payload size is checked before scalar/JSON decoding; slots are counted before executable callbacks. Callback output bounds are checked after return. Trusted callbacks cannot be interrupted by this interface; these quotas do not bound callback CPU, allocations or process RSS. No guest code is called. Cancellation/failure discards the partial plan. Control, lazy/volatile/function execution, reference-evaluator equivalence and scheduler/memo epochs remain unimplemented.
+
+Persistence versus execution (2026-10-23): the saved JSON envelope is decoded to GraphDocument before semantic analysis and lowering. PurePlan stores typed values and dense slot references; the saved document is not interpreted as JSON on each operation. The importer now decodes GraphDocument directly after its header/version check and removes only the reserved top-level format tag, preserving unknown extension order. JSON serialization still emits the same compact format-v1 bytes. The format evaluation in 10 found a modest raw decode/size benefit for named MessagePack and slower encoding on the measured fixture, so no binary document protocol is introduced. A future compiled-plan cache needs a separate versioned identity/rebinding contract after the plan ABI stabilizes; it cannot serialize native function objects or bypass provider validation.
+
+### Independent pure reference checks (E2a, 2026-10-23)
+
+The test oracle in orange-bundled/tests/support/reference.rs demand-evaluates original graph ports, scans incoming edges directly and memoizes by source NodeId. It does not read PurePlan, slot arrays, constant pools or compiler helpers and does not call native kernel/resolver code. Signed arithmetic uses i128 intermediates and unsigned arithmetic uses u128 intermediates, with explicit range/modulo/clamp policy handling, rather than the native kernels' primitive-width checked/wrapping/saturating operations. The oracle supports the four integer primitives, Add/Subtract/Multiply/Divide, bool Not and i32↔i64 conversion. It shares only fresh semantic analysis, immutable metadata and the canonical literal codec with the compiler path. Matching exported values and fault producer/code are compared with compiled constants; independent known answers remain required.
+
+The oracle deliberately short-circuits later input demands after the first fault. The compiler may fold those effect-free dependencies; their extra work or warnings are not asserted equivalent. Reference sharing counters establish one execution per demanded node in an immutable evaluation instance, not runtime epoch/memo invalidation. The oracle is test-only, deliberately slow and limited to 64 dependency levels; generated DAGs contain 1–24 nodes. It is not a public evaluation service, scheduler or performance implementation. Float/JSON operations, lossy floating converters, control/lazy/volatile/function execution and production runtime equivalence remain outside this evidence. Saved graphs remain JSON, as confirmed by the user; the test oracle introduces no new persistence representation.
+
+### Checked pure-export result views (E2b)
+
+PurePlan::evaluate(document, current_registry, EvaluationOptions) now starts a privately constructed PureEvaluation. It checks document content identity, registry generation, max_exports and cancellation before returning the view. The result set is already fully folded by this restricted compiler: reads do not invoke kernels, decode JSON, resolve providers or allocate a frame/output buffer. This is a pure-export result API, not scheduled execution. Each indexed/ordered read checks the current cancellation signal; already returned immutable references remain valid. Cancellation is cooperative result access, not a terminal actor state or interruption of compilation callbacks. Missing indices return Ok(None), and graph faults remain typed outcomes rather than evaluation-entry failures.
+
+The view borrows the plan, retaining its immutable snapshot and constants. Later graph edits or registry publication do not mutate a started view; starting another view with changed inputs fails freshness. Exact undo may restore the compiled content identity: source_revision remains the compile revision while document_revision records the evaluation entry revision. Export identity, static type, exported port source and original producer fault are exposed separately. No final runtime ABI, full ConstantEvaluation coverage or scheduler gate is implied.
+
+E2c expands the test oracle to f32/f64 Add/Subtract/Multiply/Divide with finite/IEEE policy handling and both Core floating converters. Multi-output memoization now retains distinct result/loss values or the same original fault on each failed output. Converter NaN bits, signed zero, rounding/range and loss JSON are checked exactly; ordinary arithmetic NaNs are compared by classification, with finite values/infinities/signed zero compared exactly. The oracle still avoids native executables and compiler slots, but floating arithmetic uses the same Rust/platform primitives, so this is independent graph/policy coverage rather than a separate IEEE arithmetic implementation or cross-platform determinism proof. General JSON operations, control/state/lazy/functions and scheduling remain open.
+
+### Constant lazy selection (E1/E2d, 2026-10-24)
+
+The pure compiler now supports the existing host-owned core/select, core/and and core/or contracts. After fresh whole-graph semantic validation and potential-cone admission, an iterative demand stack folds the deciding input. Select then demands exactly if_true or if_false; And demands b only when a is true; Or demands b only when a is false. A deciding-input fault demands neither alternative. Selected producer outputs are memoized across consumers/exports, with the original fault identity preserved. Inactive cones perform no executable resolution, compiler literal decoding or kernel calls and produce no compiler constant-error warnings; a separate export can still demand that cone and observe its fault. Static validation still checks inactive authoring inputs/providers/types, and only the existing eight scalar/JSON plan types are accepted.
+
+Preflight quotas intentionally count every producer/slot in the potential export cone before callbacks, including inactive alternatives. Structural admission traverses that cone, checks cycles defensively and releases its temporary traversal buffers before actual lowering. This is conservative admission, not a promise to charge only selected work. Cancellation is polled between demand tasks and before materialization/folding, including after a deciding callback. Callback CPU/allocations remain trusted and non-interruptible. A large inactive JSON literal consumes no compiler constant/decode budget, but remains subject to import and semantic-validation limits.
+
+Language-owned lazy steps retain an ordered projection of only demanded input ports and a compiler-owned projection binding specialized to the immutable constant decision. They are not general runtime branch instructions; changes to the selector require a new plan. Public result reads still borrow fully folded values without executing callbacks. No package gains lazy authority or a generic callback with thunks. core/coalesce/core/try, Option/Result plan values, seeded entropy, volatile epochs, functions and control/actor scheduling remain separate work. This advances E1/E2's lazy acceptance without declaring E2 or E3/R1 complete.
+
+### Constant options and Coalesce (E1/E2e)
+
+Pure plans may retain core/option@1<T> recursively over the existing bool, six numeric and JSON leaves. Model codec/static-type rules remain authoritative: outer None is absent; a present leaf is unboxed; nested options box their inner layer. JSON null is a present JSON value. A Coalesce step demands value first, requests fallback only for outer None, and unwraps exactly one option layer on the present path. A fault is never treated as None. Shared producers still fold once and a separate export can demand an otherwise skipped fallback. Full source semantic validation and conservative potential-cone admission remain required.
+
+This extends immutable constant specialization only. Result/Try capture, dynamic epochs, entropy and scheduled execution remain separate. Persistence stays format-v1 JSON. PlanType now owns recursive Option metadata and no longer implements Copy; EvaluatedExport.ty borrows that metadata from the plan. Downstream Rust code must borrow or explicitly clone PlanType instead of assuming Copy, and compare export.ty with a borrowed expected type. Result reads still allocate no type tree or execution frame.
+
+### Constant Result capture (E1/E2f)
+
+The restricted pure compiler implements core/try with its fresh host-owned value/result signature. It demands the value cone once, turns only a retained ConstantFault into Value::Err(NodeError { code, node: Some(original_producer) }), and leaves the original constant/fault, source map and warning intact. Direct or other consumers of that cone retain the fault. A successful inner Result is ordinary data, so an outer Try preserves Ok(Err) instead of recapturing it. Successful results stay unboxed except when their static payload can expose an Err tag; those use Value::Ok(Arc<Value>) per 12 section 7. Option absence, JSON null and errors stay distinct.
+
+No backend resolution/ABI/output-shape error, malformed kernel-fault envelope, stale evidence, resource limit or cancellation becomes a Result value. Result/error still have no literal form; absent option<Result<T>> can be a valid option literal. PlanType accepts recursively composed Option/Result over existing leaves under the same total depth bound. Error data currently carries code and producer; complete activation/message/detail/cause envelopes remain the runtime/WU-03 contract. There is no scheduled execution, serialized plan ABI or JSON persistence change.
+
+### Versioned entropy primitive (E2g1)
+
+The current algorithm identifier is orange.entropy.sha256-counter@2; @1 lacked the frame field, had no persisted replay data and is not reproduced. For each block, hash the ASCII identifier followed by a zero byte, seed (u64 little-endian), frame ID (32 bytes), node UUID (16 network-order bytes), activation sequence (u64 little-endian), invocation-in-activation (u64 little-endian), and block index (u64 little-endian), in that order, using SHA-256. Split the digest into four successive little-endian u64 words. Block indices start at zero; the final u64::MAX block is readable once and further draws fail rather than wrap. This is deterministic graph entropy, not a credential/secret generator. Record algorithm/version and seed with future run replay metadata; no platform-native endianness, string formatting or global mutable RNG participates.
+
+An immutable EntropyLayout binds private dense EntropySlots by node ID before consumption. ActivationEntropy owns counters for one seed/activation sequence. begin_epoch starts a consumption scope; sample memoizes one raw u64 per bound node per epoch. An undemanded node does not advance, and the first demand in a later epoch uses that node's next invocation. Generation stamps make begin_epoch constant-time without clearing the whole layout. Slots retain their original layout and are rejected by different layout owners. Epoch, invocation and stream counters fail on exhaustion; none reuse earlier identities.
+
+Frame scope: FrameId names the call path of a graph frame. The root frame is 32 zero bytes. FrameId::call(call_site) is SHA-256 over the ASCII orange.entropy.frame@1, a zero byte, the caller frame's 32 bytes and the call-site node UUID, so the same body node reached through different call paths, or the same path in a different order, gets a different stream. ActivationEntropy keeps invocation counters per frame and node: invocation_key_in and sample_in take a frame, and the frame-less forms use the root. Callee frames get counters on first demand, up to the max_frames given at construction; one more is EntropyError::ResourceLimit before allocation or drawing. Checked DataPlan activations use the dense scoped mode below rather than these sparse frame arrays.
+
+These primitives are not graph semantic approval, a general activation actor, scheduled execution, provider binding or entropy-node lowering. The host must still assign unique activation sequences and open the correct graph consumption epochs. Seeded graph integration, full G-02 and E2 acceptance remain open.
+
+### Fresh execution classification (N1/E2g2)
+
+Host NodeDefinition now carries Option<Volatility> (StateRead/Clock/Entropy) and Determinism (Deterministic/Seeded/External/Nondeterministic). Only volatile definitions have a subclass; only host intrinsic registrations may declare StateRead or Clock. Entropy requires Seeded and pure requires Deterministic. Volatile definitions have no exec ports. State/clock readers have no data inputs, including input-bearing templates; Core Get uses typed state-read metadata. Package entropy may have data inputs.
+
+These facts belong to the exact immutable registry generation, not graph signature/editor caches. Existing port-only NodeContract/signature projections do not acquire another persisted source of execution truth. Lowering must use the fresh definition or derive contextual function behavior from accepted bodies. Metadata declares provider obligations; it does not authenticate arbitrary code or prove conformance. No new provider callbacks, graph persistence fields or entropy evaluation are introduced by publication.
+
+### Native entropy binding (N1/E2g3)
+
+EntropySource exposes only next_u64; EntropyKernel evaluates typed input/output slices with that trusted host source; EntropyKernelResolver resolves a separate EntropyBinding after the caller checks fresh semantic evidence. It is separate from PureKernel and has no fold path. The host owns the algorithm, seed and node/activation/invocation scope. Callbacks remain trusted bounded host code; this interface is not a package boundary or CPU/OS sandbox.
+
+MathPackage now registers random_u64_definition alongside math_definitions. org.orange.math/random-u64@1/config 1 has no data inputs, one computed value: u64, Volatility::Entropy and Determinism::Seeded. Configuration is empty; the seed is never a node config/global OS source. The native binder checks exact provider/digest/version, registry support/empty specialization, metadata class and semantic port projection. Presentation labels/groups do not affect binding, while changed semantic output types do. A resolved native binding retains its provider/snapshot. Bad arity draws nothing; source faults leave output unpublished. This is native execution support only: it supplies no general graph epoch/frame, activation sequence allocator, replay log or compiler execution approval.
+
+### Checked root data plan (E1/E2g4b)
+
+compile_data shares fresh semantic/whole-potential-cone admission with compile_pure, extending the admitted root vocabulary to registered Volatile::Entropy/Seeded definitions with supported computed data ports, and to single-output state reads (below). C04b3 admits `core/now` clock reads through the same single-output host-input path; control and functions remain unsupported by this profile. Host intrinsics outside the implemented Select/And/Or/Coalesce/Try and explicit conversion vocabulary are rejected before generic callbacks; function calls cannot be smuggled through the ordinary pure resolver. Package ordinary pure/entropy callbacks still use their exact checked ABI.
+
+DataPlan privately owns typed dense slots, source IDs, initial outcomes, ordered exports, constant diagnostics, resource requirements and its registry snapshot/content identity. DataNode stability is Const or Epoch in this root subset. Input references carry dense producer/slot indices; lazy instructions carry numeric operand choices. A compiler-owned constant folder folds proven constant islands once across roots and preserves original fault producers/warnings. It never executes entropy callbacks. Static selectors are folded before choosing dependencies, so inactive alternatives are not bound/folded/materialized. If the selector depends on an epoch, both possible arms remain in the plan; eligible constant islands in those possible arms may fold at compile time, retaining latent errors as outcomes rather than runtime effects.
+
+Initial slot absence means a dynamic value awaiting execution, distinct from the language option None. A constant graph None is an initialized FoldedValue::Value(Value::None). The existing pure-plan borrowed API remains available; DataPlan provides no execution/frame by itself. Entry/pinning, epoch memoization and dynamic error/output publication are implemented by orange-runtime in the frame below; independent seeded root-graph equivalence is recorded under E2g4d. This does not publish a general control plan or global ConstantEvaluation readiness.
+
+### Root data consumption frame (E2g4c)
+
+DataActivation::start owns an Arc<DataPlan> after checking document/registry freshness and entry slot/node/export/work/value limits. It retains the source and entry revisions separately, including exact undo, and active frames consult neither later authoring edits nor later registry publications. The host supplies seed and activation sequence and explicitly calls begin_epoch for a consumption scope. export(index) pulls a root inside that scope; repeated pulls share memoized producers. Constants remain plan-folded. Epoch stamps avoid clearing all values; old-epoch values cannot satisfy a current pull but remain included in retained nominal charges until overwritten. Distinct activations own distinct counters; the host still assigns their sequences.
+
+Execution uses dense input/producer/slot references and preallocated work/scratch storage. Native eager inputs are pulled in declaration order, stopping at the first fault. Select/And/Or/Coalesce demand only the selected arm, including present nested Some(None); Try captures only graph faults and preserves nested Ok(Err) through a static compiled boxing flag. Pure and entropy callbacks have distinct paths. Entropy invocation_key stays stable within an epoch regardless of stream word count. EntropyReplayMetadata records algorithm/version, seed and activation sequence; it is not a full plan/provider/ingestion/clock replay log.
+
+Callbacks publish outputs only after all output types/fault envelopes and the whole node's replacement charge pass. A failing callback's unpublished scratch payloads are released; no partially written result escapes. Limits cover per-epoch operations, nominal retained values across epochs and per-node stream draws. A draw limit is the graph fault core/LimitExceeded; entry/operation/value limits and observed cancellation are infrastructure errors, abort the epoch and cannot be caught by Try. Observed in-stream cancellation stays infrastructure cancellation even if a callback clears the flag. A new explicit epoch can start after the host clears cancellation; terminal run-stop policy remains R1 work. Cancellation is cooperative before/after callbacks, work steps and stream draws, with no interruption/sandbox promise for trusted code. Live frame Debug prints state metadata, not value payloads.
+
+The frame does not own control tokens, functions, variables, event queues, resources, clock/services or async completions. This is synchronous root data evaluation and does not satisfy the broader core checkpoint or actor lifecycle. Runtime source/byte checks and independent seeded graph equivalence remain scoped evidence rather than global compilation/release readiness.
+
+E2g4d supplies source-graph versus DataActivation comparisons for the supported root-data vocabulary across explicit epochs. Reference traversal scans original edges and memoizes by UUID with independent invocation maps; it shares the versioned entropy stream primitive, metadata/literal codec and platform float operations, not compiled instructions, dense epoch scopes or native arithmetic callbacks. Production constants stay compiled once; the intentionally slow oracle may recompute them each epoch. Broader control/functions, actor sequence ownership and complete G-02 replay remain separate work.
+
+Default compiled-plan and evaluation Debug summaries expose metadata/counts instead of graph value payloads, retained registry contents or downstream callback formatting. Kernel binding Debug reports port counts without invoking a kernel's Debug. Explicit typed value and registry inspection remains available to hosts, which own its authorization/redaction/bounds. Raw Value/GraphDocument Debug and arbitrary user formatters are not made safe logging APIs by this scoped change.
+
+Review follow-up epoch boundary policy: cancellation observed by begin_epoch invalidates an already active consumption scope just as export does. Clearing the flag alone cannot resume reads, including missing-export probes; a successful explicit begin_epoch is required. A rejected initial start creates no epoch and consumes no entropy identity. Counter exhaustion on epoch start also prevents reads of the old cached scope.
+
+Scoped entropy budget policy: the first host draw-budget/stream exhaustion is retained for that callback invocation. Callback success or a different callback fault cannot replace it; the node publishes the original host core/LimitExceeded graph fault, with producer identity, and Try may capture it. Cancellation observed during drawing still wins as an infrastructure error, including when a callback ignores the source error and clears the flag. A zero draw budget alone does not fault a callback that requests no draws. This enforcement controls available entropy, not arbitrary native CPU/allocations or preemption.
+
+### E3 runtime prerequisites
+
+Control retained-budget correction (2026-10-24): immutable variable initializers and data constants share `CompileLimits::max_constant_bytes`. Data lowering receives the remaining allowance, rather than a second independent full pool. Cheap graph-count admission precedes initializer decoding. This is a logical retained-value budget, not a process RSS bound.
+
+Control reference qualification (2026-10-24): a test-only source interpreter scans saved control edges and uses lexical regions independently of ControlPlan, runtime cursors and native kernels. Ninety-six bounded generated nested control/state/Wait/seeded cases use proptest 1.12.0 with seed 20261024 and three work budgets. Known answers also cover original faults, loop limits, Error-as-data versus successful Try, snapshot interleaving and deep iterative regions. The source oracle shares validated model metadata, literal decoding and the externally anchored entropy stream primitive; it is not an independent language validator or cryptographic implementation. Segment inspection exposes written variable IDs once per segment; equality, notifications and Watch delivery remain R2b work.
+
+Supported run lifecycle (2026-10-24): `Run::request_stop(Graceful)` releases reserved On Stop activations against the pinned plan, enters Draining once and rejects a repeated graceful request. It drains previously accepted work up to the configured virtual deadline. Immediate stop/fault does not fire On Stop; it retires owned timer identities and runs connected cancelled paths in bounded cleanup mode. Cleanup permits pure/volatile pulls, Branch/Sequence traversal and Set, but rejects new waits/loops and other unsafe operations with core/Cancelled. Cleanup has separate operation fuel and a virtual deadline no later than the remaining drain deadline; a second stop aborts it. Deadline overflow clamps cleanup to the end of the virtual clock range so cancellation remains possible. Cancel flags are observed once per rising signal; clearing a flag does not revive the stopped run. `last_error` records infrastructure failures, while graph faults retain consumer/source IDs in trace. Disposing a Stopped run releases its plan and cells. This qualifies only the supported headless owners, not general service/stream rollback or all R1/R3 families.
+
+While execution (2026-10-24): each condition check opens a fresh consumption epoch. An initial false condition executes no body; a later false condition completes even after exactly max_iterations bodies. A true condition beyond that bound takes failed with core/LoopBudgetExceeded. The body cursor yields before the next condition, survives Wait, and shares the same innermost Break/Continue targeting as Count. Counters and fuel remain owned by the activation/run rather than reset by each resumed pull.
+
+Count/terminator execution (2026-10-24): Count captures its i64 count once, rejects negative counts, and completes zero iterations without publishing an index. Each body instance has a bounded cursor and fresh i64 index; the next iteration yields and starts only after the body, including waits, completes. Break/Continue resolve their innermost loop from fresh region evidence and discard nested Sequence cursors. Break exits to completed; Continue advances that loop. That initial slice rejected Fork/functions; the later structured-concurrency cohort above adds Fork, while function returns remain unsupported.
+
+Virtual time (2026-10-24): exact Wait/Yield now lower to host control operations. A Wait consumes signed nanoseconds; negative duration or unsigned monotonic deadline overflow takes failed with core/OutOfRange. Zero duration still suspends through the timer queue before then. Due waits are resumed by pump, in (deadline, insertion sequence) order, not inline by advance_to. Backwards time is rejected. Timers are bounded, run-owned and non-reused; cancellation/fault retires their frames. Sequence cursors survive suspension and advance after the resumed child ends. This supplies virtual R1 timing only, not native timers or R4 services.
+
+Sequence execution (2026-10-24): the control compiler binds variadic steps in persisted `VariadicState.order`, including sparse/reordered instance IDs. An activation owns a bounded iterative region cursor stack. A step advances only after its child region ends; an unhandled child fault retires the remaining cursors. Empty steps complete without inventing work. Suspension preservation is qualified alongside Wait/Yield, not inferred from token traversal.
+
+Local/run state execution (2026-10-24): the control plan resolves referenced variable declarations to dense cells and compiles initializers through the existing literal codec. Run cells initialize per run and local cells per activation. Get snapshots are frozen at consumption start even across data safe points; Set commits only after a successful complete pull. An uninitialized Get supplies a typed graph fault with the Get producer ID, so the consumer takes failed. `set_input_outcome` is the trusted host/control seam for such faults; a missing host input is still an infrastructure error. Workspace mutation, Update and checkpoint restore remain unsupported by this control compiler. State stores and data-frame retention have separate configurable byte budgets, not a process RSS guarantee.
+
+Bounded scheduling prerequisite (2026-10-24): `DataActivation::poll_export` consumes a caller-owned work-item budget and returns Pending with its stack and epoch retained. A different producer cannot replace a suspended pull (`PullInProgress`); explicit `begin_epoch` abandons the old pull. The synchronous export API drains the same engine. `Run::pump` budgets both control instructions and iterative data work, retaining total run fuel. These are operation bounds, not native callback preemption or measured wall-time guarantees.
+
+First control execution (2026-10-24): `orange-runtime::Run` starts a fresh checked control plan, retains its immutable snapshot and executes exact Entry/Branch outcomes through a host-driven pump. Bounded trace events contain source IDs/outcomes and safe fault provenance. Idle Running remains live until an explicit stop; disposal rejects further execution. Scheduled data safe points, state, structured regions and staged cleanup are subsequent slices, not established by this first executor.
+
+Control lowering preparation (2026-10-24): the compiler now has a private admission/lowering seam for explicit demand roots on the original document. The existing public pure/data entry points retain whole-root admission and saved-export behavior. This internal refactor does not publish a control plan or permit execution of unsupported nodes.
+
+Checked control plan (E3, 2026-10-24): `compile_control` admits exact registered `core/on-start`, `core/on-stop` and `core/branch` into a private-construction `ControlPlan`. Consumption roots retain the original document state, source ports, registry and providers without adding saved exports. Unsupported root controls fail before backend resolution. `PlanType` additionally represents Duration and Error; Error uses the existing typed `Value::Err` representation, distinct by static type from Result. Control execution and remaining families qualify separately.
+
+Owned cancellation: DataOptions carries an optional CancelToken, a cloneable owned stop flag. A DataActivation keeps its own clone and borrows nothing from the host, so a future run actor can own it. cancel and clear change the shared flag; the epoch rules above are unchanged, and clearing still needs an explicit begin_epoch to resume reads. CancelToken::flag lends the same flag to synchronous borrowed APIs such as CompileOptions. It is a flat signal, not the proposed run cancellation tree.
+
+Activation fuel: DataLimits::max_activation_operations (default 10,000,000) bounds the whole activation, alongside the per-epoch max_operations. Each begin_epoch and each node evaluation costs one unit; memoized pulls and constants are free. A standalone DataActivation never refills. Inside a Run, fuel bounds work done without giving control back (2026-11-10): when a strand parks on a Wait, an Await Event, an asynchronous effect or a stream read, its activation starts again with a full budget, so a long-lived handler that keeps waiting is not ended, while a loop that never suspends still exhausts it. Yield and a host pump-budget boundary do not refill, and cancellation cleanup keeps its separate bounded budget, which is never credited to surviving work. Exhaustion is the infrastructure error FuelExhausted (core/data-fuel-exhausted): Try cannot catch it, and it rejects the current scope and every later epoch start. Bare epoch starts also cost fuel, so a loop that opens one epoch per iteration still ends. fuel_remaining reports what is left.
+
+Host input slots: DataOperation::Input is a node whose value the host or control plane supplies; the data plane never evaluates it. compile_data lowers fresh Volatility::StateRead definitions with exactly one State-sourced output (core/get-variable) to Input, while compile_pure still rejects them. DataPlan::host_inputs lists the Input nodes that some export may demand, in plan order. DataActivation::set_input(index, value) supplies one for the current epoch, at most once. A wrong index, a value of the wrong type or a second supply is InvalidInput, which changes nothing and leaves the epoch usable. A value over the retained-byte limit is ResourceLimit; like any rejected publication, its payload is released at once rather than kept in scratch storage. Pulling an Input not supplied this epoch is the infrastructure error MissingInput { node }, which aborts the epoch. Values never carry over between epochs, and inputs only in an inactive lazy arm need not be supplied. E3 control lowering is expected to reuse this slot for action, payload and iteration outputs; admission still rejects those sources today. The activation does not own or read a variable store: the host decides what each Get observes.
+
+Control review corrections (2026-10-24): consumption snapshots include only potential host inputs of that consumer; publication into charged data slots happens only on actual demand, including lazy arms. Frozen references preserve one consumption snapshot across data safe points. Compiler projection metadata shares identical dependency slices and bounds newly stored projection entries by max_graph_items. Index/Error publication uses precomputed per-owner destinations. A pending Set retains scheduling ownership through internal data slices until commit/failure; no entropy replay or retry is used. Read-only pulls can still interleave, and explicit Yield/Wait releases ownership. The run polls cancellation at each control/timer safe point as well as the data engine's checkpoints, preserving rising-signal and second-stop behavior.
+
+Shutdown reservation: RunLimits::max_stop_activations (default 256) bounds a separate On Stop capacity. Start admits and prepares these frames, their local initializers and ready-queue capacity before returning a live run. Preparation executes no nodes and draws no entropy. Graceful stop cannot fail merely because ordinary activation capacity is saturated; it releases the reserve exactly once. Immediate stop, fault and disposal release unused reserved frames. Existing virtual deadline/fuel limits still bound drain and cleanup. This adds an unfrozen public Rust limit field; embedding hosts constructing exhaustive RunLimits literals must supply it. No saved JSON/schema or dependency changes are needed.
+
+Whole-codebase reuse (2026-10-24): execution preparation shares only immutable lookup/layout metadata and the retained initial nominal charge. Each activation still owns mutable slots, memos, seed/invocation counters, frozen consumption references, fuel and cancellation. Private dense ownership layouts remove local placeholders for run cells and execution-output placeholders for variable readers. A private explicit host-demand result keeps pump(1) progress, lazy demand, Set ownership and fault provenance intact. Existing public resolver and DataPoll contracts are preserved. Compilation combines output slot/producer bookkeeping and retains traversal storage across roots; it does not merge pure and entropy execution ABIs or change provider selection.
+
+Cleanup failure integrity (2026-10-25): a checked-out activation is restored to its owner store before handling cleanup-scope entry failure, just as for execution failure. Overflow when adding cleanup fuel truncates and retires that strand through the normal region barrier, including activation retirement when the root completes. It cannot leave a stopped run retaining orphaned owners or replenish ordinary fuel. The MAX-cleanup-fuel regression checks terminal activation/strand/region counts.
+
+### Graph-local pure calls (2026-10-26 UTC)
+
+`compile_pure` supports the bounded constant pure-call subset in 11/12, including nested interface-visible generics, independent call caches and multiple typed results. Evaluation reads folded results without executing frames. A semantic edit inside a function invalidates new compilation/evaluation approval; an already opened view retains original constants and registry. Lazy skipped calls are admitted but do not bind/fold kernels. Argument faults skip entry; result collection preserves the first original fault across outputs. Concrete provider support is checked before callbacks.
+
+The function cohort is split at this compiler/actor boundary. Pure folding introduces no runtime locals, epochs, entropy frame IDs, continuations, waits or Return cleanup. The following extensions add runtime Pure calls and bounded seeded-volatile calls. Other volatile/state/clock calls and action/async calls remain next work. E3, core, incremental validation and NFR gates remain open. The independent test oracle scans original body edges with its own per-invocation UUID cache; it shares the model codec/validation and platform arithmetic, not compiler slots, call preparation or provider callbacks. Bounded generated cases cover nested identities with integer faults/Try. Deterministic cases additionally cover generic arithmetic, lazy bodies, results and source ownership.
+
+Pure-call/runtime review corrections (2026-10-26 UTC): root and callee compilation share executable data-port checks, including computed output provenance. Call scopes borrow unchanged fresh signatures and share one immutable specialized body per function/concrete argument set; mutable call results remain separate. Owned specialized metadata/default copies are charged before cloning and count against the compilation constant-byte budget. Interface and provider ports match in validated declaration order with explicit identity/direction checks and cooperative cancellation, rather than repeated searches.
+
+Runtime cancellation now follows explicit region children and live strand identities, removes only owned ready/timed work, and updates live counts from that subtree. A whole-run stop traverses disjoint roots after one root lookup scan; unrelated timer maps are not rebuilt per root. Cancellation outcomes keep timer-key order, cleanup deadlines/fuel and parent lifetime barriers. Ready work uses reusable linked slots plus a strand-identity directory; a pending data pull is selected directly without moving it through the queue first. Ordinary serial scheduling avoids directory operations until concurrency requires them. Hash iteration never determines execution order. Immutable data-plan constants are borrowed across activation frames; only dynamic values need mutable cells. Nominal per-activation retained-byte admission remains conservative and unchanged. Destruction still pays for retained dynamic state; no hard wall-time/RSS or completed NFR gate is asserted.
+
+### Runtime Pure calls (2026-10-26; PR21)
+
+`compile_data` and the data demands of `compile_control` accept the same graph-local Pure vocabulary and interface-visible generic specialization as `compile_pure`. Root entropy/state/execution values may supply arguments. For this Pure-call subset, called bodies remain Pure; the seeded-volatile extension below separately admits entropy. Neither profile admits called state/clock readers, action/async calls or package graph bodies.
+
+Compilation expands each admitted call instance into separate dense data nodes/slots. Function-entry outputs alias the caller's input references; the call boundary strictly gathers every argument in declaration order, then every declared result in declaration order. An argument fault skips body execution, including when that argument is unused. The first result fault propagates to all outputs, including a requested later result, retaining its original producer. Result publication is typed and charged through the existing activation path. Successful return values are copied into boundary slots; unused arguments are not copied into callback scratch storage. Body nodes keep original IDs and explicit compilation call-instance metadata.
+
+The existing work stack suspends and resumes these pulls under host budgets. Every dynamic call boundary and evaluated body node costs ordinary epoch/activation fuel; no native recursion, second scheduler or mutable provider lookup is introduced. Separate call instances and activations retain separate dynamic slots/memos, while constants and bindings retain the pinned immutable plan/snapshot. Constant islands in called bodies use the same folder and latent-warning rules; seeded root inputs are demanded once per epoch and do not acquire additional entropy draws through a Pure call.
+
+Potential expansion/depth/item/slot quotas still apply before provider callbacks, including inactive calls. Bounded expansion trades plan size for ordinary dense execution; it is not general dynamic call-frame allocation. Other volatile/state/clock functions, action/async functions, call-local state, erased generic parameters, package bodies, full call-stack error envelopes and Return cleanup remain pending. Existing cooperative budgets are not hard callback-time or process-memory guarantees.
+
+### Seeded-volatile graph-local calls (2026-10-26; PR22)
+
+Data compilation now additionally admits fresh accepted Volatile calls whose potential bodies contain only the existing Pure vocabulary and exact registered Seeded/Entropy definitions or calls to that same subset. Both `compile_data` and control data demands use it. `compile_pure` retains Pure-only admission. Called state/clock readers, mutable locals, action/async calls, package bodies and erased type arguments remain unsupported; declared kind and saved metadata do not supply execution authority.
+
+A callee entropy instruction keeps its original node UUID and a FrameId derived from its original call-site ancestry. Distinct call paths have separate invocation counters; a skipped call, a faulting strict argument or an unused body node does not consume an invocation. Root streams and `orange.entropy.sha256-counter@2` remain unchanged. Source-keyed independent SHA-256 vectors and partial-demand replay tests qualify the newly reachable call streams. Pure constant islands still fold without executing entropy callbacks. The ordinary ordered call boundary, lazy demand, Try producer provenance, draw quotas, cancellation and host fuel/slices apply.
+
+Runtime preparation hashes only ancestry used by actual entropy instructions, memoizing shared prefixes. Each expanded entropy instruction binds its immutable source slot, FrameId and dense counter position once. Activations allocate one counter per expanded entropy instruction, with no frame-by-all-nodes counter product and no callback-time ancestry hashing. The standalone public ActivationEntropy explicit-frame API retains its existing bounded sparse frame behavior; this private dense mode is for checked expanded DataPlans. No scheduler, provider interface, dependency or saved format changes.
+
+### Checked control dispatch (2026-10-26; PR23)
+
+Native effects can declare finite, eager variadic data inputs. The resolver and
+compiler bind fixed inputs in descriptor order and expand each variadic input in
+the persisted instance order. Each instance has its own demand root and follows
+the input precedence of incoming wire, instance literal, then descriptor default.
+It participates in the usual graph resource limits. Native effect
+outputs remain fixed. The Wasm guest effect boundary retains its fixed arity.
+
+The supported control profile executes Switch for exact Core bool/i32/i64/u32/u64/string keys. Semantic validation range-checks Core integer cases; compilation defensively checks and charges every case before executable binding, sorts unique typed keys and retains original variadic instance IDs/targets. Runtime uses binary search. A matching unconnected case ends that arm; it does not take default. Missing keys take default, including when default is unconnected. Enum/nominal/custom Eq keys remain explicitly unsupported until their executable type/equality contracts exist; no package implementation is silently replaced. Core string values join existing pure/data types with UTF-8 payload charging and locale-independent exact comparison. Since 2026-11-04 package enum keys also execute: cases name variants of the locked schema, dispatch compares the variant tag only, and a non-exhaustive enum switch needs a connected default ([11 §8.4](11-graph-language.md)). Records and package-defined Eq keys remain unsupported.
+
+Match-result consumes one checked result, then publishes only its selected value/error projection. Ordinary Err takes err with the original producer; an uncaptured input-cone fault takes failed. Recursive result/error/option boxing follows the shared PlanType representation, so Ok(error), nested results and present None remain distinct. Explicit error projections do not allocate a duplicate implicit error host slot. Match payload replacement reserves nominal retained bytes before publication, releases replaced/cleared values and shares the activation state limit with local variables. These are value budgets, not complete allocator/RSS bounds.
+
+Error projection correction (2026-11-09): implicit fault
+outputs and Match-result errors use the same transactional publication/admission
+as ordinary values. Their copied error code and envelope reserve activation-state
+and run-aggregate bytes before output mutation. Match-result replaces value/error
+projections together, crediting the old arm before admitting the new one. Function
+retirement refunds owned error projections, and repeated publication/stop retain
+normal replacement/release rules. State/aggregate exhaustion remains an
+infrastructure error, not a catchable graph fault; producer identity is unchanged.
+
+Both controls reuse host-sliced data pulls, frozen input snapshots, cleanup fuel and cancellation. Source and fault IDs remain original; case/error payloads are omitted from default plan/operation Debug summaries. Action/async function frames, remaining state controls/iterators/zones, enum/custom dispatch and broader core/service work remain open.
+
+Control-dispatch review correction: semantic case validation now enforces all four Core integer ranges with E-SWITCH-CASE and uses borrowed JSON-value hash membership for duplicate detection. Values and diagnostics keep their existing equality/order semantics; there is no JSON serialization or copied-payload set. The pinned serde_json1.0.154 Value Hash/Eq implementation was verified in local versioned source.
+
+State-control execution (2026-10-26): immutable ExecTarget combines canonical control identity and a resolved ExecInput command. Region/timer ownership retains canonical ControlIx; routing performs no runtime port-name or document-edge search. Gate/DoOnce/FlipFlop use run-owned boolean cells, Register uses typed run/activation cells and the existing resumable pull scheduler. ControlCell<Id> shares checked type, initial value and charging metadata with variables. Each Run owns its stores; local cells belong to an activation and its Fork siblings. Pending Register stores retain the existing mutation segment across pump boundaries. State outputs use checked HostSource::State snapshots, with original register identity for uninitialized faults. Node write intents are deduplicated per segment and cleared on disposal; they are not change events. Detailed semantics are in11 §11.3; remaining function/iterator/zone/event/resource/service work stays open.
+
+Variable Update execution (2026-10-26): compiler-owned UpdateDemand stores ordered roots and the sorted union of potential host inputs. The actor freezes it once and resumes strict operands in one epoch, using two fixed optional cells rather than per-action operand buffers. Pending Update joins Set/Register mutation ownership. Checked UpdateOperation admits documented Core pairs while retaining model Eq/Ord/numeric proofs; proof alone never authorizes package callbacks. HostSource::Update projects typed old/new/exchanged after combined quota/version admission; mismatch records no write. Reentry replaces charges, failure clears projections, and stop discards pending operands. Scalar arithmetic is shared in orange-model::scalar; bundled KernelError retains its existing path through a reexport. No workspace actor is introduced.
+
+Collection/iteration execution (2026-10-26): checked Core Bytes/Timestamp/List/Map plan types retain existing immutable Value storage. One bounded type-and-charge traversal checks element types, map uniqueness and shape/depth before publication; packed scalar lists use constant-time length charges. Literal admission walks borrowed typed JSON with byte lower bounds before decoding. For-each owns one snapshot and one lexical iteration frame; strands and timers retain that frame, inheriting outer scopes through immutable parent links. Cleanup reads its original invocation, not whichever frame a sibling or later invocation happens to expose. Parent-frame destruction is iterative. A private RAII ledger shares the activation state budget with local variables and Match/Update outputs, and frame replacement credits only an exclusively owned old frame. Break defers Count index retirement until canceled body cleanup completes. All value limits are nominal admission bounds; validation is synchronous within configured depth/byte limits and is not wall-time preemption, allocator/RSS or NFR qualification.
+
+Function state reads (2026-10-27): the checked data-call profile admits single-output State readers using the same root/body port policy. Each expanded read has its own typed host-input slot and original producer/call provenance. DataActivation hosts supply inputs once per epoch; Run binds exact Core Get reads to the frozen consumption snapshot, so later actions see prior committed writes. A volatile function cannot write locals: its call-local reads use immutable declaration initializers, independently of the caller activation local store; an absent initializer produces the original Get UninitializedVariable fault. No mutable action/async frame is implied. Potential called bodies are prepared once before binding, with workspace/unsupported Run readers rejected before any kernel callback. Clock reads, mutable call locals, action/async frames and Return cleanup remain pending.
+
+Action/async calls (2026-10-27): immutable scoped control plans retain original node/provider identities and share specialized metadata with data lowering. Each call enters an owned function region with fresh mutable locals and immutable arguments; run variables remain shared. Call inputs form one strict consumption epoch and frozen host-input union. Synchronous function work retains its actor segment across host pump slices until suspension, loop yielding or return. Wait/Yield and Fork use existing scheduling/region identities. Returned results are collected strictly in declaration order, charged before retention, and published atomically only after function-owned detached work and bounded cleanup retire. An unhandled callee fault reaches the caller failed route with the original producer; caller entry policy applies only if that route remains unhandled. Zero-output fallthrough is valid; defensive missing-result fallthrough fails with core/MissingReturn rather than reusing prior projections. Cancellation cleanup Return terminates cleanup without evaluating/publishing ordinary results or reviving a canceled caller.
+
+A single actor-owned frame directory uses never-reused region identities; strands/timers carry the exact invocation ID. Cancellation transfers nested frame ownership to the surviving cleanup region, retaining locals until its barrier retires. Iterators and functions share automatic nominal-byte leases, so faults, nested cancellation, deadlines and disposal release quotas. Pending calls/results/faults and rare retained frame sets are boxed to keep ordinary strand/region headers compact. Node state remains scoped to each expanded call site and its declared run/activation lifetime; variable locals belong to each dynamic invocation. Public control_state uses a checked plan control index; node_state returns None for repeated source IDs. Full call-stack error envelopes, package bodies, erased parameters, clocks/zones and other original core gates remain open.
+
+Function review corrections (2026-10-27): retiring a function also clears its owned execution projections and releases their nominal activation-state charges before caller result publication. DataActivation memo/slot caches remain activation-owned and separately bounded by DataLimits; this is not a process-memory reclamation claim. A host pump budget boundary alone no longer clears the same logical strand's write intents; explicit suspension or an actual strand switch starts a new segment. Source-only node-state intents deduplicate repeated compiled call-site IDs through a startup index, while exact state inspection remains scope-aware.
+
+Audit remediation (2026-10-27):
+- **Import quotas.** The streaming pre-pass checks decoded JSON structure/text budgets while scanning, before document materialization: by default 1,000,000 values (containers and primitives, including the root), 8 MiB of object-key bytes and 32 MiB of string-value bytes, measured as decoded UTF-8. A hit stops scanning immediately with the existing typed import-limit error and therefore precedes later format/version/duplicate/shape errors. Byte quota still precedes parsing. Without a JSON-budget hit, format/version and duplicate checks still precede graph node/edge quotas and nesting. `from_json_with_budget` permits explicit host profiles while retaining the existing `ImportLimits` shape. These dimensions reduce allocation amplification; they are not a hard heap/RSS ceiling. Hosts bound reads and concurrent imports before parsing, and choose larger profiles deliberately for trusted stress documents.
+- **Checked Serde construction (2026-10-28).** Deserializing `GraphDocument` through Serde applies the importer's format, version, cross-body identity and lock checks, so an unsupported or structurally ambiguous document cannot reach analysis or compilation through the ordinary Serde trait. Duplicate keys and quotas remain importer-only ([12](12-graph-data-structures.md)).
+- **Type locks on paste (2026-10-28).** Copy/paste carries every source type lock and merges it under the lock conflict rule, so pasted values keep the source's codec contract. Type locks have explicit edit commands; see [12](12-graph-data-structures.md).
+- **Nesting budget (2026-10-28).** Editing, saving and loading share one 64-level JSON nesting budget, so an edit that commits can always be reopened; see [12](12-graph-data-structures.md).
+- **Startup admission.** `RunLimits::max_frame_storage_bytes` (default 64 MiB) bounds the nominal storage reserved by all start and stop frames, checked before any is built. Over the limit, startup fails with `RunError::ResourceLimit`. A plan near the `DataLimits` maximums fits only a few frames under the default, so hosts with large graphs raise this limit deliberately.
+- **Aggregate retained values (2026-11-05).** `RunLimits::max_run_retained_bytes` (default 512 MiB) is one run-owned nominal reservation shared by every activation: dynamic data caches and zone machines, local/local-state cells (including On Stop frames), retained outputs and function/iteration holds reserve from it through RAII leases alongside their per-activation limits, so retirement, refusal, fault cleanup, stop and disposal return capacity and replacement credit is unchanged. Shared payloads are charged nominally per holder; plan constants, the data plan's initial charge, event template cells and run-scope cells (still bounded by `max_state_bytes`) are not charged. Refusal is `RunError::AggregateLimit` or `DataError::AggregateLimit` and faults the run. `Run::retention` reports reserved and limit bytes. The budget is nominal, not RSS; frame-storage and event-ingress limits stay separate.
+- **Map admission (2026-10-28).** A Map zone knows its result length, and every element charges at least one value, so a result whose minimum charge exceeds the remaining retained-byte capacity is refused with `ResourceLimit` before its storage is reserved or any element is computed. A result that fits is still preallocated; variable-size elements are still charged one by one.
+- **Disposal (2026-10-28).** `Run::dispose` releases the run's storage, including pooled frame buffers and reusable traversal buffers; a disposed run keeps only its terminal summary (identity, options, state history, last error, counters and clock). Hosts may keep disposed runs for status without holding their working memory. The frame pool still reuses buffers while the run is active.
+- **Provider panics (2026-10-28; standalone activation hardening 2026-10-31).** Provider callbacks are trusted code, and a panic in one propagates out of `Run::pump`. Work the pump had taken out of the run's stores may be lost, so the run is then faulted: `state` reports `Faulted`, `last_error` reports `RunError::Interrupted`, and the next pump or clock advance fails with `Interrupted`. An explicit stop cancels the remaining owned work as usual, after which the run can be disposed. Direct `DataActivation` pulls also retain an interruption marker across unwind: subsequent pulls, input publication and epoch starts report `DataError::Interrupted`, even if cancellation is cleared. The host drops and recreates that activation; a new epoch cannot revive lost work or expose prior-epoch values as current success. Ordinary Result-based faults and cancellation keep their existing behavior. A run is never continued as though the lost work had completed. Untrusted or uncooperative code still needs an isolated worker.
+- **Run operation limit is per burst (2026-11-09).** `RunLimits::max_operations` (default 10,000,000) counts pump work items since the run last had nothing runnable, and resets whenever a Running run again has nothing runnable until its host supplies time or input. Reaching it with work outstanding faults the run with `ResourceLimit` as a runaway. It was a lifetime total, which ended every long-lived timer- or event-driven run. Activation fuel (`DataLimits::max_activation_operations`) is the complementary per-activation guard and refills when a strand really suspends, as described under activation fuel.
+- **Value-sized Update work (2026-10-28).** A pump budget counts work items, and one item can walk a whole value. `core/update-variable` now also spends one budget unit per nominal value beyond the first in its old and new values, so a large compare-and-set or append ends the pump slice instead of sharing it with more work. Scalar updates cost what they did. The units also count toward `RunLimits::max_operations`. Other indivisible work, such as snapshotting a consumer's host inputs or traversing a cancelled region tree, is still one item; budgets remain operation bounds, not wall-time guarantees.
+- **Bounded indivisible work (2026-10-30).** The work a single item can still do is bounded by the run limits rather than resumed: spawning or cancelling a Fork touches at most `RunLimits::max_strands` strands and `max_regions` regions, and a pull's snapshot copies at most the host inputs its compiled demand lists, which the compile limits bound. Values are shared, so a snapshot copies references, not payloads. Measured worst slices under the default limits are recorded in [10](10-development.md); a host that raises `max_strands` accepts proportionally longer cancellation steps. Resumable cancellation or snapshots would change cancellation order or the frozen-snapshot semantics, so they are not used.
+- **Open observation.** A yield set when a loop resumes is not applied as the body is entered. It stays on the waiting caller and takes effect at that strand's next step without a transfer. This keeps existing behavior; whether it is intended remains open.
+
+Runtime handlers and compare-and-set (2026-10-27):
+- **Execution dispatch.** `Run::execute` is the single place a node's demand root is consumed. A pending demand returns before any state changes, and a graph fault becomes the node's failed outcome. Operation families run in handlers with narrow contexts: state cells (Gate, DoOnce, FlipFlop, Register, Set) on a borrowed `Cells` view, selection, loops, scheduling (Fork, Entry, Yield, Wait), functions and updates. `SegmentWrites` owns the once-per-segment write marks.
+- **Compare-and-set equality.** Compare-and-set compiles only for shapes with native equality. Stored values are checked on every write path, and `expected` is checked when published with the variable's exact type. So equality is decided structurally. Only shapes containing a map fall back to the model's checked, insertion-order-independent equality.
+
+### L02a fixed-width integer kernels (2026-11-08)
+
+The ordinary math provider supplies thirteen strict integer-only operations listed
+in12 §4.2, under11 §5.6. Binding fixes exact metadata, type, provider and permitted
+policy once; scalar evaluation allocates no buffers, reads no registry and invokes
+no host operation. Work is bounded by fixed32/64-bit inputs, with widened128-bit
+remainder arithmetic to avoid native MIN/-1 traps. Invalid clamp bounds are checked
+before clamp; checked shifts reject the count before shifting. This is correctness
+and nominal fixed work, not physical latency qualification. Pure folding and
+actor-owned data demands share that same ordinary provider binding; faults retain
+their producer and normal Try/failed-route behavior. No scheduler, resource, saved
+format or provider selection rule changes. Broader math/casts remain open.
+
+### L02b float kernels (2026-11-08)
+
+The ordinary math provider supplies sixteen strict f32/f64 operations listed in
+12 §4.3, under 11 §5.6. Binding fixes exact metadata, type, provider and float
+policy once; evaluation allocates nothing, reads no registry and invokes no host
+operation. Finite policy reports non-finite inputs, poles, domain errors and
+overflow with the existing `core/NonFinite`, `core/DivideByZero` and
+`core/Domain` codes, in that order. Pure folding and actor-owned data demands share
+the same provider binding; faults keep their producer. Exponential, logarithms and
+power use the platform library, so replay is platform-scoped as stated above.
+Trigonometry, IEEE comparisons and the remaining casts remain open.
+
+### L02c trigonometry, float predicates and XOR (2026-11-08)
+
+Seventeen more strict f32/f64 operations (12 §4.3, 11 §5.6) share the L02b binding
+and evaluation path. Trigonometry keeps the finite/IEEE policy; inverse sine and
+cosine outside [-1, 1] report `core/Domain` under finite policy. The ten predicates
+return bool for every input, NaN included, and have no policy. Boolean `xor` is an
+eager scalar kernel beside `not`. No allocation, registry read or host call occurs
+during evaluation. Only the remaining numeric casts are left in L02.
+
+### L02d numeric casts (2026-11-08)
+
+`resolve_core_conversion` now binds every Core numeric entry. It derives the
+endpoint types from the registered entry, requires the entry ID and class to match
+the fixed Core contract for that pair, and accepts exactly the declared options;
+registry metadata cannot widen an executable contract. Integer sources are compared
+through i128, so range and loss checks never use a float intermediate. Float→integer
+conversion reports `core/NonFinite` (`ConversionError::NonFinite`) before range.
+Compiler folds and runtime demands use the same binding. This completes the L02
+numeric vocabulary; strings, collections, package kernels and embedding remain.
+
+### L03a text conversions (2026-11-08)
+
+Text parse/display and UTF-8 encode/decode are Core converter entries (11 §6), bound
+by the same `resolve_core_conversion` path as the numeric casts. Evaluation reads
+no locale, registry or host state. New `ConversionError::Parse` and `InvalidUtf8`
+carry no input text. Work is linear in the input; display output is at most a few
+dozen bytes, and decode output is at most three times the input. Graph-level size
+quotas remain the existing value limits. Text nodes (length, substring, search,
+case, split/join) and grapheme clusters are later L03 slices.
+
+### L03b text nodes (2026-11-08)
+
+The `org.orange.text` package (12 §4.4, 11 §5.7) is bound once per node like the math
+kernels and evaluated without allocation beyond its result, registry reads or host
+calls. Concatenation, replacement, case mapping and join compute their result size
+first and fault with `core/LimitExceeded` above 16 MiB; split and substring cannot
+exceed their input. Scalar indexing walks the string, so its cost is linear in the
+index. Grapheme clusters and locale-tailored operations remain open.
+
+### L04a collection nodes (2026-11-08)
+
+`org.orange.collections` (12 §4.5, 11 §5.8) binds each node to the concrete container
+shape once and evaluates without registry reads or host calls. Inputs are checked
+against that shape, which also yields their nominal charge; growing results are
+refused above 16 MiB before they are built. Lists reuse packed storage
+(`ListBuilder`, `ListRepr::concat`); map lookups compare Core hash keys by value
+and keep insertion order. Lookups are linear. Record/enum construction and JSON
+operations are later L04 slices.
+
+### L04b record and enum nodes (2026-11-08)
+
+Record/enum nodes bind to the record or enum shape resolved from the locked schema
+(12 §4.6, 11 §5.9). Construction checks the built value against that shape, so a
+wrong field value is an internal contract fault, never a stored invalid record.
+Optional fields use the option boxing rule instead of optional ports, so the pure
+compiler needs no new port form. JSON nodes remain the last L04 slice.
+
+### L04c JSON reads (2026-11-08)
+
+`org.orange.json` (12 §4.7, 11 §5.10) scans the already validated JSON text instead
+of building a tree, so extracted values keep exact text and each read is linear in
+the text it passes (at most `MAX_JSON_TEXT_BYTES`, 1 MiB). Extracted values are
+re-admitted as `JsonText`. `string-to-json` uses the same `JsonText` limits and
+reports oversized or overdeep text as `core/LimitExceeded`. This completes the
+finite L04 read vocabulary; JSON construction/editing remains open.

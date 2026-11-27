@@ -1,0 +1,431 @@
+use crate::behaviour::common;
+
+use crate::catalog::{NodeContract, ProviderKey};
+use crate::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
+use crate::validation::{DiagnosticCode, HostOrigin, validate_nodes};
+use crate::{GraphDocument, to_json};
+use common::registry::Facts;
+use serde_json::{Value, json};
+
+const NODE: &str = "10000000-0000-4000-8000-000000000001";
+const SIG: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const DIGEST: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn origin() -> HostOrigin {
+    HostOrigin::new("0.1.0", format!("sha256:{}", "c".repeat(64))).unwrap()
+}
+
+fn document(
+    provider: Option<Value>,
+    lock: bool,
+    signature: Option<Value>,
+    inputs: Value,
+) -> GraphDocument {
+    let mut node = json!({
+        "id": NODE,
+        "definition_id": "example/value",
+        "definition_version": 1,
+        "config_version": 1,
+        "config": {},
+        "type_args": {"T":"core/string@1"},
+        "inputs": inputs
+    });
+    if let Some(provider) = provider {
+        node["provider"] = provider;
+    }
+    if signature.is_some() {
+        node["signature"] = json!(SIG);
+    }
+    let mut value = json!({
+        "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-000000000001",
+        "revision": 7,
+        "nodes": [node],
+        "edges": [],
+        "package_lock": if lock { json!([{
+            "id":"example.pkg", "version":"1.0.0", "content_digest":DIGEST
+        }]) } else { json!([]) },
+        "signatures": {}
+    });
+    if let Some(signature) = signature {
+        value["signatures"][SIG] = signature;
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+fn binding(id: &str) -> Value {
+    json!({"package":"example.pkg", "version":"1.0.0", "id":id})
+}
+
+fn definition() -> DefinitionRef {
+    DefinitionRef {
+        id: "example/value".parse().unwrap(),
+        version: 1,
+    }
+}
+
+fn provider(id: &str, digest: &str) -> ProviderKey {
+    ProviderKey {
+        package: "example.pkg".into(),
+        version: "1.0.0".into(),
+        content_digest: digest.into(),
+        id: id.into(),
+    }
+}
+
+fn snapshot(ty: &str) -> Value {
+    json!({
+        "kind":"pure",
+        "ports":[{"port_id":"value","direction":"output","kind":"data","type":ty,"source":"computed"}]
+    })
+}
+
+fn concrete_contract() -> NodeContract {
+    NodeContract {
+        kind: NodeKind::Pure,
+        suspends: None,
+        type_params: vec![],
+        ports: vec![
+            serde_json::from_value(json!({
+                "port_id":"value", "direction":"output", "kind":"data",
+                "type":"core/i64@1", "source":"computed"
+            }))
+            .unwrap(),
+        ],
+    }
+}
+
+fn setup(id: &str) -> Facts {
+    let mut facts = Facts::new(origin());
+    facts.definition(definition(), concrete_contract());
+    facts.provider(definition(), 1, provider(id, DIGEST));
+    facts
+}
+
+fn codes(report: &crate::validation::NodeValidation) -> Vec<DiagnosticCode> {
+    report.diagnostics.iter().map(|item| item.code).collect()
+}
+
+#[test]
+fn distinct_provider_id_and_digest_are_required() {
+    let facts = setup("implementation-a");
+    let doc = document(
+        Some(binding("implementation-b")),
+        true,
+        Some(snapshot("core/i64@1")),
+        json!({}),
+    );
+    let report = validate_nodes(&doc, &facts.snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
+    assert!(report.resolved.is_empty());
+
+    let mut facts = Facts::new(origin());
+    facts.definition(definition(), concrete_contract());
+    facts.provider(
+        definition(),
+        1,
+        provider("implementation-a", &format!("sha256:{}", "d".repeat(64))),
+    );
+    let doc = document(
+        Some(binding("implementation-a")),
+        true,
+        Some(snapshot("core/i64@1")),
+        json!({}),
+    );
+    let report = validate_nodes(&doc, &facts.snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
+}
+
+#[test]
+fn primary_resolution_errors_do_not_cascade_or_fall_back_to_core() {
+    let facts = setup("implementation-a");
+    let missing_provider = document(None, true, Some(snapshot("core/i64@1")), json!({}));
+    let report = validate_nodes(&missing_provider, &facts.snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::ProviderMissing]);
+    assert!(report.resolved.is_empty());
+
+    let missing_lock = document(
+        Some(binding("implementation-a")),
+        false,
+        Some(snapshot("core/i64@1")),
+        json!({}),
+    );
+    let report = validate_nodes(&missing_lock, &facts.snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::PackageLockMissing]);
+
+    let missing_signature = document(Some(binding("implementation-a")), true, None, json!({}));
+    let report = validate_nodes(&missing_signature, &facts.snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::SignatureMissing]);
+}
+
+#[test]
+fn generic_resolution_uses_fresh_evidence_instead_of_cached_type_args() {
+    let doc = document(
+        Some(binding("implementation-a")),
+        true,
+        Some(json!({"kind":"pure","ports":[{
+            "port_id":"value","direction":"input","kind":"data","type":"$T"
+        }]})),
+        json!({"value":{"type":"core/i64@1","value":3}}),
+    );
+    let mut facts = Facts::new(origin());
+    let mut port: PortDescriptor = serde_json::from_value(json!({
+        "port_id":"value","direction":"input","kind":"data","type":"$T"
+    }))
+    .unwrap();
+    port.extensions = Default::default();
+    facts.definition(
+        definition(),
+        NodeContract {
+            kind: NodeKind::Pure,
+            suspends: None,
+            type_params: vec![TypeParam {
+                name: "T".into(),
+                constraints: vec![],
+                extensions: Default::default(),
+            }],
+            ports: vec![port],
+        },
+    );
+    facts.provider(definition(), 1, provider("implementation-a", DIGEST));
+    let report = validate_nodes(&doc, &facts.snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::SignatureDrift]);
+    assert_eq!(
+        report.resolved[&NODE.parse().unwrap()].ports[0]
+            .ty
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "core/i64@1"
+    );
+}
+
+#[test]
+fn validation_does_not_change_document_content_or_revision() {
+    let facts = setup("implementation-a");
+    let doc = document(
+        Some(binding("implementation-a")),
+        true,
+        Some(snapshot("core/i64@1")),
+        json!({}),
+    );
+    let before = to_json(&doc).unwrap();
+    let revision = doc.revision();
+    let state_id = doc.state_id();
+    let _ = validate_nodes(&doc, &facts.snapshot());
+    assert_eq!(to_json(&doc).unwrap(), before);
+    assert_eq!(doc.revision(), revision);
+    assert_eq!(doc.state_id(), state_id);
+}
+
+#[test]
+fn host_intrinsics_resolve_without_snapshots_but_reject_package_overrides() {
+    let value = json!({
+        "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-000000000001",
+        "revision": 0,
+        "nodes": [{
+            "id": NODE,
+            "definition_id": "core/branch",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {}
+        }],
+        "edges": [],
+        "signatures": {}
+    });
+    let doc: GraphDocument = serde_json::from_value(value.clone()).unwrap();
+    let report = validate_nodes(&doc, &Facts::new(origin()).snapshot());
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert!(report.resolved.contains_key(&NODE.parse().unwrap()));
+
+    let mut overridden = value;
+    overridden["nodes"][0]["provider"] = binding("package-override");
+    let doc: GraphDocument = serde_json::from_value(overridden).unwrap();
+    let report = validate_nodes(&doc, &Facts::new(origin()).snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
+    assert!(report.resolved.is_empty());
+}
+
+#[test]
+fn intrinsic_data_port_supplies_fresh_generic_inference_evidence() {
+    let intrinsic = "10000000-0000-4000-8000-000000000010";
+    let edge = "20000000-0000-4000-8000-000000000010";
+    let doc: GraphDocument = serde_json::from_value(json!({
+        "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-000000000001",
+        "revision": 0,
+        "package_lock": [{"id":"example.pkg","version":"1.0.0","content_digest":DIGEST}],
+        "nodes": [
+            {
+                "id": intrinsic,
+                "definition_id":"core/count",
+                "definition_version":1,
+                "config_version":1,
+                "config":{}
+            },
+            {
+                "id": NODE,
+                "definition_id":"example/value",
+                "definition_version":1,
+                "config_version":1,
+                "config":{},
+                "type_args":{"T":"core/string@1"},
+                "provider":{"package":"example.pkg","version":"1.0.0","id":"implementation-a"},
+                "signature":SIG
+            }
+        ],
+        "edges": [{"id":edge,"from":{"node":intrinsic,"port":"index"},"to":{"node":NODE,"port":"value"}}],
+        "signatures": { (SIG): {"kind":"pure","ports":[
+            {"port_id":"value","direction":"input","kind":"data","type":"$T"}
+        ]}}
+    })).unwrap();
+    let mut facts = Facts::new(origin());
+    facts.definition(
+        definition(),
+        NodeContract {
+            kind: NodeKind::Pure,
+            suspends: None,
+            type_params: vec![TypeParam {
+                name: "T".into(),
+                constraints: vec![],
+                extensions: Default::default(),
+            }],
+            ports: vec![
+                serde_json::from_value(json!({
+                    "port_id":"value","direction":"input","kind":"data","type":"$T"
+                }))
+                .unwrap(),
+            ],
+        },
+    );
+    facts.provider(definition(), 1, provider("implementation-a", DIGEST));
+    let report = validate_nodes(&doc, &facts.snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::SignatureDrift]);
+    assert!(report.incomplete_nodes.is_empty());
+    assert_eq!(
+        report.resolved[&NODE.parse().unwrap()].ports[0]
+            .ty
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "core/i64@1"
+    );
+}
+
+#[test]
+fn combined_template_and_argument_depth_is_a_complexity_diagnostic() {
+    let deep_type = format!("{}core/i64@1{}", "core/list@1<".repeat(64), ">".repeat(64));
+    let doc: GraphDocument = serde_json::from_value(json!({
+        "format_version":1,
+        "graph_id":"20000000-0000-4000-8000-000000000001",
+        "revision":0,
+        "package_lock":[{"id":"example.pkg","version":"1.0.0","content_digest":DIGEST}],
+        "nodes":[{
+            "id":NODE,
+            "definition_id":"example/value",
+            "definition_version":1,
+            "config_version":1,
+            "config":{},
+            "type_pins":{"T":deep_type},
+            "provider":{"package":"example.pkg","version":"1.0.0","id":"implementation-a"},
+            "signature":SIG
+        }],
+        "edges":[],
+        "signatures":{(SIG):{"kind":"pure","ports":[{
+            "port_id":"value","direction":"output","kind":"data",
+            "type":"core/list@1<$T>","source":"computed"
+        }]}}
+    }))
+    .unwrap();
+    let mut facts = Facts::new(origin());
+    facts.definition(
+        definition(),
+        NodeContract {
+            kind: NodeKind::Pure,
+            suspends: None,
+            type_params: vec![TypeParam {
+                name: "T".into(),
+                constraints: vec![],
+                extensions: Default::default(),
+            }],
+            ports: vec![
+                serde_json::from_value(json!({
+                    "port_id":"value","direction":"output","kind":"data",
+                    "type":"core/list@1<$T>","source":"computed"
+                }))
+                .unwrap(),
+            ],
+        },
+    );
+    facts.provider(definition(), 1, provider("implementation-a", DIGEST));
+    let report = validate_nodes(&doc, &facts.snapshot());
+    assert_eq!(codes(&report), vec![DiagnosticCode::TypeComplexity]);
+    assert!(report.resolved.is_empty());
+    assert!(report.incomplete_nodes.contains(&NODE.parse().unwrap()));
+}
+
+/// Nodes of one definition with the same arguments share a cached projection; drift and
+/// type failures must still be judged and reported per node.
+#[test]
+fn nodes_sharing_a_projection_keep_their_own_drift_and_type_failures() {
+    let id = |n: u8| format!("10000000-0000-4000-8000-{n:012}");
+    let (good, stale) = (
+        format!("sha256:{}", "1".repeat(64)),
+        format!("sha256:{}", "2".repeat(64)),
+    );
+    let doc = |signatures: &[&str]| -> GraphDocument {
+        let nodes: Vec<Value> = signatures
+            .iter()
+            .enumerate()
+            .map(|(n, signature)| json!({
+                "id": id(n as u8 + 1), "definition_id": "example/value", "definition_version": 1,
+                "config_version": 1, "config": {}, "provider": binding("implementation-a"),
+                "signature": signature
+            }))
+            .collect();
+        serde_json::from_value(json!({
+            "format_version": 1, "graph_id": "20000000-0000-4000-8000-000000000001",
+            "revision": 0, "nodes": nodes, "edges": [],
+            "package_lock": [{"id":"example.pkg","version":"1.0.0","content_digest":DIGEST}],
+            "signatures": {(good.clone()): snapshot("core/i64@1"), (stale.clone()): snapshot("core/i32@1")}
+        }))
+        .unwrap()
+    };
+    let report = validate_nodes(
+        &doc(&[&good, &stale, &good]),
+        &setup("implementation-a").snapshot(),
+    );
+    let drift: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|item| (item.code, item.subject.node.map(|node| node.to_string())))
+        .collect();
+    assert_eq!(drift, vec![(DiagnosticCode::SignatureDrift, Some(id(2)))]);
+    assert_eq!(report.resolved.len(), 3);
+    assert!(report.incomplete_nodes.is_empty());
+
+    // A shared failed projection is reported on every node that uses it.
+    let mut facts = Facts::new(origin());
+    let mut contract = concrete_contract();
+    contract.ports[0].ty = Some("org.unknown/thing@1".parse().unwrap());
+    facts.definition(definition(), contract);
+    facts.provider(definition(), 1, provider("implementation-a", DIGEST));
+    let report = validate_nodes(&doc(&[&good, &good]), &facts.snapshot());
+    let failed: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|item| {
+            (
+                item.subject.node.map(|node| node.to_string()),
+                item.subject.port.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(failed.len(), 2, "{:?}", report.diagnostics);
+    assert_eq!(failed[0].0, Some(id(1)));
+    assert_eq!(failed[1].0, Some(id(2)));
+    assert_eq!(report.diagnostics[0].code, report.diagnostics[1].code);
+    assert_eq!(report.incomplete_nodes.len(), 2);
+    assert!(report.resolved.is_empty());
+}

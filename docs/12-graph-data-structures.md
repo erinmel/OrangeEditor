@@ -1,5 +1,289 @@
 # Graph data structures
 
+Fault text (2026-11-09): `KernelFault` retains code/key through allocation-free
+static text or shared `Arc<str>` identifiers; its safe fallback remains static.
+Constant-fault admission includes the producer, envelope and shared identifier
+charges. Data slots, preview caches, effect/stream completions, last Watch faults,
+trace entries and replay journals retain shared text under their owning budgets.
+Shared allocations are charged conservatively per retained owner rather than
+discounted by pointer identity. Trace admission may drop an entry and increment
+`trace_dropped` if its identifier storage cannot fit; it never rewrites a fault.
+No persistence schema changes; Try materializes the same producer and code.
+
+## C13 persistent-value representation (2026-11-08)
+
+ValueCheckpoint privately owns a closed version1 document and host-chosen limits.
+It exposes read-only metadata and bounded byte import/export, not mutable actor
+cells. Stored entries contain variable ID/type and a required nullable tagged
+literal payload; decoded internal Literal objects are borrowed directly by the
+bounded codec rather than cloned before quota checks. A streaming structural pass
+checks count, duplicates and nesting before allocating literal trees. Encoding
+uses capped growth; capture publishes only artifacts the same reader accepts.
+
+A SHA-256 compatibility seal frames selected declarations/resolved shapes and
+exact locks/provider identities under a versioned native codec contract. Display,
+layout, initializers and process IDs are excluded. Typed restoration stages a
+bounded value map and constructs a new actor: selected initializers are replaced
+before ordinary cell/frame/Watch construction, and failed startup drops staging.
+Workspace roots/cells use their existing lifetime leases and a fresh identity;
+old publications stay pinned. No stack, resource alias, effect command, event
+queue, bus endpoint or entropy position crosses the wire. The full wire schema,
+identity algorithm and.NET/Rust vector are in[20](20-value-checkpoints.md).
+
+## C12c workspace event representation (2026-11-08)
+
+ControlEvent retains its run/workspace scope and immutable payload shape. Run
+workspace attachment keeps a private noncloneable BusLease: Arc endpoint state,
+monotonic close signal and last accepted bus sequence. Endpoint state pins a bus
+schema, Run identity and checked event-index/send/receive map with a lifetime
+metadata reservation. Only host-actor records own finite VecDeque message queues.
+There is no bus reference/pointer in Run; a pump explicitly borrows the native
+actor. Private construction binds every delivery to its target endpoint Arc.
+
+WorkspaceDelivery owns an immutable typed payload, complete WorkspaceEnvelope,
+target endpoint Arc, one global item lease and payload/metadata byte lease. Taking
+it from the queue transfers those leases; it does not refund them. Successful
+Run ingestion transfers retention to existing Run event ownership and drops the
+transport leases. Refusal boxes and returns the original message. Exact pointer
+identity, closed state, increasing accepted sequence and checked admission prevent
+foreign/stale publication without any retired-ID history table.
+
+WorkspaceOrigin holds only source bus/Run/node/scope, global sequence and source
+virtual time; EventMetadata already contains event/cause/depth/source sequence
+and recipient order/time. This preserves Copy inspection and existing replay
+default storage admission without duplicate full envelopes. C05 does not record
+workspace traffic. Schema/endpoint/messages keep nominal leases beyond actor/Run
+drop; a meter owns counters only. Closed records reap at bus boundaries. Queue
+capacities, type checks, old/new staging and exclusions are in03; this adds no
+saved schema, dependency, provider grant, OS worker or checkpoint format.
+
+## C12b graph workspace bridge (2026-11-07)
+
+ControlCell retains Workspace scope/type metadata without an initializer or a
+Run-owned variable slot. Existing HostSource::Variable projections select the
+attached immutable workspace root explicitly; called readers follow the same
+path. An attachment pins one WorkspaceSnapshot and a separately charged shared
+projection. Replacing it stages a new lease; open data epochs retain their own
+frozen input copies. A foreign identity or regressing version never replaces it.
+
+ControlEffect gains a private optional SharedWrite tag (variable ID, optional
+native UpdateOperation); Set uses None. Its strict demand and typed outputs reuse
+the ordinary Effect machinery, while host take/completion dispatch excludes the
+other command kind. Compiler-created private metadata cannot be supplied by an
+ordinary effect binding. Host-facing SharedRequest is a private boxed command
+with Run/effect/workspace identity, exact operation, immutable operands, monotonic
+cancellation signal and a payload/metadata lifetime lease. Only Workspace consumes
+it into a private SharedReceipt containing an immutable commit or typed failure.
+Neither is cloneable and a receipt cannot become another executable request.
+
+SharedRefused<T> returns the original request/receipt after admission refusal.
+Completion stages snapshot and outputs first, queues the existing parked strand,
+then installs the root before any pump work. Newer accepted roots never regress.
+Canceled region retirement uses existing Effect cleanup. A host-held command keeps
+its Run reservation after cancellation/disposal; commit cells/root stay charged
+to Workspace. Dispose releases attachment storage, while host-retained snapshots
+remain charged to their owner. No saved format/dependency/provider-lock change,
+unbounded retired-command history, bus transport or checkpoint format is added.
+
+## C12a host workspace values (2026-11-07)
+
+`Workspace` owns one immutable current `WorkspaceSnapshot` and limits. Its private
+process identity and u64 publication version never wrap. A snapshot Arc holds its
+pinned schema/registry, version, sorted variable-to-Arc<Cell> map, current nominal
+value bytes and a root metadata lease. Each immutable cell holds optional Value,
+its nominal charge and a lease; the shared schema holds exact type/shape metadata
+and its own lease. None (uninitialized cell) differs from Some(Value::None), and
+nested Some(None) retains the existing value representation.
+
+Writes preflight the full new value/state/root reservations before replacing the
+current Arc. The old generation remains live during staging; it is not credited
+prematurely. Immutable commit views retain old/new cells plus the published root.
+All roots/cells/schema release their reservations at last drop, including host-held
+views after Workspace drop. A metadata-only WorkspaceMeter retains the counter,
+not values. Registry metadata and arbitrary host-made Value copies are excluded
+from its nominal accounting. There is no cycle or retired-version history table.
+
+The host actor resolves supported shapes/initializers without executable provider
+callbacks, and reuses the native Run Update helper for computation. Snapshot
+compatibility is a typed data/schema check, not authority to retarget a running
+provider. This increment changes no saved schema, dependency, feature or provider
+lock, and does not yet lower workspace graph operations or provide a cross-run bus.
+
+## C07b authoring preview representation (2026-11-07)
+
+`PurePreview<R>` owns its resolver, mutable private cache, checked request counter,
+open-update guard and optional `Arc<PreviewSnapshot>`. Each snapshot privately owns
+an ordinary fully folded PurePlan; typed export inspection uses PureEvaluation's
+existing freshness/cancellation contract. No Run or execution state is shared.
+
+The constant folder has an optional mutable cache hook only for the preview entry;
+ordinary pure/data/control compilation defaults to no cache. Cache hits still
+construct normal bindings, steps, slots and diagnostics. Preview admission selects
+pure export dependencies and prepares only those root calls; unrelated control/
+service nodes and their function calls cannot bind or execute. Fresh whole-document
+analysis and existing bounded call/body checks remain required.
+
+A bounded BTreeMap is keyed by scope index/node ID. Each entry stores exact cloned
+node/specialized signature/port metadata, typed immutable inputs, safe fault or
+typed outputs, nominal charge and last request. A charged call-layout header binds
+graph identity, registry generation and the complete original call ancestry table.
+Any changed header clears entries before scope reuse. There is no hash collision
+authority, generic shared cache, lock around kernels, epoch/state cache or history
+of retired nodes. Successful publication prunes undemanded entries; failure clears
+all. Capacity refusal skips caching and keeps the ordinary result.
+
+Metadata charging uses bounded serde output into a counting writer, without a JSON
+buffer or value logging. Cache and publication budgets are separate; user-held old
+snapshots retain their own immutable storage/provider pins outside session cache
+stats. The open-update guard forces recovery after a caught callback panic. No
+saved graph schema, provider lock, dependency or feature changes are introduced.
+
+## C05 reference-only replay representation (2026-11-07)
+
+`RecordedRun` owns the sole mutable Run. A private optional Session owns fixed-size
+command entries and the explicit host archive reference. Preallocated entry storage
+has independent count/nominal byte caps; entries carry scalar identity/order/time,
+typed outcomes, payload references and safe redacted faults, with no Value buffers.
+Fault identifiers may use shared owned text; journal byte admission includes those
+allocations in addition to entry storage, and final-owner retirement releases them.
+Pump and Action entries start incomplete, then seal after execution/capture. The
+Action hook sits at the existing effect dispatch boundary; ordinary runs with no
+Session keep their original callback path. Complete-once effect and ingress
+directories remain authoritative, with no second continuation queue.
+
+`finish` moves completed entries into a sealed immutable `Arc<[Entry]>`, drops the
+archive owner and retains the exact compiled plan, seed/options and version-1
+metadata. This is an in-memory representation, not a new saved/wire schema or
+portable compiled-plan fingerprint. Replay uses a cursor over the immutable history;
+its Action hook consumes nested result entries instead of provider callbacks. Host
+source/effect tokens remap to the new nonreused Run identity; other metadata stays
+exact. The read-only result owns its Run and cannot hand an effect to a live host.
+`ReplayPlayback` owns that cursor/Run during resumable stepping, with failure
+latched before another command can run and completion required before finishing.
+A separate step-open guard survives archive unwinding outside the Run pump, so
+consuming the final entry alone cannot falsely certify a completed replay.
+The archive and pinned plan/context storage are separately host-owned; stats count
+only entry storage. No dependency/feature/provider-lock or graph format changes.
+
+## C10 bounded bridge representation (2026-11-07)
+
+`ControlOperation::Tee` retains its strict stream demand, two ordered
+`HostSource::EffectOutput` projections and checked buffer options; publishing
+left/right uses the existing whole-result publication path. `StreamOverflow` is
+shared model metadata, independent of UI language. No saved format changes.
+
+The Run owns a live `Bridges` directory with checked nonreused sequence identities,
+an exact source-resource generation index and ready identity queue. Each hub owns
+one optional affine upstream consumer, one optional staged item with an aggregate
+lease, a terminal state, and one (push) or two (Tee) branch records. Each branch
+owns a finite `VecDeque<(Value, charge)>`, aggregate tally, closed signal, optional
+pending demand and counters. Its resource slab wrapper has a private branch link
+instead of a producer object; it still owns the ordinary single accepted pending
+result. Queue quotas exclude this separately charged immutable pending result.
+No reference cycle, broadcast service, callback executor or payload history exists.
+
+The hub reparents its claimed upstream to Run ownership; returned branches can
+outlive the original acquisition scope. Branch closing reconciles live ownership,
+clears/refunds its queue, and the last branch removes the hub/source/ready indexes
+and closes upstream exactly once. Stop/dispose/drop releases all queues and
+staging. Tee depth is checked at 32 before acquisition. Fan-out preflights every
+branch and aggregate growth before mutation, applying refunds before growth.
+Queue-to-pending handoff transfers nominal charging. Safe static terminal failures
+use the existing pending enum without a fresh payload reservation so cleanup can
+progress at full quota. Stats and external push tokens own no item values.
+
+The C08b/C11a/C07a/C09a representation notes below extend the current concrete Rust
+subset. Illustrative general IR/runtime structures remain proposals beyond that subset.
+
+## C09b graph stream representation (2026-11-07)
+
+`Value::Stream(Arc<HandleValue>)` is a thin authenticated alias whose metadata kind
+is the exact item type. `Value` remains at most 16 bytes. A private issuing token
+distinguishes stream from resource aliases and retains the shared terminal signal
+and metadata lease; relabeling an issued Arc as the other variant fails
+authentication. Live lookup also requires canonical Arc identity in the slab.
+Normal end retains only an authenticated terminal marker, so the same consumer's
+later Next Item can return None without a live slot. It keeps no producer alive.
+
+The stream wrapper retains one graph claim key (activation, function frame, control
+node), one pending pull/result and optional bounded partial collection. Direct
+`ValueShape::Stream(item_type)` exists only through checked control-port admission;
+literal/container shape resolution still refuses it. Compiler operations cover
+Next Item, Collect, For Each Item and Close Stream. Scalar/list results use dense
+value projections; stream iteration uses the existing immutable item/index frames.
+
+`GraphStreams` owns a bounded directory of parked strands/prepared inputs, a strand
+index, exact stream-generation/demand wakeup index and ready identity queue.
+Storage follows live work bounded by strands/resources, with no completed-demand
+history. Input holds count against activation and run aggregate limits; pending
+results and partial lists use the existing stream tallies. Collection requeues
+after one read. Iterator cursors retain the stream alias, next index and captured
+item frame while their body owns descendants. Cancellation removes pending indexes
+and closes discarded cursors before pruning ownership, preserving the item frame
+for cleanup. No saved graph/wire schema, provider lock or dependency changes.
+
+## C08b graph resource representation (2026-11-07)
+
+`Value::Handle(Arc<HandleValue>)` replaces its unused inline `HandleId` payload;
+the compile-time `Value <= 16 bytes` invariant remains. `HandleValue` holds the
+exact kind expression, `HandleId { index, generation, kind }` metadata and opaque
+`Arc<dyn Any + Send + Sync>` issuing evidence. The runtime's private evidence holds
+its non-reused Run identity and a metadata-budget lease. Public construction does
+not grant authority. Live lookup additionally requires the canonical outer Arc
+retained in the generational slab entry. Rust identity Eq/Hash do not add language
+Eq/map-key or serialization support. Debug omits evidence and resource contents.
+
+Each live entry has optional dynamic `RegionId` ownership (`None` means Run) and
+an optional issued canonical value. A region-to-live-handles index contains only
+live entries and removes empty buckets. Region retirement removes entries before
+calling closers newest first; cancellation reparents pruned owners to its retained
+cleanup barrier. Return moves only returned callee-owned entries to its caller.
+Direct `ValueShape::Handle(kind)` is resolved by control-port admission, never by
+literal/container shape resolution; each retained alias costs 16 nominal bytes.
+Shared issuing metadata is separately leased against the run aggregate until the
+last alias drops, including aliases held by an external host after disposal.
+The opaque token holds no resource object. Saved graph/wire formats do not change.
+
+## C11a/C07a/C09a concrete representation (2026-11-06)
+
+`ControlOperation::Effect` retains a `ControlEffect` and the existing ordered
+`UpdateDemand` roots/frozen host-input union. `ControlEffect` owns the exact data
+port keys, output shapes, optional synchronous `Arc<dyn ActionKernel>` and an opaque
+Arc host context which pins the executable generation. `HostSource::EffectOutput`
+maps dense input slots to their owner and result ordinal; function layouts include
+these projections in invocation cleanup. No effect names/types/providers resolve
+inside the actor. Existing saved graph fields and format version are unchanged.
+
+The run's effect directory owns each sole parked strand, ordered input values and
+state/aggregate `Hold`s. Checked operation sequences index the directory; a second
+directory maps strand identity to operation identity for targeted cancellation.
+Command/completion queues contain scalar identities, not duplicate continuations.
+Removal also compacts pending identity queues, so storage follows peak live demand,
+not total operations. `RunOwnership::effects` reports the live count. Cancellation
+signals the monotonic lease before its strand can enter bounded cleanup. Debug
+formatters omit inputs, outputs, callbacks and host contexts.
+
+`ControlPlan::watches` retains entry/type/mode, demand root, host-input dependencies,
+run-variable dependency indices and the ordinary handler. Changed-variable capture
+also covers Watch dependencies. A separate aggregate-charged data activation
+evaluates affected Watches while ordinary strands are paused, preserving a stable
+post-segment state across host slices. Per-Watch previous values/faults/sequences
+and a single bounded pending reaction queue preserve initial baseline and mixed
+Change/Watch ordering. Cached previous values plus staged before/after values share
+the state-byte bound; their leases and evaluator storage are released on stop.
+Evaluator storage is included in frame admission and the event template's retained
+storage. Evaluation counts and bounded last faults are host metadata.
+
+Host streams wrap a `PullStream` as a typed C08a resource. Its generational handle
+is opaque and claim-once; `StreamConsumer` has no public constructor or Clone.
+Each resource retains one current pull identity, optional checked result, monotonic
+closed signal and optional partial collection. Item/result and collection tallies
+lease the run aggregate. Stream close removes the slab entry before calling its
+closer; the wrapper's destructor closes an otherwise unretired producer once. Slot
+generation retirement prevents a late demand from reaching a reused resource.
+That C09a slice introduced no resource value variant, graph stream instruction or
+saved schema. C08b/C09b above add direct handles and graph stream ownership.
+
 Status: **normative proposal for graph format v1**, 2026-10-20. Rust items below are conceptual layouts, **not compiled code**. Field names and JSON shapes are contracts; Rust spelling, generic parameters and crate placement can change in WU-00 if the JSON/wire contract and the invariants in §11 are preserved. Semantics are defined in [11](11-graph-language.md); value rules in [03](03-data-and-execution.md). JSON examples are syntax-checked documentation, not installable artifacts; IDs are shortened (`n1`, `v1`) where real documents use UUIDs and digests are synthetic.
 
 ## 1. Four representations
@@ -15,13 +299,15 @@ Status: **normative proposal for graph format v1**, 2026-10-20. Rust items below
 
 ## 2. Identifiers
 
+Persistence and execution are separate decisions: format v1 stores GraphDocument as compact versioned JSON; compilation lowers it into typed in-memory values, dense indices and pinned bindings. A binary document encoding would change the saved representation, while a binary plan cache would store a separate derived representation. Neither replaces typed execution data. The JSON-versus-MessagePack experiment in 10 does not adopt another interchange format or a cache ABI. Future caches require versioning, source/provider identity checks and executable rebinding; Rust memory images, pointers and live bindings are never portable persisted data (I-7).
+
 | ID | Form | Persisted | Notes |
 |---|---|---|---|
-| `GraphId`, `NodeId`, `EdgeId`, `VariableId`, `EventDeclId`, `FunctionId` | UUID (v4 or v7) | yes | Paste remaps every one of them ([01](01-product-requirements.md) FR-02) |
+| `GraphId`, `NodeId`, `EdgeId`, `VariableId`, `EventDeclId`, `FunctionId` | UUID (v4 or v7) | yes | Paste remaps every one of them ([00](00-overview.md)) |
 | `PortId` | `[a-z][a-z0-9_]{0,63}` | yes | Unique per definition |
 | `PortKey` | `port_id` or `port_id#k`, `k: u16` | yes | Variadic counter is never reused within a node |
 | `DefinitionId` | `namespace/name` | yes | `core/` reserved for language intrinsics |
-| `TypeExpr` | Canonical string ([11 §5.1](11-graph-language.md)) | yes | Parsed and interned at load |
+| `TypeExpr` | Canonical string ([11 §5.1](11-graph-language.md)) | yes | Stored as validated text; analysis parses terms and type resolution uses registry-local interning |
 | `SlotId` | `node:…`, `connection:…`, `convert:<from>-><to>`, … | yes | Contract version recorded in the slot descriptor ([04](04-expansion-plugins.md)) |
 | `TypeKey`, `KernelIx`, `NodeIx`, `SlotIx`, `BlockIx`, `PullIx`, `RegionIx` | `u32` | no | Plan-local, dense |
 | `RunId`, `ActivationId` | `u64` monotonic per host | no | Never reused within a host process |
@@ -42,6 +328,7 @@ pub struct GraphDocument {
     pub type_lock: Vec<TypeLockEntry>,       // canonical named type + codec
     pub variables: IndexMap<VariableId, VariableDecl>,
     pub events: IndexMap<EventDeclId, EventDecl>,
+    pub connections: IndexMap<ConnectionId, ConnectionDecl>, // 11 §16.1; omitted when empty
     pub signatures: BTreeMap<SignatureKey, SignatureSnapshot>, // shared by nodes
     pub root: GraphBody,
     pub functions: IndexMap<FunctionId, FunctionDecl>,
@@ -50,16 +337,18 @@ pub struct GraphDocument {
     pub extensions: OpaqueExtensionMap,      // unknown fields, bounded, preserved
 }
 pub struct GraphBody {
+    pub domain: Option<DomainId>,            // absent = `control` (ADR-21)
     pub nodes: IndexMap<NodeId, NodeInstance>,
     pub edges: IndexMap<EdgeId, Edge>,
 }
 pub struct NodeInstance {
     pub id: NodeId,
     pub definition: DefinitionRef,           // id + definition_version
-    pub provider: Option<ProviderBinding>,   // None only for core/ intrinsics
+    pub provider: Option<ProviderBinding>,   // None only for host-owned language intrinsics
     pub config_version: u32,
     pub config: ConfigValue,                 // validated by definition config_schema
-    pub type_args: BTreeMap<TypeParamName, TypeExpr>,  // persisted inference result
+    pub type_args: BTreeMap<TypeParamName, TypeExpr>,  // resolved parameters (cache)
+    pub type_pins: BTreeMap<TypeParamName, TypeExpr>,  // explicit user choices (11 §5.5)
     pub inputs: BTreeMap<PortKey, Literal>,  // includes shadowed literals
     pub variadic: BTreeMap<PortId, VariadicState>,     // order + next counter
     pub signature: Option<SignatureKey>,     // required for every non-intrinsic node
@@ -68,7 +357,12 @@ pub struct NodeInstance {
 pub struct Edge { pub id: EdgeId, pub from: PortRef, pub to: PortRef }
 pub struct PortRef { pub node: NodeId, pub port: PortKey }
 pub struct VariadicState { pub order: Vec<u16>, pub next: u16 }
-pub struct SignatureSnapshot { pub kind: NodeKind, pub ports: Vec<ResolvedPort> }
+pub struct SignatureSnapshot {
+    pub kind: NodeKind,
+    pub suspends: Option<Suspends>,          // semantic async/iterator fact; see below
+    pub ports: Vec<PortDescriptor>,
+}
+pub enum Suspends { Never, Maybe, Always }   // synchronous absence is equivalent to Never
 pub struct VariableDecl {
     pub id: VariableId, pub name: String, pub ty: TypeExpr,
     pub scope: VarScope,                     // Local | Run | Workspace
@@ -76,48 +370,152 @@ pub struct VariableDecl {
     pub persistent: bool,                    // Run/Workspace only; requires `serialize`
     pub conflict: ConflictPolicy,            // Reject (default) | LastWriterWins
 }
-pub struct EventDecl { pub id: EventDeclId, pub name: String, pub payload: TypeExpr, pub scope: EventScope }
+pub struct EventDecl { pub id: EventDeclId, pub name: String, pub payload: Option<TypeExpr>, pub scope: EventScope }
 pub struct FunctionDecl {
     pub id: FunctionId, pub name: String, pub kind: NodeKind,
     pub type_params: Vec<TypeParam>,
     pub inputs: Vec<PortDescriptor>, pub outputs: Vec<PortDescriptor>,
-    pub body: GraphBody,                     // contains function-entry/return nodes
+    pub body: GraphBody,                     // function-entry/return/outputs markers take their ports from this interface (11 §14)
 }
 pub struct ActivationPolicy {
     pub mode: ReentrancyMode,                // Queue | Drop | Replace | Parallel{max}
     pub capacity: u32, pub overflow: OverflowPolicy,
     pub on_fault: FaultPolicy, pub order: u32,
+    pub while_paused: PausedPolicy,          // Buffer (default, omitted) | Latest | Drop; 11 §10.1
+    pub timing: Option<EventTiming>,        // Optional { mode, interval_ms }; 11 §10.1
 }
 ```
 
-`SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Core intrinsic signatures are defined by `format_version` and config, so they are not stored. Serialization order is `IndexMap` order (creation order, compacted on removal), which makes output deterministic for the same command history.
+`SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Host-owned language intrinsics are identified by the host's intrinsic definitions and use their `format_version` and config to derive signatures, so they do not store snapshots, provider bindings or package locks. A `core/` namespace alone does not make an ordinary definition intrinsic or compile-ready without a provider binding and exact package lock.
 
-Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. NFR-15 timing targets remain unmeasured.
+Validation resolves definitions and providers from immutable host-supplied registry metadata; it never executes package code. A non-intrinsic node requires its stored signature snapshot, exact provider binding and matching package lock. If the package or exact provider metadata is unavailable, the node remains unresolved and cannot be reported as successfully resolved. Its stored snapshot still supplies ports for edge checks, including orphan-edge reporting, while checks that require unavailable current definition metadata are incomplete.
 
-`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
+Serialization order is `IndexMap` order (creation order, compacted on removal), which makes output deterministic for the same command history.
+
+`domain` names the execution domain of a body (ADR-21): the root graph's key sits beside its `nodes`/`edges`, and each function body carries its own. It is a namespaced ID such as `org.example.music/signal`; absent means the built-in `control` domain (11 §2–§15), so existing format v1 documents are unchanged. A domain the host does not provide makes the body load and round-trip but not compile, like an unresolved provider. Domains come from crates linked by the embedding product, never from installed packages. The typed field is added to `orange-model` when a host first registers a second domain; until then a `domain` key is preserved in the graph or flattened function declaration extension map. The current domain prerequisite accepts absence or the exact string `control`. Any other JSON value, including null, is preserved and reports E-DOMAIN-UNSUPPORTED at the owning body, even if empty.
+
+Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. timing targets remain unmeasured.
+
+`PortDescriptor` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
+
+For `org.orange.audio/multiband-spectrum`, `config.bands` maps a decimal
+stable band counter to its name, frequency limits, threshold rule and enabled
+route counters. The band counter is the instance of `band_level`. Optional
+`above_port` and `below_port` counters identify the independent
+`band_above` and `band_below` instances. Their allocation and order are stored
+in ordinary variadic state. Changing a range or reordering updates the node in
+one transaction, preserving the port keys. Deleting a band or disabling a
+route removes affected ports and edges atomically. A later route allocation
+receives a fresh counter. The graph document format is unchanged.
+
+This describes version 1. Version 2 uses the same band map and names, with one
+`band_stream#k` instance per band and no threshold route counters. The port
+carries the existing `org.orange.audio/stream@1` reference. The provider
+publishes a filtered source identity allocated for the running node. Version 3
+uses the same stream projection and also permits the version 1 level and event
+ports on imported bands. The editor upgrades legacy spectrum cards when a user
+adds a range. Imported version 1 bands keep their level keys, threshold route
+counters, and wires and receive a `band_stream#k` with the same band counter `k`.
+The `legacy_level` band setting enables the imported level and threshold rule.
+Undo restores the original definition, settings, and wires in one edit.
+
+`suspends` is semantic: it decides control-cycle legality and an enclosing function's kind (11 §8.2, §14), so a node whose package is missing must still carry it, and it is part of the hash. For a current synchronous definition, absence means `never`. For a current `async` or `iterator` definition, absence means unknown metadata and reports `E-SUSPENDS-MISSING`; it is not silently changed to `maybe` or `always`. A value on an incompatible kind, or an invalid value, reports `E-SUSPENDS-INVALID`. Exact historical snapshot bytes remain preserved until an explicit re-projection/migration; validators do not rewrite old snapshots to manufacture a fact. The current host may re-project a supported intrinsic or exact provider definition and compare semantic signatures.
+
+At registry publication, the same kind/value matrix is enforced on definition metadata before either declared ports or contextual variable ports are processed. `async` and `iterator` require `maybe` or `always`; synchronous kinds may omit the field or use `never`. Typed `RegistryError` variants distinguish missing from incompatible metadata and identify the definition. This publication check does not change passive snapshot deserialization, so legacy saved signatures remain available to validation and repair.
+
+Function declarations remain graph-local. `core/call.config.function` contains a canonical `FunctionId`; variable intrinsics use `config.variable` with a canonical `VariableId`, and update nodes use `config.operation` with a stable operation token. These are typed references, not names or arbitrary strings to search. Function summaries (inferred kind, suspension, transitive run-variable writes, and completeness) are derived validation/compile data, not persisted document fields. A host may provide explicit trusted native-leaf semantics; unresolved external bodies remain incomplete, never assumed effect-free. The call graph is analyzed iteratively with bounded explicit traversal state; recursive calls report `E-RECURSION` without relying on the Rust call stack.
 
 ### 3.2 Derived indexes (not persisted)
+
+Function-body index membership (2026-10-31): `DocIndex` retains private ordered node/edge ID sets for functions only. Replacing or removing a function visits its old indexed members instead of scanning unrelated root nodes and edges; ordinary insertion/removal maintains membership and current-owner checks preserve IDs moved between functions in either update order. Empty functions have consistent membership entries, and missing/foreign receipts still rebuild. Root contents acquire no secondary membership directory. Membership edits add ordered-set costs and storage for function IDs; measured timing and memory tradeoffs are recorded in 10. This is a derived representation change, not persisted graph data or a public API change.
+
+Combined validation is produced by `analyze(document, registry)`, `analyze_with_effects` or `analyze_with_options`; the legacy `validate` and `validate_with_effects` functions extract the same `ValidationReport` from this orchestration. `ValidationAnalysis` privately binds the report and immutable actual coverage to transient document `semantic_state_id` and registry `generation`. It exposes `covered_checks` and `missing_checks`. For supported control documents, coverage is declaration types, state metadata rules, node resolution, input values, connections, function summaries, definition and config, body domains, contextual contracts, function restrictions, regions, data-dependency cycles, control cycles, value availability, stream rules and entry policies and exports. The region pass (`validate_regions`) exposes its `RegionIndex` as `ValidationReport.regions` for the availability pass; zone structure and switch cases are enforced, so `Regions` is covered (11 §7.1). The control-cycle pass (`validate_control_cycles`) also runs and publishes closed node witnesses as `ValidationReport.control_cycle_paths`; `ControlCycles` is covered because every 11 §8.1/§8.2 control-cycle rule is enforced (`E-CYCLE-SYNC-CONTROL`, `W-BUSY-LOOP`, and `E-RECURSION` via function summaries). `ConstantEvaluation` remains missing because `W-CONST-ERROR` and error preservation require compiler constant folding (11 §7, §11; 08). `StateRules` covers the implemented metadata checks. `is_ready_for_lowering` permits a fresh, valid analysis with only `ConstantEvaluation` missing to enter compiler analysis; it does not authorize plan publication or execution. Graph-local functions are accepted as call contracts callee first: each function body is checked once, with its callees already accepted or rejected, and the whole-document passes then run once at that fixed point. This avoids one whole-document round per call-chain level; it is not a linear-time guarantee for individual validation passes or transitive effect summaries. Whole-document rounds remain as a fallback that converges to the same result. Body-domain validation is a prerequisite: any unsupported body stops combined control analysis with no resolved signatures or summaries, all nodes/functions marked incomplete, and E-DOMAIN-ANALYSIS-BLOCKED subjects explaining the skipped analysis. Only BodyDomains is then covered; sixteen checks remain unexecuted. The private immutable coverage list belongs to the invocation, rather than a global completion claim. The individual passes named in this section are crate-private and run only inside this orchestration; hosts call `analyze`, `validate`, `validate_nodes` or `validate_body_domains`. `is_ready_for_compilation` requires matching identities, a pass-local valid report and no missing checks, so it remains false until all required checks are implemented. The report accessor is read-only, and a default or extracted report cannot construct analysis evidence. Unknown domains remain unsupported and never become ready through control-domain checks. Host-provided leaf effects are bound to the analysis invocation but are not authenticated by it. Data-dependency analysis uses only fresh resolved signatures and same-body valid data edges, expands sparse concrete variadic keys and connects each data input to computed outputs only. Wide computations use an internal hub to represent this complete relation with a linear number of dependency edges; narrow computations retain direct edges. Hubs never appear in the concrete-port witnesses. It returns one deterministic closed port witness per cyclic component in ValidationReport.data_cycle_paths and E-CYCLE-DATA; non-computed output sources break dependencies. Missing metadata stays incomplete and invalid connection edges are not guessed into D. No stored signature fallback, control-cycle, region, availability or runtime guarantee follows from this pass.
+
+Contextual contracts are computed, never stored. A definition declares its ports (`Ports::Declared`) or derives them from a referenced declaration (`Ports::Variable`), and `RegistrySnapshot::contract(document, node)` returns the node's contract as a pure function of the definition and the document. Get resolves `value` as a state output typed by the referenced VariableDecl; synchronous Set requires `value` as an input and rejects workspace targets with `E-VARIABLE-SCOPE`; Update Add/Sub/Min/Max resolves required `value` input and execution-sourced `old`/`new` outputs from the current local/run declaration, rejecting workspace scope and requiring exact numeric-operation evidence for Add/Sub or Ord evidence for Min/Max (11 §11.1). A missing or malformed reference reports `E-VARIABLE-UNKNOWN`. Two nodes of one definition therefore have independent contracts, a declaration edit or undo changes the result on the next lookup, and there is no overlay, fingerprint or staleness state to maintain. Inference, edit persistence, connection planning and node validation all read this one lookup. Computing a contract changes no document fields, revision, state identity or undo history. Compare-and-set additionally projects required `expected: T` before `value: T` and an execution-sourced `exchanged: core/bool@1` output on `then`, with exact Eq evidence; the `old`/`new` types remain declaration-owned. And/Or/Xor use the ordinary Update port shape only for exact core bool/integer types. Append retains that shape for exact string/bytes/list concatenation; list element types need validation but no equality or numeric proof. Shared WriteShared/UpdateShared projections accept workspace declarations only, are Async/Maybe and reuse these data/type rules without establishing a host actor. Their exact language facts also classify function effects; workspace writes never enter run_writes. Call-site authoring now uses a separate type-only `catalog::call_interface` projection: target FunctionId, declared parameters/constraints and data descriptors, with no kind/suspension/effects and no output provenance. It validates identity, target, supported domains and coherent data interface shape; malformed targets never fall back to saved snapshots. Inference scopes one instantiation per call node and persists arguments only. Variable/function declaration changes discover dependents through typed before/after references, including removals; calls losing a generic interface clear cached arguments atomically with the edit. Pins and saved signatures remain untouched. Executable call contracts come only from accepted callees (complete, conformant and free of function errors); a generic callee keeps its type parameters rigid in its own body, and each call instantiates them (11 §14). Connection validation now consumes fresh node resolution, including declaration-owned Get/Set/Update ports; only unresolved package nodes fall back to stored signatures for offline inspection. `analyze(document, registry)` / `analyze_with_effects` produce `ValidationAnalysis`; the legacy `validate` wrappers extract its same report for compatibility. It supplies no function leaf effects by default, so a package action leaf remains incomplete (`E-FUNCTION-METADATA-UNAVAILABLE`). `ValidationReport::is_valid` describes only passes actually run; see the coverage contract above.
+
+Projection caching (2026-10-24): within one node pass, nodes whose registry-declared contract, solved type arguments and body are equal share one projected snapshot and its type-validation outcome. A failed projection is still reported on every node that uses it. Drift is decided per node by comparing semantic keys, exactly what `signature::compare` reports. The projected key is computed once per shared projection, each stored snapshot's key once per document signature key, and neither is computed when no snapshot is stored. Edit persistence likewise shares one projected snapshot and key per (definition, arguments) within an inference component. Contextual contracts (variables, events, converters, for-each, calls and markers) are still projected per node. These caches live for one pass; nothing is kept between edits.
+
+Inference likewise resolves each node template and each data edge (both endpoint terms and whether either mentions a variable) once per `infer_components` call, shared by the component search and equation building. The unifier borrows equation context and clones it only into an error. Argument checks are shared across nodes with the same parameter declaration, solved type and body, and a failed check is reported under each node's own ID. Edges whose ends are both concrete still never become inference evidence, even at a generic node; they are the validator's to check.
+
+Analysis session (V12a and bounded V12b, 2026-10-25). `validation::AnalysisSession` keeps the combined analysis of one document across committed edits.
+
+- **Lifecycle:** `new` uses the full analysis pipeline after admission. `update(document, registry, change, options)` accepts every committed `ChangeSet` in commit order, including undo/redo. Semantic evidence binds `semantic_state_id`; edit lineage and indexes separately bind whole-content identity and revision.
+- **Invariant:** after an update the session's `analysis` equals `analyze_with_options` for that document, registry, leaf effects and options, including diagnostics, ordering, summaries, cycle witnesses and coverage. A stale/rejected session cannot manufacture compiler readiness.
+- **Layout-only changes** preserve the existing semantic evidence and visit no validation units. Proven content bindings advance without mutating analysis identity. An invalid retained index is dropped for a later rebuild rather than scanned during this fast path.
+- **Semantic changes** reuse unchanged configuration and variable/event declaration-type buckets. Both paths call the same unit validators. Changed nodes and replaced/removed function bodies invalidate their configuration units; changed declarations invalidate their type units. Bucket refresh still visits current IDs. Resolution, inputs, connections, function acceptance, cycles, regions, availability, state, streams and exports remain full passes; no complete V12b or claim follows.
+- **Scoped literal edits** (2026-10-30): a journal-marked edit of literals of root-body nodes re-resolves only those nodes, their neighbours and their generic components, and patches their input diagnostics into the published list when nothing else changed; otherwise the full pipeline runs ([16 §3](16-incremental-validation.md)).
+- **Scoped edge edits** (2026-10-30): a journal-marked edit that only adds or removes root data edges in a clean report checks each edge alone (connection, fan-in, stream fan-out, cycle, export and availability conditions) and patches its targets' input diagnostics; otherwise the full pipeline runs ([16 §3](16-incremental-validation.md)).
+- **Scoped type edits** (2026-10-30): persisted type arguments and type pins join literals in the journal's node edit and take the same scoped path; validation reads arguments only for admission and pins only for admission and inference ([16 §3](16-incremental-validation.md)).
+- **Scoped configuration edits** (2026-10-30): a provider-bound node's configuration joins the node edit; its configuration diagnostics are patched beside its inputs. Intrinsic configuration, which structural passes read, still runs the full pipeline ([16 §3](16-incremental-validation.md)).
+- **Scoped node additions and removals** (2026-10-30): adding or removing a pure, data-only package node (with its data edges) in a clean report resolves only the added node and its neighbourhood, publishes or withdraws its signature and patches its diagnostics; any other node addition or removal runs the full pipeline ([16 §3](16-incremental-validation.md)).
+- **Scoped exec edges** (2026-10-30): exec and event edge edits in a clean report keep the other passes local and rerun only regions, control cycles, availability and state, replacing their diagnostics and the region index together ([16 §3](16-incremental-validation.md)).
+- **Exec-component scoping** (2026-10-30, V12c): those passes now rerun only for the exec-connected root-body nodes an exec edit joins, replacing their region index entries and diagnostics; state reruns in full ([16 §3](16-incremental-validation.md)). The set's edges and data cones are gathered through the document index, so the passes no longer walk the body.
+- **Exec node edits** (2026-10-30, V12c): adding or removing intrinsics and exec nodes is a control-flow edit, rerunning those passes for the exec-connected set around the edited nodes and edges and the consumers that read its data edges through pure or volatile nodes ([16 §3](16-incremental-validation.md)).
+- **Edits beside errors** (2026-10-30, V12c): a complete report (no incomplete node or function) lets per-node input, configuration and node errors come and go in scoped updates, and structure edits stay scoped while such errors exist elsewhere ([16 §3](16-incremental-validation.md)).
+- **Edits beside incomplete nodes** (2026-10-30, V12c): a structure edit in a report with incomplete nodes is scoped when nothing it re-resolves, rechecks or reruns control flow for is incomplete or adjacent to an incomplete node ([16 §3](16-incremental-validation.md)).
+- **Zones** (2026-10-31, V12c): a structure edit in a report with zones is scoped when no edited edge endpoint or added or removed node lies in a checked zone body or is a marker; the body data order carries each zone's begin-to-end dependency ([16 §3](16-incremental-validation.md)).
+- **Zone bodies** (2026-11-03, V12f): the session keeps each checked zone's body; a structure edit touching a body, a capture or a marker's edge re-walks only the zones it reaches and their enclosing zones, checking closure, purity, nesting and exports as the region pass does, and moves nodes into or out of a body that encloses and sits in no other zone. Nested bodies that change, escapes and marker edits run the full pipeline ([16 §3](16-incremental-validation.md)).
+- **Data order** (2026-10-30, V12d): the analysis session keeps a per-body topological order of nodes under data edges (Pearce–Kelly with a two-way search that moves only the side finishing first, over sparse positions renumbered only when a gap fills, 2026-11-03), the root body's built with the full report, so an added data edge is checked for cycles within its order interval and for exports by its producer's cone ([16 §3](16-incremental-validation.md)). Since 2026-11-04 the root body's order in a complete report holds apart the data edges it cannot place, every cycle runs through one, and an edit there recomputes only the cycles among the nodes between the held edges' endpoints.
+- **Function-body node edits** (2026-10-30, V12e): literal, type, pin and package-configuration edits inside function bodies are scoped while every signature holds and each edited body node keeps its error status, so the function's acceptance and summary, which callers read, are unchanged ([16 §3](16-incremental-validation.md)).
+- **Function-body structure edits** (2026-10-30, V12e): adding or removing nodes and edges inside one function body is scoped when a recheck of that function finds its acceptance, summary, completeness and own diagnostics unchanged ([16 §3](16-incremental-validation.md)).
+- **Uncalled functions** (2026-10-30, V12e): when no Call node targets the edited function, a changed acceptance or summary is published in place with its own diagnostics, and its own errors do not block other scoped edits ([16 §3](16-incremental-validation.md)).
+- **Kept inference solutions** (2026-10-31, V12f): the session keeps each generic node's solved type arguments; an edit whose changed equations lie over its touched nodes is accepted without solving their components when the equations among a bounded neighbourhood ground every touched parameter to its kept type, and then only the touched nodes are re-resolved ([16 §3](16-incremental-validation.md)). Since 2026-11-03 this covers edits that add or remove whole nodes: an added node takes the checked arguments the neighbourhood grounds for it, and a removed node's entry is dropped.
+- **Requirement-free cones** (2026-10-31, V12c): the session keeps the unowned pure and volatile nodes whose lazy cone carries no availability requirement, noted by the full availability pass and the per-edge check and cleared when an edit's data edge may bring one; the per-edge check does not walk past them, and an exec edit's availability rerun checks only the consumers that read a requirement ([16 §3](16-incremental-validation.md)).
+- **Summary propagation** (2026-10-30, V12e): a called function that keeps its acceptance but changes its summary is propagated to its transitive callers callee-first, with the state pass rerun on the new summaries ([16 §3](16-incremental-validation.md)).
+- **Rebuilds:** full analysis handles registry generation, limits, effects, shared-signature/package-lock changes, missing/foreign/skipped/replayed edit lineage and cancelled requests. Every update path checks current cancellation before reuse, including layout and unchanged-effects calls. Fresh deterministic admission/domain rejections remain current across layout/undo/redo and unchanged-effects updates under the same inputs, while compiler readiness remains false. A cancelled request requires recovery; a semantic/input change reruns prerequisites. Both analysis routes share cancellation/admission/domain handling and borrow retained host effects before these checks. Host leaf effects remain trusted facts, not authenticated by the session.
+- **Index/planning:** one optional `DocIndex` is constructed only after successful analysis admission/domain prerequisites, then updated from proven edits. `index` borrows it or returns None. `plan_edit` reuses it for journaled inference trials and never publishes trial analysis; errors roll back, and unwinds invalidate the planner index for later rebuilding. Trial planning has its existing caller-controlled budgets rather than silently inheriting combined-analysis admission.
+- **Counts:** `EditStats::input_nodes/input_edges` are distinct input cardinalities, not actual pass visits. `full_analysis_runs` counts orchestration attempts (including rejection), `index_rebuilt` reports rebuilding, and `local: LocalWork` records actual cache visits, computations and hits for configuration/declaration units only. `visits: PassVisits` gives the nodes, edges, ports, diagnostics and bodies each pass iterated: counted in the loops of a scoped update, the whole document per pass for a full analysis, zero for a no-op, and summed field by field over the passes by `total`; `fallback: Option<ScopeFallback>` names why a semantic edit ran the full analysis ([16 §3](16-incremental-validation.md)).
+- **Reads:** `materialize` clones the report into owned compiler evidence. `diagnostics`, `diagnostics_for(subject)`, `resolved(node)` and `analysis` borrow current results. `changed_subjects` reports diagnostic-list changes, including removals; `changed_nodes` reports resolved signatures added/changed/removed. Publication computes these sets by scanning current/previous result maps; the changed views do not imply O(delta) assembly. `ValidationAnalysis` is `PartialEq`.
+- **Embedding:** the session and published facts remain Send + Sync. Session Debug reports only metadata/counts, excluding document values/effects. Background hosts must discard older semantic/registry/request results before publication. A running immutable plan remains pinned through document edits; this is not a UI thread, runtime inbox or incremental-preview implementation.
+
+Review refinements: node configuration checks borrow their existing JSON object, sharing object-kind/enum/member rules with public value validation. Schema-dialect support is cached per exact registered definition in its immutable registry generation; unsupported node config versions are still skipped by this pass. Combined input checking reuses its retained incoming-edge index and appends diagnostics to one pass buffer with one final sort; standalone callers keep an equivalent scoped fallback. Invalid wires still shadow literals within the same scope. Both change views merge sorted old/new maps once, comparing each shared value once; publication remains a full result scan.
+
+Declaration-driven inference invalidation (C2): `plan_edit` compares declaration IDs and contents across the before/after documents. For each added, changed or removed variable declaration it scans typed `RegistrySnapshot::references` over nodes in every body in both states, then seeds the referenced consumers and their incident edge endpoints into existing component inference. This correctness-first scan handles reference removal/config replacement and cases where a removed Get can no longer expose a contextual port; stale cached `type_args` never seed inference. Updates stay in the declaration edit's single transaction, preserving pins and leaving unrelated components untouched. The scan cost is temporary implementation overhead; no reverse reference index is persisted and is unmeasured.
+
+
+Function signature/effect evidence is captured for a document content state and checked before function analysis. A changed document must receive fresh host evidence; stale input produces incomplete functions and no usable summaries. This binds evidence lifetime, not authenticity: the host remains responsible for supplying truthful metadata from exact available providers.
 
 | Index | Structure | Used by | Update cost |
 |---|---|---|---|
 | Dense document index | `NodeId → DocIx(u32)` slot map | All derived indexes | O(1) |
 | Incoming / outgoing | `HashMap<PortRef, SmallVec<[EdgeId; 2]>>` | Fan-in/fan-out checks, deletion | O(1) per edge |
 | Node incidence | `HashMap<NodeId, SmallVec<[EdgeId; 8]>>` | Remove node, copy/paste | O(degree) |
-| Data topological order | Dynamic topological order over D ([11 §8.2](11-graph-language.md)); candidate: Pearce–Kelly | Incremental `E-CYCLE-DATA` on connect | Bounded by the affected order interval |
+| Data topological order | Dynamic topological order over D ([11 §8.2](11-graph-language.md)); Pearce–Kelly with a two-way search | Incremental `E-CYCLE-DATA` on connect | Bounded by the affected order interval; about twice the smaller affected side |
 | Type components | Union-find over generic nodes joined by data edges | Inference scope | Near O(1); a split recomputes one component |
-| Region index | Region root → member exec nodes; dominator tree per root (candidate: Cooper–Harvey–Kennedy iterative) | Availability, Break/Return placement | Recomputed per affected root |
+| Region index | Region root → member exec nodes; dominator tree per root (Cooper–Harvey–Kennedy iterative; used by availability, [11 §7.2](11-graph-language.md)) | Availability, Break/Return placement | Recomputed per affected root |
 | Diagnostics | `Subject (node / edge / port / decl) → Vec<Diagnostic>` | Editor projection | Replaced per validated subject |
 
 The spatial index, edge-path cache and widget state belong to `orange-editor`, not `orange-model` ([02](02-architecture.md)).
 
 Implementation note (WU-00/00b.3): `orange-model` provides `DocIndex` with node location, incoming/outgoing edges and node incidence.
 
-- **Kept beside the document:** the index lives next to the document, not inside it, so document equality, saving and undo never involve derived data.
-- **Updated from change sets:** each committed `ChangeSet` updates it, and an updated index always equals a fresh build (property-tested).
-- **`BTreeSet` edge sets:** used instead of `SmallVec` so equality does not depend on edit history. Performance is evaluated with NFR-15.
+- **Kept beside the document:** the index lives next to the document, not inside it, so document equality, saving and undo never involve derived data. The one exception is node location: `GraphDocument::locate_node` and `node` use a node-to-body map built on first lookup and kept current by every node and function patch. It is never serialized or compared, so equality, saving and undo are unaffected, and lookups no longer scan every function body.
+- **Updated from change sets:** each committed `ChangeSet` updates it, and an updated index always equals a fresh build (property-tested). The index records the content state it describes (`is_current`). An undo or plain `apply` that bypasses it leaves it stale; `apply_inferred_indexed` then rebuilds it before planning instead of reading stale edges. Planning applies the edit to the document, reads it and rolls it back. That rollback also runs if planning panics, and the kept index is then reset to one that is never current, so a host that catches the unwind keeps the original content and the next indexed edit rebuilds the index.
+- **`BTreeSet` edge sets:** used instead of `SmallVec` so equality does not depend on edit history. Performance is evaluated with.
 - **Deferred rows:** the dense document index, data topological order, type components, region index and diagnostics arrive with their consumers (00c/00d).
 
+Review correction (2026-10-23): export activation analysis builds root-body incoming data adjacency once and traverses computed-output dependencies only. State outputs terminate the pull cone, so a register's write inputs cannot make its current value activation-scoped. No exports means no adjacency work. Availability groups distinct consumer subjects by activation root, producer and available outcomes, processes one reachability set at a time and releases it immediately. For V control-flow vertices, E edges, P producer/outcome groups and Q discovered use queries, this removes the retained P×V reachability cache; scratch storage follows V+E+Q, while traversal CPU can still follow P×(V+E). Shared lazy cones can increase Q. This is not a global analysis budget or NFR qualification. Resource containment traverses registered nominal record fields and enum payloads as well as type arguments; each nominal schema expands once per query so cycles terminate. Registers use fresh resolved cell metadata. [10](10-development.md) records measurements and remaining gaps.
+
+Combined analysis applies `AnalysisOptions` before indexing/resolution. Defaults are 250,000 aggregate graph/inspected metadata items, 1,000,000 inspected JSON values, 64 MiB of inspected UTF-8 metadata, and a maximum squared item-count admission estimate of 25,000,000,000. Descriptors/defaults and matched definitions are charged per node, including referenced function interfaces. Configuration, literal and schema payloads are traversed by reference without serializing or cloning them. Counts use checked arithmetic. These are admission quotas, not elapsed-time, allocation or instruction-count guarantees; registry construction and host-owned type-schema traversal have separate lifecycles. Ignored editor/presentation data is outside the analysis quotas. Import limits remain independently necessary.
+
+`analyze_with_options(document, registry, leaf_effects, options)` permits host overrides and an optional borrowed `AtomicBool` cancellation signal. Cancellation is polled during admission, between passes and between function bodies, with no bounded interruption latency within a pass. Legacy combined entry points use the default quotas. Standalone passes remain caller-controlled. Rejection/cancellation discards partial results, returns one global `E-ANALYSIS-LIMIT`/`E-ANALYSIS-CANCELLED`, no projections/summaries and empty coverage; both readiness predicates fail. No partial result may become compiler evidence. Hosts needing hard execution limits must isolate analysis in a worker; IPC alone provides no sandbox.
+
+An event declaration without a payload omits the JSON `payload` field. Existing typed declarations retain their saved representation.
+
+`validate_declaration_types` checks every variable type and declared event payload against the current type registry, including unused declarations without initializers. Syntax, registered identity, arity, unresolved parameters, handle kinds and map-key constraints are checked. Variable/event declarations have no generic parameter scope. Invalid types report `E-DECLARATION-TYPE` with a typed `variable` or `event` subject ID; existing nesting/derivation bounds report `E-TYPE-COMPLEXITY`. Messages expose neither declaration names nor raw type text. This pass is included in `DeclarationTypes` coverage and never rewrites saved declarations.
+
+Compatibility: saved graph format is unchanged. The optional diagnostic `event` field is omitted when absent and older records deserialize without it; downstream Rust `Subject` struct literals need `event: None` or a default struct update. Existing combined entry points now enforce default admission quotas; hosts needing different quotas use `analyze_with_options`. The new lowering predicate supplements the existing final predicate, and coverage consumers must distinguish `DeclarationTypes`, metadata `StateRules` and compiler-owned `ConstantEvaluation` (08, readiness clarification).
+
 ### 3.3 Transactions and change sets
+
+Whole-content `state_id` binds edit indexes, connection proposals and undo inverses. The separate transient `semantic_state_id` binds validation analysis, pure/data/control plans and execution entry. Layout-only transactions advance revision and whole-content identity but preserve semantic identity, so they require no revalidation or recompilation. Semantic transactions allocate both identities; undo/redo restore both exact prior identities. Clones retain them and loads allocate fresh identities. Identity counters are not saved fields and do not change format v1. `ValidationAnalysis::document_state` now returns semantic identity.
+
+Committed `ChangeSet` evidence has journal-owned construction and read-only getters. It records exact before/after content and semantic identities as well as revisions; consumers must not infer lineage from revisions alone. Node/edge/declaration deltas are borrowed through `nodes`, `edges` and `decls`. `global_dirty` reports shared-signature/package-lock patches requiring conservative invalidation. `is_committed` distinguishes ordinary/undo/redo commits from private rolled-back trials. `DocIndex::update` rebuilds on mismatched identity lineage. This tightens the unfrozen Rust API: external field reads become getters and external mutation/construction is disallowed. No saved JSON field changes.
+
+Both ordinary and scratch transactions roll back successfully applied commands if command iteration unwinds; the original panic resumes after restoration. Scratch observation has the same guarantee. This covers unwind-enabled builds, not process aborts. Returned errors preserve content, revision and both identities. Paste checks generated IDs against all target bodies/declarations and earlier generated IDs within each typed identity namespace before constructing keyed maps; collisions return `IdError::GeneratedCollision` rather than truncating copied bodies or replacing declarations. The model does not retry a failing host generator.
+
+
+Inference consumes net edge deltas from both sides of the transaction: added edges use their new endpoints, removed edges use their old endpoints, and changed edges use both. In particular, disconnecting and reconnecting the same `EdgeId` can change its endpoints without reporting an addition/removal. The resulting bindings and projected signatures stay in the originating undoable transaction (11 §5.5); no wire-format change is needed.
 
 ```rust
 pub enum DocCommand {
@@ -126,22 +524,21 @@ pub enum DocCommand {
     SetLiteral { port: PortRef, literal: Option<Literal> },
     SetConfig { node: NodeId, config_version: u32, config: ConfigValue },
     SetTypeArgs { node: NodeId, args: BTreeMap<TypeParamName, TypeExpr> },
+    SetNodeName { node: NodeId, name: Option<String> },
     InsertVariadic { node: NodeId, port: PortId, at: usize }, RemoveVariadic { node: NodeId, port: PortKey },
     UpsertVariable(VariableDecl), RemoveVariable(VariableId),
     UpsertEvent(EventDecl), RemoveEvent(EventDeclId),
     UpsertFunction(FunctionDecl), RemoveFunction(FunctionId),
     Rebind { nodes: Vec<NodeId>, provider: ProviderBinding },          // explicit only (ADR-07)
+    PutPackageLock(PackageLockEntry),                                  // one entry per package version
     Layout(LayoutCommand),                                             // move, waypoints, frames, comments, viewport
 }
 pub struct ChangeSet {
-    pub from_revision: u64, pub to_revision: u64,
-    pub layout_only: bool,                    // true → no validation, compile or preview work
-    pub nodes: Delta<NodeId>, pub edges: Delta<EdgeId>, pub decls: Delta<DeclId>,
-    pub affected_roots: SmallVec<[RegionRootRef; 4]>,  // compile scope
+    // Private journal-owned provenance and deltas; exposed through read-only getters.
 }
 ```
 
-A transaction applies a list of commands atomically, produces one `ChangeSet` and one inverse transaction for undo, and increments `revision` once. Converter auto-insert ([11 §6](11-graph-language.md)) is one transaction: AddNode + Disconnect + two Connects. Runtime effects are never recorded in history ([01](01-product-requirements.md) FR-03).
+A transaction applies a list of commands atomically, produces one `ChangeSet` and one inverse transaction for undo, and increments `revision` once. Converter auto-insert ([11 §6](11-graph-language.md)) is one transaction: AddNode + Disconnect + two Connects. Runtime effects are never recorded in history ([00](00-overview.md)).
 
 Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 
@@ -150,13 +547,46 @@ Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 - Undo and redo are transactions and advance `revision`. Inverses bind to an opaque process-unique content-state ID, not to the revision. A clone preserves the ID while it represents the same transaction-owned state; each new edit allocates a fresh ID, undo/redo restore the earlier ID, and every load allocates a fresh ID. This prevents divergent clones, unrelated documents and reloads from accepting each other's inverses. The transient ID is excluded from serialization and document equality.
 - Function insertion checks that every node/edge map key equals the entry's own ID before applying a patch. A mismatch returns a typed transaction error and rolls back the entire transaction. This enforces the existing keyed-map representation without changing graph JSON or graph diagnostics.
 - `affected_roots` is derived by the compiler from the node, edge and declaration deltas once regions exist (00d/00e).
-- `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Package locks and exports still have no command.
+- `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Exports still have no command.
+- `PutPackageLock(entry)` (00c) makes `package_lock` transaction-owned too. A provider binding names only `package`, `version` and implementation `id`; the content digest lives once per package version in `package_lock`, so an exported graph lists exactly the package contents it needs and an importer can check them before loading. The command appends a new `(id, version)` entry, is a no-op for the same digest and rejects a different digest (`PackageLockConflict`). Callers pair it with an `AddNode` or `Rebind` naming a package version; the connection planner and paste do. Like superseded snapshots, entries no longer referenced are not pruned here.
+- `PutTypeLock(entry)` and `RemoveTypeLock(type)` make `type_lock` transaction-owned. Put appends a new type identity, is a no-op for the same codec and rejects a different codec (`TypeLockConflict`), so a saved interpretation is never replaced silently. Remove deletes an existing entry (`TypeLockNotFound` otherwise); changing a codec is an explicit Remove then Put, and undo restores the original position. Both mark the change set globally dirty.
+- `UpsertExport(export)` replaces the export with the same `id` in place or appends it, and `RemoveExport { id }` removes it (`ExportNotFound` otherwise); a loaded document that repeats an export ID edits its first entry. The target is not checked by the command: analysis reports a missing node or unsuitable port. `SetActivation { node, policy }` sets or clears a node's activation policy, which the validator checks. All three are semantic edits.
+- Import-only metadata: `format_version`, `graph_id` and unknown top-level fields have no command; they come from the loaded or newly created document and are preserved on save.
+- Superseded snapshots are not pruned (00c.7a). A re-inference moves a node to another content-addressed snapshot and leaves the old one in `signatures`. Pruning inside the transaction would need a reference scan over every body (and function) on each commit and a remove-signature command, and it would churn the two snapshots that pin/unpin and undo/redo alternate between. The unreferenced entries are bounded by the distinct type combinations used, are inert (nothing resolves a snapshot that no node names), and are removed by the same undo that added them. Garbage collection belongs to an explicit compaction on save, together with the codec round-trip rules for unknown data; it is not part of this slice.
+- `SetTypePins { node, pins }` (00c) replaces a node's explicit type choices; like every node edit it marks the node changed, so `inference::plan_edit` re-infers its component. An `UpsertFunction` reports only its function in the change set, so `plan_edit` treats every node of the added or replaced body as touched.
+- `SetSignature { node, key }` (00c.4b) points a node at an existing snapshot (`PutSignature` first); a missing key is rejected. `inference::apply_inferred` commits an edit together with the `SetTypeArgs`, `PutSignature` and `SetSignature` commands its inference implies, so one undo restores the edit, `type_args` and signature references. `apply` itself never infers, and loading never runs inference.
+- Inserting a node between connected endpoints composes disconnect, add-node and two connect commands in one transaction. A rejected replacement restores the original wire and content state; one undo restores the pre-insertion structure. The planner/validator separately checks compatible typed ports. Creating a reusable node from multiple nodes uses a typed `FunctionDecl` interface and `core/call`, not presentation grouping or copying the implementation into every caller (11 §14). Search/palette presentation belongs to the host/editor; this transaction contract does not claim those refactorings are implemented. Since 2026-11-15 (ADR-26) the host's `extract` composes `RemoveNodes`, `UpsertFunction`, `AddNode` (`core/call`), the boundary `Connect`s and the call's layout place as one transaction, and editor groups are `editor.groups.<id> = {name, color, nodes, collapsed}` layout entries.
 - Canonical JSON for `SignatureKey` (00b.3): object keys sorted by byte order, no whitespace, serde_json string escaping. This matches RFC 8785 for the ASCII keys and integers in snapshots. WU-03 publishes the cross-language digest vectors. Semantic projection removes `label`, `description`, `group` and `editor` and substitutes `$T` parameters from `type_args`.
-- Paste (00b.3) gives every pasted node, edge and declaration a new ID. A config string exactly equal to a remapped source ID is rewritten. Referenced declarations travel with the copy and are reused when the target already has them. Signatures are re-keyed to their `sha256:` key.
+- Paste gives every pasted node, edge and declaration a new ID. Only typed configuration reference paths declared by exact definition/config-version metadata are discovered and remapped. Host-owned intrinsic schemas cannot be replaced by package schemas. Unknown configuration and ordinary strings, including strings equal to UUIDs, remain data. Referenced declarations travel transitively with the copy and are reused when the target already has them. Signatures are re-keyed to their `sha256:` key. Lock entries of copied provider bindings are put into the target; a target that locks the same package version to another digest rejects the paste. Every source type lock travels with the fragment and is merged with `PutTypeLock`: the precise set of types a copy depends on is not computed yet, so all locks are kept rather than risk dropping a codec requirement. A matching target lock is reused; a different codec rejects the whole paste. An unavailable codec therefore stays unavailable (`E-TYPE-CODEC`) in the target.
+
+Import integrity: each package `(id, version)` and each type-lock identity occurs once, including when duplicate rows are identical; ambiguous locks are a structural load error. Provider resolution must not choose the first matching row. A JSON object that repeats a key at any depth, compared after unescaping, is CodecError::DuplicateKey naming the first repeat. The default importer checks 64 MiB of encoded UTF-8 before parsing. Its streaming pass counts 100,000 nodes and 500,000 edges across all bodies before materializing any document node/edge; these are independent maximums, not a promise that every document at all maxima fits the remaining budgets. `ImportBudget` also defaults to 1,000,000 total JSON values, 8 MiB of decoded object-key bytes and 32 MiB of decoded string-value bytes, including envelope, editor and unknown-extension content. Embedded JSON literal text is charged as a string and is not reparsed as JSON structure here. Containers and primitives each count as one value, including the root; keys are charged separately from values. JSON-budget exhaustion stops the scan immediately and can precede later syntax/format/version/duplicate errors. Otherwise the existing order remains format, version, duplicate key, node quota, edge quota, nesting and construction/identity checks. `from_json_with_limits` retains its three-field graph/text limits and applies the default JSON budget; `from_json_with_budget` supplies both profiles explicitly. Generic Serde still supplies structural/identity/nesting checks without text import quotas. A host must bound a read before constructing its string and bound aggregate imports. These admission dimensions are not a hard allocation/RSS ceiling or supported performance targets.
+
+Construction boundary: `GraphDocument` implements Serde `Deserialize` by reading its wire layout and then running the same admission as `from_json`: an optional `format` tag must name `orange.graph` and is dropped, the version must be 1, node and edge IDs must be unique across bodies and lock identities must be unique. A rejected document is a deserializer error, and no unchecked deserializer is public. Duplicate-key detection and import quotas need the original text, so they stay with `from_json`/`from_json_with_limits`; hosts reading untrusted bytes use those. Serde `Serialize` output is unchanged and has no envelope tag.
+
+Nesting budget: a saved document nests at most `MAX_NESTING` (64) JSON objects and arrays, counting its root object as 1. Every transaction patch is checked against the depth its entry will have in the saved document, including the containers above it (a function body adds two), before it is applied, so a rejected edit (`TxError::NestingLimit`) changes nothing. The importer measures nesting in its streaming pass and reports `CodecError::NestingLimit` after the quotas; Serde construction applies the same budget. What an edit commits therefore saves and reloads with an adequate host admission profile. Nesting deeper than the JSON parser's own recursion bound still fails as a JSON error. Import quotas remain host policy: a document edited past defaults reopens with explicit `ImportLimits` and `ImportBudget` through `from_json_with_budget`.
+
+### 3.4 Foundation authoring projections (ADR-22)
+
+Variable declaration controls/nodes refer to the existing stable VariableDecl, and callable reusable nodes use FunctionDecl and exact package/provider locks (11 §11/§14). A declaration authoring projection adds no new runtime instruction or initialization order. Selection export must discover references through the definitions' declared reference fields, remap IDs atomically, preserve unresolved payloads and retain provider locks. Event-containing templates insert ordinary nodes and declarations rather than pretending to be callable functions. Exact library/template/editor encodings remain unimplemented and must be specified with schemas and focused round-trip/undo tests in WU-05 before adoption. This scope update changes no current format v1 field or Rust API.
 
 ## 4. Definition schema
 
-`NodeDefinition` fields: `definition_id`, `definition_version`, `config_version`, `kind`, `suspends` (`never`/`maybe`/`always`; async and iterator), `cleanup_safe`, `volatility` (volatile only), `type_params`, `ports`, `iterator` (iterator only), `event_source` (entry only), `port_template` (optional declarative dynamic ports), `config_schema`, `errors`, `capabilities`, `determinism` (`deterministic`/`seeded`/`external`/`nondeterministic`), `cost` (optional hint: `scalar`/`linear`/`heavy`), `implementation_slot`, `label`, optional `description`, `editor`. All human-facing label/help/category/alias fields use TextRef from [13 §2](13-internationalization.md), including port labels/descriptions and declarative configuration-option captions. Implicit kind ports ([11 §4.1](11-graph-language.md)) are never listed; their text comes from host catalogues.
+`NodeDefinition` fields: `definition_id`, `definition_version`, `config_version`, `kind`, `suspends` (`never`/`maybe`/`always`; async and iterator), `cleanup_safe`, `volatility` (volatile only), `type_params`, `ports`, `iterator` (iterator only), `event_source` (entry only), `port_template` (optional declarative dynamic ports), `config_schema`, `errors`, `capabilities`, `determinism` (`deterministic`/`seeded`/`external`/`nondeterministic`), `cost` (optional hint: `scalar`/`linear`/`heavy`), `implementation_slot`, `label`, optional `description`, `editor`. `definition_version` and `config_version` are positive integers starting at 1; a definition with either at 0 is not published. All human-facing label/help/category/alias fields use TextRef from [13 §2](13-internationalization.md), including port labels/descriptions and declarative configuration-option captions. Implicit kind ports ([11 §4.1](11-graph-language.md)) are never listed; their text comes from host catalogues.
+
+Implementation note (`orange_model::catalog`; Rust spelling only): `NodeDefinition` implements a subset: the `DefinitionRef`, `config_version`, `kind`, typed `volatility`/`determinism`, `suspends`, `type_params`, `ports` (declared, or derived from the referenced variable declaration for Get, Set and supported Update operations), `references` (the config fields that hold declaration IDs), an optional core `specializations` list (`None` means constraints decide) and an optional `config_schema` in the dialect below. Data and event ports carry a type; exec ports carry none. A definition file's `label`, `description` and the `category_id`, `category` and `connection_adapter` of its `editor` object are read by `NodeDefinition::described` into a separate `Presentation` (2026-11-11; `connection_adapter` 2026-11-15, the adapter kind of the connection a `connection: true` node names, which an editor uses to bind a dropped node; the session kind is still checked when the node runs; `then_label` and `paths` 2026-11-15, a text reference naming the implicit `then` step where "Exit" would mislead, such as "Queued", and a list of `{port, folder, save, extensions}` marking text inputs that hold a path so an editor offers the system's chooser, a save chooser when `save` (2026-11-16) because the node writes the file); they are not part of the definition, and other `editor` hints are accepted and not read. Control hints (2026-11-25, ADR-33): `editor.controls` holds `settings` and `inputs` maps from a setting name or data input port ID to `{widget, unit?, precision?, range?: [low, high], step?, scale?: "linear" | "log", marks?, notch?: "pill" | "tick" | "dot", knob?: "arc" | "bipolar" | "notched" | "loop", number?, caption?}`, with `widget` one of `field`, `slider`, `dial`, `toggle`, `segmented`, `dropdown` or `stepper`; `editor.layout` holds an optional `visual` (`level-meter`, `spectrum`, `waveform`, `none`) and `regions`, each `{region: "header" | "aside" | "body" | "advanced", fields, arrange?: "column" | "row" | "grid:N"}`. They are read into `Presentation::controls`. A slider, dial or stepper fits a number (a stepper only a whole one), a toggle a Boolean, segmented an enumeration of 2–5 and a dropdown any enumeration; a range must be finite, increasing and inside the schema's `minimum` and `maximum`, and a log scale needs a range above zero. A hint that does not fit, an unknown field and an unknown word are dropped and listed in `Presentation::hint_problems`; none fails the definition. Slider `marks` are visual guides expressed as values in the control’s range. A dial `caption` is a keyed text reference with a fallback (13 §2), and `knob` selects the dial face. Presentation clients may use different arrangements for the same fields. `orange check` reports dropped hints as warnings. `RegistrySnapshot::definitions` lists every registered definition version. The remaining fields above are not implemented yet. Implicit kind ports are not listed in a package contract.
+
+Definition files (2026-11-03): `NodeDefinition::from_json` and `from_json_with_limits` (`DefinitionLimits`: 1 MiB and 1,024 ports by default) decode one package definition file. The importer's streaming pass runs first, so a repeated key at any depth, the default `ImportBudget` and the 64-level nesting budget are enforced before values are built; then `definition_id`, `definition_version`, `config_version`, `kind`, `determinism` and the optional `suspends`, `volatility` (`state-read`/`clock`/`entropy`), `type_params`, `ports` and `config_schema` are read. Any other top-level field, including the fields above that are not modeled yet, is rejected rather than dropped; port descriptors keep presentation fields as extensions. The result has declared ports, no `references` and no core `specializations`: a package lists supported argument sets on its provider ([04](04-expansion-plugins.md)). `DefinitionError` carries `core/definition-*` message keys; contract rules are checked on publication.
+
+**Config-schema dialect `orange.config-schema/v1` (V4b).** `config_schema` is not JSON Schema and no JSON Schema validator is implied. Validation enforces only this subset: `type` (one string of `object`, `array`, `string`, `integer`, `number`, `boolean`, `null`; `integer` accepts JSON integers only, so `1.0` is a number but not an integer), `enum` (non-empty), `minimum`/`maximum` (finite, inclusive, numbers only; signed and unsigned 64-bit integer comparisons retain exact precision, including comparisons with binary64 bounds), `required`, `properties` (recursive, present properties only) and `additionalProperties` (boolean only; `false` rejects names outside `properties`), plus the annotations `default`, `title`, `description`, `$comment` and `$schema` (which, when present, must equal the dialect ID). Any other keyword or value shape (`$ref`, `oneOf`, `items`, patterns, a type list, an object-valued `additionalProperties`, a schema nested deeper than 16) reports `E-CONFIG-SCHEMA-UNSUPPORTED` on each node using it, and that config is not judged; it is never accepted silently. Otherwise a config that fails the schema reports `E-CONFIG-INVALID`. A definition with no schema constrains nothing, a node whose `config_version` differs from the definition's is not judged against it (resolution reports that), and diagnostics carry no config values. `validate_config` is the one pass; it does not rewrite configs or apply `default`.
+
+**Exports (V4b).** `validate_exports` checks every `exports` entry against fresh resolved signatures: `E-EXPORT-DUPLICATE` (a later reuse of an `id`), `E-EXPORT-TARGET` (the node is not in the root body, or the port is not a declared data output), `E-EXPORT-TYPE` (the port type is not concrete or lacks `serialize` evidence, so handles, streams, containers of them, and records or enums without a `serialize` derive are rejected), and `E-CROSS-ACTIVATION` (the value, or a producer in its pure/volatile cone, is payload-, iteration- or execution-sourced; G-35). An unresolved target reports `E-DEPENDENCY-UNAVAILABLE`. Diagnostics name the target node and port, never the export ID's content.
+
+`Ports::Variable(VariableAccess::Update)` is a reusable synchronous Action contract; registry publication rejects other kinds with `RegistryError::VariableUpdateKind`. Package definitions may use this contextual port shape with their own exact provider bindings. The shape grants no built-in write-effect authority: function analysis still requires explicit host-supplied leaf effects for package nodes. Only the exact host intrinsic uses the built-in Update effect rule, and that rule rechecks its current contextual operation/type contract even when the caller supplies a projection.
+
+Package live definitions use `volatility: "live"` and `determinism: "external"`.
+Their one computed output and data-argument layout are checked at publication
+and lowering (11 §10.5). The optional boolean `editor.hidden` defaults to false.
+It suppresses palette search and preserves definition resolution for saved documents.
 
 Generic pure definition (replaces the earlier `add-i64` example):
 
@@ -267,29 +697,264 @@ Package entry (event source acquired in the run's Starting phase):
 
 ```json
 {
-  "definition_id": "org.orange.obs/on-program-scene-changed",
+  "definition_id": "org.example.device/on-state-changed",
   "definition_version": 1,
   "config_version": 1,
   "kind": "entry",
-  "label": {"key": "org.orange.obs/on-program-scene-changed-label", "fallback": "On program scene changed"},
-  "event_source": {"service": "connection:org.orange.obs/session@1", "event": "CurrentProgramSceneChanged"},
+  "label": {"key": "org.example.device/on-state-changed-label", "fallback": "On device state changed"},
+  "event_source": {"service": "connection:org.example.device/session@1", "event": "StateChanged"},
   "ports": [
     {
-      "port_id": "scene_name",
+      "port_id": "state",
       "direction": "output",
       "kind": "data",
       "type": "core/string@1",
       "source": "payload",
-      "label": {"key": "org.orange.obs/on-program-scene-changed-port-scene-name", "fallback": "Scene name"}
+      "label": {"key": "org.example.device/on-state-changed-port-state", "fallback": "State"}
     }
   ],
   "config_schema": {"type": "object", "properties": {"profile": {"type": "string"}}, "required": ["profile"], "additionalProperties": false},
   "capabilities": ["connection.use"],
   "determinism": "external",
-  "implementation_slot": "node:org.orange.obs/on-program-scene-changed@1",
-  "editor": {"category_id": "org.orange.obs/category-obs-events", "category": {"key": "org.orange.obs/category-obs-events", "fallback": "OBS/Events"}, "control": "standard-node"}
+  "implementation_slot": "node:org.example.device/on-state-changed@1",
+  "editor": {"category_id": "org.example.device/category-device-events", "category": {"key": "org.example.device/category-device-events", "fallback": "Device/Events"}, "control": "standard-node"}
 }
 ```
+
+### 4.1 Bundled comparison definitions
+
+`org.orange.math` (provider `native-v1`) publishes these pure, deterministic definitions, each at definition version 1 and config version 1 with an empty config schema (`additionalProperties: false`). Ports: data inputs `a: $T`, `b: $T` in that order, and computed output `result: core/bool@1`. The provider lists no specializations for them, so the declared constraint decides at validation ([11 §5.5](11-graph-language.md)).
+
+| Definition | `T` constraint | `result` is true when |
+|---|---|---|
+| `org.orange.math/equal` | `eq` | `a` equals `b` |
+| `org.orange.math/not-equal` | `eq` | `a` does not equal `b` |
+| `org.orange.math/less` | `ord` | `a` orders before `b` |
+| `org.orange.math/less-or-equal` | `ord` | `a` does not order after `b` |
+| `org.orange.math/greater` | `ord` | `a` orders after `b` |
+| `org.orange.math/greater-or-equal` | `ord` | `a` does not order before `b` |
+
+The executable subset and per-shape rules are normative in [11 §5.4](11-graph-language.md). A type validation accepts but the kernel cannot execute fails compilation with `CompileError::KernelUnsupportedType`.
+
+### 4.2 Bundled integer definitions
+
+L02a (2026-11-08) adds the following finite set to `org.orange.math/native-v1`.
+Every definition/config version is1, Pure and deterministic, with `T: int` and
+provider specializations exactly i32/i64/u32/u64. Every output is computed
+`result: $T`. Inputs are strict in the listed order, each `$T` except `count:u32`.
+IDs below have the `org.orange.math/` prefix. Semantics: [11 §5.6](11-graph-language.md).
+
+| ID suffix | Inputs | Config |
+|---|---|---|
+| `remainder`, `modulo` | `a`, `b` | empty |
+| `negate`, `absolute` | `value` | `int_overflow`: checked/wrapping/saturating |
+| `minimum`, `maximum` | `a`, `b` | empty |
+| `clamp` | `value`, `min`, `max` | empty |
+| `bit-and`, `bit-or`, `bit-xor` | `a`, `b` | empty |
+| `bit-not` | `value` | empty |
+| `shift-left`, `shift-right` | `value`, `count:core/u32@1` | `int_overflow`: checked/wrapping |
+
+Overflow config defaults to checked. Closed config schemas reject unknown fields,
+wrong values and policies absent from the operation's list. The host resolves the
+exact provider, definition/config version and specialization before execution.
+`IntegerOperation`, `ResolvedInteger` and `MathPackage::resolve_integer` expose the
+same native contracts to embedders; retaining a binding pins its registry snapshot.
+The compiler uses ordinary PureKernel bindings for constant folds and dynamic
+data/control demands. No new intrinsic, saved graph format, instruction family,
+constraint extension or dependency/feature is introduced. Float variants and the
+remaining math/cast vocabulary are separate L02 increments; this is a finite
+integer slice, not completion of or the whole core.
+
+### 4.3 Bundled float definitions
+
+L02b (2026-11-08) adds the following finite set to `org.orange.math/native-v1`.
+Every definition/config version is 1, Pure and deterministic, with `T: float` and
+provider specializations exactly f32/f64. Every input has type `$T`; the computed output
+`result` is `$T` except for the predicates, whose `result` is `core/bool@1`. IDs
+below have the `org.orange.math/` prefix. L02c (2026-11-08) added trigonometry and
+the predicates.
+Semantics: [11 §5.6](11-graph-language.md).
+
+| ID suffix | Inputs |
+|---|---|
+| `square-root`, `exponential`, `natural-log`, `log2`, `log10` | `value` |
+| `power` | `base`, `exponent` |
+| `floor`, `ceiling`, `truncate`, `round-ties-even` | `value` |
+| `negate`, `absolute` (shared with integers) | `value` |
+| `minimum`, `maximum` (shared with integers), `float-remainder` | `a`, `b` |
+| `clamp` (shared with integers) | `value`, `min`, `max` |
+| `sine`, `cosine`, `tangent`, `arcsine`, `arccosine`, `arctangent` | `value` |
+| `arctangent2` | `y`, `x` |
+| `float-equal`, `float-not-equal`, `total-order-less` (predicates) | `a`, `b` |
+| `is-nan`, `is-finite`, `is-infinite` (predicates) | `value` |
+
+Every config schema is closed. Non-predicates have only `float_policy`: finite
+(default) or ieee; predicates have empty config. `FloatOperation::is_predicate`
+reports which is which. The same provider also publishes `xor` (`a`, `b`,
+`result`: `core/bool@1`, empty config) beside `not` in the scalar `Operation` set. `FloatOperation`, `ResolvedFloat` and `MathPackage::resolve_float` expose
+the same native contracts to embedders; retaining a binding pins its registry
+snapshot. The compiler uses ordinary PureKernel bindings for constant folds and
+dynamic data/control demands. No new intrinsic, saved format, error code or
+dependency is introduced.
+
+### 4.4 Bundled text definitions
+
+L03b (2026-11-08) adds the `org.orange.text` package, provided by the same bundled
+native build as `org.orange.math` with its own exact provider key
+(`MathPackage::text_provider_key`, ID `native-v1`, same version and digest). Every
+definition/config version is 1, Pure and deterministic, with no type parameters.
+IDs below have the `org.orange.text/` prefix; `string` is `core/string@1` and every
+output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
+
+| ID suffix | Inputs | Output | Config |
+|---|---|---|---|
+| `byte-length`, `scalar-length` | `value: string` | `core/u64@1` | empty |
+| `concat` | `a`, `b: string` | string | empty |
+| `contains`, `starts-with`, `ends-with` | `text`, `pattern: string` | `core/bool@1` | empty |
+| `find` | `text`, `pattern: string` | `core/option@1<core/u64@1>` | `unit`: scalar/byte |
+| `regex-match` | `text`, `pattern: string` | `core/bool@1` | empty |
+| `regex-extract` | `text`, `pattern: string` | `core/option@1<core/string@1>` | empty |
+| `parse-csv` | `text: string` | `list<list<string>>` | empty |
+| `write-csv` | `rows: list<list<string>>` | string | empty |
+| `substring` | `text: string`, `start`, `length: core/u64@1` | string | `unit`: scalar/byte |
+| `replace` | `text`, `pattern`, `replacement: string` | string | empty |
+| `trim` | `value: string` | string | `ends`: `both` (default), `start` or `end` |
+| `to-uppercase`, `to-lowercase` | `value: string` | string | empty |
+| `split` | `text`, `separator: string` | `core/list@1<core/string@1>` | empty |
+| `join` | `items: core/list@1<core/string@1>`, `separator: string` | string | empty |
+| `format` | `template: string`, `arguments: list<json>` | string | empty |
+| `inspect-error` | `fault: core/error@1` | string | empty |
+| `encode-base64`, `encode-hex` | `bytes: core/bytes@1` | string | empty |
+| `decode-base64`, `decode-hex` | `text: string` | bytes | empty |
+
+Format Text reads zero-based placeholders such as `{0}`. Double braces write
+literal braces. A placeholder such as `{1:.2}` formats a number to two decimal
+places, with a maximum precision of 16. Integer number text stays exact. Other
+numeric values use finite binary64 for precision formatting. A missing argument
+fails with `org.orange.text/MissingFormatArgument`. Inspect Error returns the
+stable error code from a captured fault. Base64 uses the standard padded form.
+Hex encodes lowercase and accepts either letter case on decode. Invalid encoded
+text fails with `core/Domain`.
+
+`unit` defaults to scalar. `TextOperation`, `ResolvedText`, `TextUnit` and
+`MathPackage::resolve_text` expose the same contracts to embedders; the math
+provider never stands in for the text provider. No new intrinsic, saved format or
+dependency is introduced.
+
+Text split construction (review correction, 2026-11-09) preflights its full
+nominal `list<string>` charge using the model's `VALUE_CHARGE` before allocation,
+under `MAX_COLLECTION_BYTES`. The input is scanned without owned pieces; only an
+admitted count reserves storage. Empty pieces cost a value slot even with no UTF-8
+payload. The existing `core/LimitExceeded` fault covers refusal.
+
+The bundled Color type `org.orange.color/rgba@1` uses the nominal record
+encoding. Its fields are `red`, `green`, `blue` and `alpha` in that order.
+Each is a `core/u32@1` integer encoded as a JSON number. The color kernels
+enforce the channel range 0–255. A literal for an opaque blue is
+`{"type":"org.orange.color/rgba@1","value":{"red":0,"green":0,"blue":255,"alpha":255}}`.
+
+### 4.5 Bundled collection definitions
+
+L04a (2026-11-08) adds `org.orange.collections`, a third package of the same bundled
+build (`MathPackage::collections_provider_key`, ID `native-v1`). Every
+definition/config version is 1, Pure and deterministic, with empty config. The
+provider lists no specializations: like comparisons, binding resolves the concrete
+container type of the first input and refuses unsupported shapes. IDs below have the
+`org.orange.collections/` prefix; every output port is `result`. Semantics:
+[11 §5.8](11-graph-language.md).
+
+| ID suffix | Type parameters | Inputs | Output |
+|---|---|---|---|
+| `list-length` | T | `items: list<$T>` | `core/u64@1` |
+| `list-get` | T | `items`, `index: core/u64@1` | `option<$T>` |
+| `list-slice` | T | `items`, `start`, `length: core/u64@1` | `list<$T>` |
+| `list-concat` | T | `a`, `b: list<$T>` | `list<$T>` |
+| `list-append` | T | `items`, `item: $T` | `list<$T>` |
+| `list-reverse` | T | `items` | `list<$T>` |
+| `list-contains` | T: eq | `items`, `value: $T` | `core/bool@1` |
+| `list-index-of` | T: eq | `items`, `value: $T` | `option<core/u64@1>` |
+| `map-length` | K: eq+hash, V | `map: map<$K,$V>` | `core/u64@1` |
+| `map-get` | K, V | `map`, `key: $K` | `option<$V>` |
+| `map-contains-key` | K, V | `map`, `key` | `core/bool@1` |
+| `map-insert` | K, V | `map`, `key`, `value: $V` | `map<$K,$V>` |
+| `map-remove` | K, V | `map`, `key` | `map<$K,$V>` |
+| `map-keys`, `map-values` | K, V | `map` | `list<$K>` / `list<$V>` |
+| `option-is-some` | T | `value: option<$T>` | `core/bool@1` |
+
+(`list`, `map` and `option` abbreviate `core/list@1`, `core/map@1` and
+`core/option@1`.) `CollectionOperation`, `ResolvedCollection` and
+`MathPackage::resolve_collection` expose the same contracts to embedders.
+
+Collection result admission (review correction, 2026-11-09) uses one result
+container header for List Concat. Map Insert resolves an existing key before
+admission and credits only its replaced value; a new key adds its checked key and
+value charges. The model's map-entry minimum is a preflight, not an extra charge.
+Checked arithmetic and admission precede result construction; inputs stay immutable.
+
+Build List accepts up to 256 addable elements in their persisted port order.
+Build Map pairs two equal-length typed lists by index, keeps that order and fails
+with `core/Domain` on duplicate keys or unequal lengths. Set List Item and
+Remove List Item use zero-based indices and fail outside the list. Distinct
+requires equality and hashing and retains the first occurrence of each item.
+Stable Sort uses ascending Core order and preserves the order of equal items.
+Some and None construct options explicitly. Some preserves a present inner None
+when the type is a nested option.
+
+### 4.6 Bundled record and enum definitions
+
+L04b (2026-11-08) adds four `org.orange.collections` definitions with
+`Ports::Nominal`: version/config version 1, Pure, deterministic, no type
+parameters, and a closed config schema with a required string `type` plus `field`
+or `variant`. The registry derives each node's contract from that config
+(`orange_model::catalog::nominal`), so the saved signature must match it.
+
+| ID suffix | Config | Inputs | Output `result` |
+|---|---|---|---|
+| `make-record` | `type` | one per field (F, or `option<F>` if optional) | the record |
+| `get-field` | `type`, `field` | `record` | F, or `option<F>` if optional |
+| `set-field` | `type`, `field` | `record`, `value` (F, or `option<F>`) | the record |
+| `make-enum` | `type`, `variant` | `payload: P` when declared | the enum |
+| `enum-payload` | `type`, `variant` (with a payload) | `value` | `option<P>` |
+
+`NominalOperation`, `ResolvedNominal` (with `input_ports`) and
+`MathPackage::resolve_nominal` expose the same contracts to embedders. The new
+`Ports::Nominal(NominalAccess)` variant and `ContractError::NominalConfig` are
+unfrozen API additions; no saved graph field changes.
+
+### 4.7 Bundled JSON definitions
+
+L04c (2026-11-08) adds `org.orange.json`, a fourth package of the bundled build
+(`MathPackage::json_provider_key`, ID `native-v1`). Every definition/config version
+is 1, Pure, deterministic, non-generic, with empty config. IDs below have the
+`org.orange.json/` prefix; `json` is `core/json@1` and every output is `result`.
+Semantics: [11 §5.10](11-graph-language.md).
+
+| ID suffix | Inputs | Output |
+|---|---|---|
+| `parse` | `text: core/string@1` | `core/json@1` |
+| `kind` | `value: json` | `core/string@1` |
+| `is-null` | `value` | `core/bool@1` |
+| `get` | `value`, `key: core/string@1` | `core/option@1<core/json@1>` |
+| `get-path` | `value`, `path: core/string@1` | `core/option@1<core/json@1>` |
+| `at` | `value`, `index: core/u64@1` | `core/option@1<core/json@1>` |
+| `length` | `value` | `core/u64@1` |
+| `as-bool`, `as-string`, `as-i64`, `as-u64`, `as-f64` | `value` | `core/option@1<T>` of that type |
+| `read-text`, `read-int`, `read-number`, `read-bool` | `value`, `path: core/string@1`, `fallback: T` | `T`: `core/string@1`, `core/i64@1`, `core/f64@1`, `core/bool@1` |
+| `build-object` | `fields: map<string,json>` | json |
+| `build-array` | `items: list<json>` | json |
+| `set-field` | `object: json`, `key: string`, `value: json` | json |
+| `remove-field` | `object: json`, `key: string` | json |
+| `from-bool`, `from-string`, `from-i64`, `from-u64`, `from-f64` | The named scalar type | json |
+| `null` | None | json |
+
+Builders retain input order and exact JSON number text. Set Field collapses
+matching keys to one entry at the last match, or appends a new entry. Remove Field
+removes every occurrence of the key. Both fail with `core/Domain` on a non-object.
+`from-f64` fails with `core/Domain` for NaN and infinity. Construction obeys the
+JSON size and nesting budgets and reports `core/OutOfRange` when it exceeds either.
+
+`JsonOperation`, `ResolvedJson` and `MathPackage::resolve_json` expose the same
+contracts to embedders.
 
 ## 5. Type and converter definitions
 
@@ -318,10 +983,12 @@ Package entry (event source acquired in the run's Starting phase):
 - Constraint values: `derive` (host derives it structurally; valid only if every field or payload implements the constraint) or an implementation reference into the owning package. Field and variant IDs never change. `name` is source display metadata, not identity; `label: TextRef` supplies translatable captions for types, fields and variants. Names/labels may change without changing identity. Derived graph `display` renders the canonical TypeExpr and field/variant IDs plus recursively invariant payload formatting; it never uses mutable names or translations. User-declared variable/event/function names remain content ([13](13-internationalization.md)).
 - Minor version bumps may add optional fields or variants only ([11 §5.3](11-graph-language.md)).
 
-Converter registry entry:
+Converter registry entry (semantic identity and provider implementation are validated separately by 00c.5a):
 
 ```json
 {
+  "converter_id": "core/i64-to-i32",
+  "contract_version": 1,
   "from": "core/i64@1",
   "to": "core/i32@1",
   "class": "checked-partial",
@@ -332,9 +999,37 @@ Converter registry entry:
 }
 ```
 
+The example's `org.orange.math` provider implements the host-owned entry; it does not acquire authority to declare new semantics between two foreign types. The host registers core-owned semantic entries. Package-owned entries must belong to their namespace and own at least one endpoint. A frozen converter view contains canonical endpoints, class, finite policy choices, declared errors, exact provider alternatives (including package digest) and explicit new-binding defaults per entry contract. Conflicting content for one entry identity or conflicting digests for the same implementation binding are rejected. Lossy entries additionally declare the fixed JSON loss output from [11 §6](11-graph-language.md); provider alternatives must preserve that contract.
+
+Persisted `core/convert` node (00c.6a). It binds one entry, one provider and validated policy choices; the instance stores no behavior:
+
+```json
+{
+  "id": "…", "definition_id": "core/convert", "definition_version": 1, "config_version": 1,
+  "config": {"converter": "core/i64-to-i32", "contract_version": 1, "options": {}},
+  "provider": {"package": "org.orange.math", "version": "0.1.0", "id": "native-checked"},
+  "signature": "sha256:…"
+}
+```
+
+- `config.converter` and `config.contract_version` are the exact entry key; `config.options` must hold every declared policy with its resolved choice, including choices that came from defaults when the node was created. Validation rejects omitted, unknown or invalid choices instead of filling a current default.
+- `core/convert` is a host-owned registry special form, distinct from ordinary intrinsic and package-definition resolution. Its definition and config versions are both 1, and a signature is always required. An absent `provider` selects exactly the entry's `Core` implementation. A package provider is the exact binding and its digest is taken from the unique matching `package_lock` entry; missing or ambiguous locks and unavailable exact providers leave the node unresolved. The provider implements the entry's contract version, so no separate provider contract version is stored. It changes only by explicit rebind (ADR-07).
+- The node is a `pure` node whose available entry determines its ports: input `value: from`, output `result: to` (`source: computed`) and, for `lossy` entries only, output `loss: core/json@1`. A checked-partial failure is the pure-node error of [11 §13](11-graph-language.md). Available exact metadata is authoritative; the saved signature is compared and drift blocks completeness. When package metadata is unavailable, its saved snapshot remains available for offline edge inspection, while the node stays unresolved.
+- A connection plan is an edit (`PutPackageLock` for a package provider, `PutSignature`, `AddNode`, two `Connect`s, plus a `Disconnect` when it replaces a wire) and is applied as one transaction. Its identities are generated once per plan, and its commands are read-only (`ConnectionPlan::commands`). `plan_connection` returns `ConnectionError::TypeConflict` for a wire that introduces a conflict (11 §5.5); `apply_connection(document, registry, plan)` rejects a plan whose document state or `RegistrySnapshot::generation` changed (`PlanApplyError::{StaleDocument, StaleRegistry}`).
+- An inference plan follows the same freshness rule. `plan_edit` and `AnalysisSession::plan_edit` record the content state and registry generation they planned against, `InferencePlan::commands` is read-only, and `inference::apply_plan(document, registry, plan)` commits it as one undo step or rejects it with the same `PlanApplyError`. Any edit since planning makes it stale, a layout-only edit included: the plan was derived from exact content, so the host plans again rather than rebasing. `apply_inferred` still plans and commits in one call.
+
+The initial core converter executor (N1b) lives in orange-bundled without adding registry entries. A private immutable `ResolvedConversion` retains its Arc registry snapshot, exact ConverterKey, pre-resolved operation and, for f64→f32, two prebuilt JSON loss flags. Binding accepts only an explicitly selected registered Core provider, exact supported entry/version/endpoints/class and complete valid saved options; package alternatives are never native fallbacks. The passive output `ConversionOutput` has `result: Value` and `loss: Option<Value>`; only lossy conversion has Some(JSON `{"lost": bool}`), on every successful evaluation. Failure returns no partial result/loss pair. Float bit-preservation and loss rules are in 11 §6. This scalar API does not manufacture graph freshness, source maps, executable plans or runtime provenance.
+
+The version-1 intrinsics `core/rising-edge` and `core/falling-edge` have empty
+config objects. `core/change-beyond-tolerance` stores a single numeric
+`threshold` field. `core/increment-counter` and `core/decrement-counter` store
+the chosen declaration ID in `variable` and their optional typed Step literal
+in `inputs.value`. The definition fixes the operation. An unbound counter card
+can be saved as a draft and requires the variable before execution.
+
 ## 6. Saved graph example
 
-Manual trigger adds an amount to run variable `total`. If the new total exceeds 100, it emits `threshold-reached`; a handler logs it. Get node `n2` has three consumption sites in different epochs. The Set (`n4`) reads the old total. The Branch condition (`n5` → `n6`) and the Emit payload (`n7`) read the committed new total ([11 §7.3](11-graph-language.md)). Export `total` is legal because it uses only a volatile cone. An export of `n3.sum` would be `E-CROSS-ACTIVATION`.
+Manual trigger adds an amount to run variable `total`. If the new total exceeds 100, it emits `threshold-reached`; a handler logs it. Get node `n2` has three consumption sites in different epochs. The Set (`n4`) reads the old total. The Branch condition (`n5` → `n6`) and the Emit payload (`n7`) read the committed new total ([11 §7.3](11-graph-language.md)). Export `total` is legal because it uses only a volatile cone. An export of `n3.sum` would be `E-CROSS-ACTIVATION`. Node `n1` is a registered `core/on-manual` entry (11 §10.2); the host starts it with `Run::trigger`. Executing the whole example also needs its package providers.
 
 ```json
 {
@@ -424,6 +1119,9 @@ Function bodies serialize as entries in `functions`, each with `id`, `name`, `ki
 
 ### 6.1 Literal encoding
 
+An explicit `type_lock` must resolve to the exact codec implemented for its registered type. `TypeRegistry::literal_codec_identity` queries that capability, currently the structural codec `literal_codec::CODEC_ID` (`orange.value.v1`) for validated registered types, including registered record/enum schemas. Unknown types or codec identities report `E-TYPE-CODEC` and block lowering; saved locks and raw values still round-trip. Format-v1 documents without explicit locks retain the existing structural-codec default. All explicit locks are checked, including unused locks; the document's declared interpretation must be available before publication. Installing metadata alone does not install a decoder. Additional codec implementations require a registry/decoder extension, never an arbitrary claimed codec string. Aggregate decoding and encoding borrow constructor arguments rather than cloning their nested type trees for each value.
+
+
 Only the top-level literal carries `type`. Nested values are untagged, and their types come from the outer type.
 
 | Type | Encoding |
@@ -443,7 +1141,7 @@ Only the top-level literal carries `type`. Nested values are untagged, and their
 | secret-ref | Reference string (`credential://…`); never secret material |
 | handle, stream, result, error | No literal form (`E-HANDLE-LITERAL`) |
 
-Implementation correction (00b.4 review): encoding requires the exact f32/f64 runtime variant; it performs no implicit narrowing or widening. Map encoding rejects floating-point key types and duplicate runtime keys, just as decoding does. Constraint registration and general key eligibility remain 00c work under [11 §5](11-graph-language.md).
+Implementation correction (00b.4 review): encoding requires the exact f32/f64 runtime variant; it performs no implicit narrowing or widening. Map encoding rejects floating-point key types and duplicate runtime keys, just as decoding does. The registry-aware codec (00c.2a) additionally checks language `hash` + `eq` eligibility on encode/decode, and registry validation rejects invalid map types even without a literal. The standalone codec-only `SchemaSet` retains its historical float exclusion; it is not a substitute for registry/type validation.
 
 Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
 
@@ -453,6 +1151,17 @@ Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
 - **Unknown record fields and enum variants** stay in the stored literal; only decoding them to a `Value` fails.
 - **Schemas:** record and enum layouts come from a `Schemas` provider (the registry later).
 - **Nesting budget:** 64 levels for types and literals (proposed).
+- **JSON text budget:** `core/json@1` text may nest arrays and objects at most 64 levels and hold at most 1 MiB (`MAX_JSON_TEXT_BYTES`, proposed). Both are checked before parsing, and failures report `TooDeep` and `TooLarge`.
+- **Map keys:** maps are built only by `MapRepr::new` (or empty by `Default`), which rejects a repeated key (`DuplicateKey`; the codec reports `LiteralError::DuplicateMapKey`). Up to 16 entries are compared pairwise; larger maps use one presized hash set. `Value` implements `Eq` and `Hash` consistently with its structural equality, so the check takes expected linear time. Because keys are unique by construction, encoding, shape checks and equality never search for duplicates.
+- **Map check memo:** each `MapRepr` allocation keeps its first complete shape check (key shape, value shape, depth, entry charge). Immutable entries can only check the same way against the same shapes, so a later check of that allocation with equal shapes at the same or a smaller depth returns the remembered charge and still applies the caller's byte limit. Failed or partial checks are never remembered, other shapes walk the entries again, and equality, hashing and debug output ignore the memo. The memo is two words (an exact preorder code of both shapes with the depth, and the charge), so it never allocates; enum shapes and shapes over eleven nodes are not coded and always walk. It is derived in-memory data inside one allocation, never persisted and never keyed by address.
+
+Literal admission correction (2026-11-09): decoded lists
+and maps check their minimum element storage before reserve. Records charge their
+retained type identity and every absent optional field slot as well as present
+values. `decode_with_budget` remains conservative; the first exhausted container
+can be refused before visiting a mistyped element. Plugin output decoding shares
+one nominal budget across its complete result vector (04); refusal publishes no
+partial values. Wire encodings and type/provider identities are unchanged.
 
 ### 6.2 Presentation message wire contract
 
@@ -467,7 +1176,55 @@ The angle-bracket strings describe field constraints, not literal example values
 
 `NodeError` and compiler diagnostics flatten these fields: `origin` → `message_origin`, `key` → `message_key`, `args` → `message_args`, `fallback` → `message`. Locale-specific rendering is separate non-authoritative view data. This adds no new graph-error codes or severity changes; G-39 covers invariant structured fields and L-03/L-08 cover formatting/redaction.
 
+A diagnostic subject can include `port_direction` (`input` or `output`)
+alongside its port key. When a diagnostic lacks a direction and the card has
+both an input and an output with that key, the editor marks the card header.
+
 `editor.category_id` is a stable namespaced category identity; `editor.category` is its TextRef caption. Optional configuration captions use `editor.config_labels` (JSON Pointer into `config_schema.properties` → TextRef) and `editor.option_labels` (the same pointer → option-token → TextRef). They never alter schema property names, defaults or enum tokens. Declarative control/action/accessibility captions use the same TextRef/MessageRef contract. These presentation maps are excluded from semantic signature projection.
+
+### 6.3 Format versions and upgrades
+
+Every file the product saves starts with `"format"` and `"format_version"`: graph documents (`orange.graph`), the package index (`orange.installed-packages`), the disabled-package list (`orange.disabled-packages`) and stored variables (`orange.variables`). Each format has one `orange_model::format::History`: the oldest version this build reads and one upgrade step per later version, so the current version is the oldest plus the number of steps.
+
+- **Reading** checks the format name, then the version. The current version is decoded as it is. An older version that the history covers runs every step from its version upward, in order, then is decoded. A version newer than the build, or older than its oldest, is refused with the version it names (`E` `core/import-unsupported-version` for graphs); nothing is guessed.
+- **Steps** are pure JSON-to-JSON functions of the whole file. They run before Rust types decode it, so a step can rename, move or drop fields the current types no longer have. A step that cannot find what it expects refuses the file with the version it upgraded from (`core/import-upgrade-failed`).
+- **Writing** always uses the current version. A host that opened an older file says so before saving replaces it (`Draft::opened.upgraded_from`).
+- **Graphs:** every import limit, the repeated-key check and the nesting budget apply to the text as saved, before any step. A current document keeps the streaming decode; only an older one is parsed into a JSON tree first. `from_json_upgrading` reports which happened; `from_json` keeps its signature. Direct Serde deserialization of `GraphDocument` reads only the current version.
+
+Raising a format version is one change that adds the step, raises the constant and adds a test that loads a file saved at the previous version. Version 1 is the first version of every format, so no step exists yet.
+
+### 6.4 Replaced definitions
+
+A definition file may say which older definition versions it takes the place of:
+
+```json
+{
+  "replaces": [{"definition_id": "org.orange.audio/on-level", "definition_version": 1,
+  "ports": {"level": "value"}, "config": {"window": "window_ms"}}]
+}
+```
+
+`ports` maps renamed port IDs and `config` renamed top-level config fields, old to new; anything not listed keeps its name. The replacement is the file's own definition. A host collects these into one `Replacements` table from built-in packages at start and from archives when they install. Two different replacements for one definition version refuse the package, so the table never depends on install order.
+
+When a document opens (`Host::draft`, and every path that checks, previews or runs text), each node whose definition the registry lacks and the table replaces is rebuilt as a node of the replacing definition. Chains are followed while each step is unregistered, with their renames composed; a loop or a chain that ends at an unregistered definition leaves the node for validation to report. The rebuilt node keeps its ID, body, place, literals, config values, type pins, variadic instances, activation and extensions, takes the new definition's default provider binding and signature, and every wire that touched it is reconnected under the renamed port with its edge ID. The rewrite is one transaction. A node whose definition is still registered is never moved, so an installed old version keeps working and no version is chosen by precedence (ADR-07). Replacements are not part of a definition's contract or signature.
+
+### 6.5 Local types
+
+A document may declare its own record and enum types in an optional top-level `types` array, so a graph can have choices (Mood: calm, happy) and structures without a package:
+
+```json
+{
+  "types": [{"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6d", "name": "Mood", "kind": "enum",
+  "variants": [{"id": "calm", "name": "Calm"}, {"id": "level", "name": "Level", "payload": "core/f64@1"}]},
+ {"id": "7d1f5b63-9c20-4b6f-8d4e-2f3a4b5c6d7e", "name": "Point", "kind": "record",
+  "fields": [{"id": "x", "name": "X", "type": "core/f64@1"}, {"id": "label", "name": "Label", "type": "core/string@1", "optional": true}]}]
+}
+```
+
+- **Identity:** a type is the nominal `local/t<id without hyphens>@1`, fixed by its UUID; values store member IDs (`[a-z][a-z0-9_-]{0,63}`), so names change freely. The `local` and `core` namespaces are reserved: no package may take them.
+- **Registry:** a host checks, compiles and runs a document against `with_document_types`, the package registry with the document's types added (`Host::registry_for`). Each local type derives `eq`, `hash`, `display` and `serialize` where its members allow: a float member has no `eq` or `hash`, and a type that contains itself has no automatic derive (11 §5.4). Members may name core, package and local types, including the type itself.
+- **Checks:** a declaration without a name, an enum without variants, more than 256 members, or a malformed or repeated member ID is `E-TYPE-DECLARATION` on the type (`subject.local_type`); a member whose type does not resolve is the same error, and that member is left out so the rest of the document still checks. Removing a variant or field that a value uses is a literal error where the value is.
+- **Edits:** `UpsertType` and `RemoveType` are ordinary undoable commands; a type change re-checks the whole document. Copy and paste does not carry local types yet.
 
 ## 7. In-memory values
 
@@ -480,19 +1237,20 @@ pub enum Value {
     Str(ArcStr), Bytes(ArcBytes),
     List(Arc<ListRepr>), Map(Arc<MapRepr>), Record(Arc<RecordRepr>),
     Enum { tag: u32, payload: Option<Arc<Value>> },
-    None, Some(Arc<Value>),                  // Some is boxed only for nested option<option<T>>
+    None, Some(Arc<Value>),                  // only payloads that can be a bare None
     Err(Arc<NodeError>),                     // only inside result<T>
+    Ok(Arc<Value>),                          // only ambiguous result success payloads
     Json(Arc<JsonRepr>),
-    Handle(HandleId),
+    Handle(Arc<HandleValue>),                 // C08b authenticated runtime alias
 }
 pub enum ListRepr { Bool(BitBox), I32(Box<[i32]>), I64(Box<[i64]>), U32(Box<[u32]>), U64(Box<[u64]>),
                     F32(Box<[f32]>), F64(Box<[f64]>), Str(Box<[ArcStr]>), Values(Box<[Value]>) }
 pub struct RecordRepr { pub ty: TypeKey, pub fields: Box<[Option<Value>]> } // schema order; None = absent
-pub struct MapRepr { /* insertion-ordered; keys restricted per 11 §5.2 */ }
+pub struct MapRepr { /* insertion-ordered; unique keys, restricted per 11 §5.2 */ }
 pub enum JsonRepr { Null, Bool(bool), Number(NumberText), String(ArcStr), Array(Box<[JsonRepr]>), Object(/* ordered */) }
 ```
 
-- `option<T>` is `None`, or the unboxed `T` value (static types disambiguate). Nesting boxes the inner layer. `result<T>` is `Err(…)` or the unboxed `T`; `result<core/error@1>` boxes. **Missing** exists only as an absent record field or JSON key, never as a free-standing `Value`. Together these make None, missing, JSON null and Error distinct by construction (FR-08).
+- `option<T>` is `None`, or the unboxed `T` value (static types disambiguate). `result<T>` is `Err(…)` or the unboxed `T`. A layer boxes only when its payload type can itself show the layer's own tag bare: `option<T>` uses `Some(Arc<Value>)` when a valid `T` can be a bare `None`, and `result<T>` uses `Ok(Arc<Value>)` when a valid `T` can be a bare `Err`. The two rules compose through each other. A bare `None` comes from an option, or from a result whose success is unboxed and whose payload can be a bare `None`. A bare `Err` comes from a result, `core/error`, or an option that does not box and whose payload can be a bare `Err`. So `option<option<T>>` and `option<result<option<T>>>` box Some, while `option<result<result<T>>>` does not, because the boxed `Ok` already hides the inner None. Box selection is static, including a successful None payload. Every compact value therefore decodes to one semantic value, so Some(Ok(None)) cannot collapse into None, and Ok(Err) cannot collapse into an outer Err. **Missing** exists only as an absent record field or JSON key, never as a free-standing `Value`. Together these make None, missing, JSON null and Error distinct by construction.
 - Clone is an `Arc` increment. Mutation-style nodes consume a uniquely owned value or copy on write ([03](03-data-and-execution.md)).
 - Records are addressed by compiled field index, never by name at run time.
 - Secrets are never `Value`s. Brokers hold them ([05](05-services-and-platforms.md)).
@@ -501,11 +1259,34 @@ Implementation notes (WU-00/00b.4; Rust spelling only):
 
 - **Size:** a compile-time assertion keeps `Value` ≤16 bytes. `ArcStr`/`ArcBytes` are thin `Arc<String>`/`Arc<Vec<u8>>`, because a fat `Arc<str>` would make it 24 bytes.
 - **List storage:** `ListRepr::Bool` is `Box<[bool]>`.
-- **Record type:** `RecordRepr::ty` holds the canonical `TypeExpr` until 00c adds `TypeKey` interning.
+- **Record type:** `RecordRepr::ty` retains canonical `TypeExpr` even with 00c interning. The standalone codec returns freely owned values without retaining a registry snapshot. Migration to a transient key waits for a runtime consumer that owns the matching snapshot for every key use; a detached key must not replace persisted type identity.
 - **Enum tag:** the variant's index in schema order.
 - **JSON:** `Json` holds verbatim JSON text; the structured `JsonRepr` arrives with the JSON node family (05d).
-- **`NodeError`:** carries only its stable code until the WU-03 message contract.
-- **Equality** is structural, with floats compared by bit pattern; it is not the language `eq` constraint.
+- **`NodeError`:** carries its stable code and optional original producer node; the full message/activation contract remains WU-03/runtime work.
+- **Equality and hashing** are structural, with floats compared by bit pattern and lists by elements whatever their storage; they are not the language `eq`/`hash` constraints.
+
+Value shape ownership (2026-10-27; `core/data-shape`):
+- `orange_model::value::shape::ValueShape` replaces the compiler's `PlanType`, with the same variants. Earlier notes that say `PlanType` now refer to it.
+- A shape resolves from the parsed `TypeTerm`, never from type-expression text.
+- The model owns, in one module:
+  - the bounded value check and its nominal charges: `VALUE_CHARGE`, `MAP_ENTRY_CHARGE` and `ERROR_CHARGE`;
+  - checked equality;
+  - the error-code rule;
+  - the option/result boxing rule above.
+- `ListBuilder` is the one list packing. The literal codec and runtime builders both use it, so every producer stores scalar and string elements natively.
+
+Runtime error projection accounting (2026-11-09): an execution output containing
+`Value::Err` has the same checked `ERROR_CHARGE + code.len` nominal cost as that
+value elsewhere. Implicit fault outputs and Match-result error arms reserve it
+against activation state and aggregate retention before mutation. A Match-result
+arm switch stages both value/error projection replacements together; retired
+function scopes refund error projections with their other owned outputs. Codes
+and producer IDs remain unchanged; no saved representation changes.
+- `Value`, `ListRepr`, `ValueShape`, `ValueCheckError` and `ListPushError` are `#[non_exhaustive]`, because they will grow with records, enums, handles and OPEN-15. Language-closed enums stay exhaustive: node kind, port kind, output source and zone kind.
+- Package handles still have no executable shape. The compiler refuses them before binding.
+- A package record has a shape only through schemas (2026-11-06): `ValueShape::Record(Arc<RecordShape>)` holds the canonical nominal type plus each field's ID, shape and optional flag in schema order. `RecordShape::index` maps a field ID to its compiled index, and `field` returns the shape and optional flag at an index. Records and enums share one resolution with one memo, cycle guard and height rule, so recursion through either kind has no shape. A value checks when `RecordRepr::ty` equals the shape's type, `fields` has exactly the schema's length, every required slot is present and every present field checks. The check charges `VALUE_CHARGE`, the type text's bytes, and for each slot its field's charge or, when absent, `VALUE_CHARGE`. The compiler's literal pre-charge applies the same rule. `Schemas::derives_key` also marks a record a map key when every field is one. `MapCheck` does not remember maps with nominal key or value shapes.
+- Derived equality (2026-11-06): `Schemas::derives_eq` (default false; `TypeRegistry` answers from structural-derive evidence for `eq`) sets `RecordShape::derives_eq` / `EnumShape::derives_eq` when every member also has host equality. `ValueShape::host_eq` is native Core equality extended with maps keyed by `map_key` shapes and those nominal shapes; `native_eq` is unchanged and stays Core-only. `ValueShape::structural_eq` is false exactly when a map occurs at any depth, nominal members included; resolution caches it on each nominal shape. `equal_values` now accepts every `host_eq` shape: tags then payloads, field presence then fields, maps by key. Runtime Compare-and-set compiles for `host_eq` shapes and falls back from structural identity to `equal_values` only when `structural_eq` is false. The bundled `equal`/`not-equal` kernels call the same `host_eq` and `equal_values` instead of a private copy. The trait method is additive; saved JSON, diagnostics and resolver traits are unchanged.
+- A package enum has a shape only through schemas: `ValueShape::of_in` / `resolve_in` take a `Schemas` implementation (the snapshot's `TypeRegistry`) and yield `ValueShape::Enum(Arc<EnumShape>)`, which holds the canonical nominal type plus variant IDs and payload shapes in schema (tag) order. Schema-free `of` / `resolve` still return None for nominal types. Each enum resolves once per call and keeps its height, so a reused enum still respects `MAX_NESTING`; a recursive enum, a parameterized nominal type or a handle/stream payload has no shape. `EnumShape` fields are private, so a shape cannot bypass these checks. A value checks against it when its tag indexes the schema and its payload presence and shape match that variant. Enum shapes are not native `eq`/`hash`. `Schemas::derives_key` (default false; `TypeRegistry` answers from structural-derive evidence for both `eq` and `hash`) sets `EnumShape::derives_key` when every payload is itself a key, and `ValueShape::map_key` (native Core hash, or such an enum) replaces `native_hash` as the map-key rule for shape resolution and value checks. `native_eq` is unchanged, so an enum-keyed map is not native `eq`. The compiler resolves every port type, literal, variable declaration and event payload through the plan's snapshot (2026-11-04). The trait method is additive; saved JSON, diagnostics and resolver traits are unchanged.
 
 ## 8. Registry snapshot
 
@@ -515,18 +1296,42 @@ pub struct RegistrySnapshot {
     pub interner: TypeInterner,                                       // TypeExpr ↔ TypeKey, frozen
     pub definitions: HashMap<DefinitionRef, Arc<NodeDefinition>>,
     pub types: HashMap<NamedType, Arc<TypeDefinition>>,
-    pub constraint_impls: HashMap<(TypeKey, Constraint), ImplRef>,    // coherence-checked at publication
+    pub constraint_impls: HashMap<(TypeKey, ConstraintId), ImplRef>,  // core or versioned package constraint
     pub converters: HashMap<(TypeKey, TypeKey), SmallVec<[ConverterRef; 1]>>,
     pub providers: HashMap<SlotId, Vec<ProviderDescriptor>>,
     pub new_binding_defaults: HashMap<SlotId, ProviderId>,           // never applied to existing locks
 }
 ```
 
+Implementation note (`orange_model::catalog`; subset, Rust spelling only): `RegistryBuilder` collects the type registry, converters, host origin, node definitions and providers; `build` freezes them into an immutable `RegistrySnapshot` with a process-unique `generation` that changes only when a snapshot is built. Lookups are by definition and config version, provider key (`ProviderDescriptor` with its implemented definitions and specializations) and exact provider support. `build` rejects duplicate definitions and providers, package definitions in the `core` namespace or replacing an intrinsic, duplicate port IDs, implicit exec port IDs outside intrinsics, a data or event port without a type or an exec port with one, declared data outputs without a source (`RegistryError::MissingDataOutputSource` identifies the definition and port), event inputs (`RegistryError::EventInputPort` identifies the definition and port), package lazy ports (`RegistryError::LazyPackagePort`; explicit false is non-lazy), incompatible suspension metadata (`RegistryError::SuspendsMissing` or `SuspendsInvalid` identifies the definition and kind/value), exec ports on `pure` definitions (`RegistryError::PureExecutionPort` identifies the definition and port), a zero definition or config version (`InvalidVersion`), a type parameter name declared twice (`DuplicateTypeParam`), a constraint that is neither a core constraint name nor a `namespace/name@major` package constraint ID (`InvalidConstraint`; the text is not retained, and package constraints need not be registered), undeclared `$T` type parameters in a port type, and providers naming an unknown definition. These rules run in the shared publication check, so builder-registered definitions and decoded definition files are both covered. New definitions cannot publish missing async/iterator suspension metadata or incompatible values; when such metadata appears in a passive saved signature, validation still reports the existing `E-SUSPENDS-MISSING`/`E-SUSPENDS-INVALID` diagnostic and leaves the bytes repairable. Default literals are confined to data inputs (`RegistryError::DefaultPortPosition`); true optional flags require a data input (`OptionalPortPosition`) and a well-formed exact Option wrapper with one argument (`OptionalType`). False optional flags are inert. These rules run after established descriptor checks; malformed type syntax and type-name resolution stay with inference diagnostics. For fully registered concrete declared types, publication also checks exact default type equality (`DefaultType`) and canonical decoding against the current type registry (`DefaultLiteral`). The errors identify definition/port without retaining payload text. Generic or unresolved declared types defer this check; no package code runs. Availability publication additionally confines available_on to execution-sourced data outputs (AvailableOnPosition); lists must be nonempty (AvailableOnEmpty), distinct (AvailableOnDuplicate) and reference actual declared or implicit exec outcomes (AvailableOnOutcome). Omission resolves to then and fails if custom outcomes or kind rules remove it. This is metadata consistency, not dominance or runtime availability analysis. Passive saved signatures remain deserializable for repair. Type validity stays with inference diagnostics. The built-in control nodes (branch, sequence, fork, count, while, yield, wait, break, continue) are registered as data through a host-only path that packages cannot use; Get, Set and Update are registered with ports derived from the referenced variable declaration (Update supports all nine operation tokens with operation-specific type eligibility), and a definition lists its identity-reference fields (`references`: an RFC 6901 pointer into the config and a variable, event or function kind). `build` rejects an invalid or duplicate pointer. Within an array, a token selects an element only as an RFC 6901 §4 index (`0`, or digits without a leading zero); `+0`, `01` and `-` select nothing, while an object key spelled that way stays an ordinary key. `references` is the one parser for those fields, and `contract` computes contextual contracts on lookup; nothing is cached beside the snapshot. `catalog::language` is the one table of language rules: every intrinsic ID with the kind and suspension function analysis counts it as, the declaration it references and whether it ends its region (Break, Continue), plus the implicit ports each kind gets. Intrinsics it lists but this core version does not register report `E-INTRINSIC-UNSUPPORTED`; their reference fields still come from the table. Plans record the document state and the snapshot generation. Not implemented: executable package constraint-provider integration, slot-keyed providers and the frozen interner.
+
+Generations (2026-11-03; implementation subset): `RegistryBuilder::from_snapshot` starts the next generation from everything a snapshot publishes, including its intrinsic definitions and new-binding defaults; `build` revalidates the whole set and publishes a separate `Arc<RegistrySnapshot>` whose process-unique `generation` is larger than the source's (not necessarily source + 1). The source snapshot is never mutated, so readers holding it keep a complete, consistent view. `provider` adds, `remove_provider` drops and `replace_provider` swaps a provider by exact `ProviderKey`; publication rejects a key already present (`DuplicateProvider`), a removed or replaced key that is absent (`UnknownProvider`) and one package version published with two content digests (`PackageDigestConflict`). `new_binding_default(definition, provider)` is keyed by `DefinitionRef` (standing in for the `node:` slot) and must name a provider implementing the definition's registered config version (`DefaultNotProvided`). Defaults are read only when a new binding is created; replacement retargets defaults that selected the old key and removal clears them. Document locks and bindings are never rewritten: a node locked to a removed provider resolves to the existing `E-PROVIDER-UNAVAILABLE`, never to the default. `orange-packages` (2026-11-03) drives these generations as package transactions: definitions must lie in the package's own namespace, a shipped definition already registered under its exact version must be identical, removal leaves a tombstone record, and rollback restores the previous snapshot `Arc` and default selections ([04](04-expansion-plugins.md) "Hot update/removal"). The store never rebinds a document; explicit rebinds use the planner below. A package's specialization lists are published on its exact `ProviderDescriptor`, so `RegistrySnapshot::specializations` and inference's `E-NO-SPECIALIZATION` check read them like a bundled provider's.
+
+New bindings (2026-11-03): `orange_model::binding::new_node_edit(document, registry, NewNode)` reads the registry's new-binding default for the node's definition and returns that `ProviderKey` with the ordinary commands that place the node: `PutPackageLock` for its exact version and digest, `PutSignature` with the contract projected under the node's `type_pins`, then `AddNode` with the binding, registered config version and signature key. It never edits; callers apply the commands or commit them with `inference::apply_inferred`. No default is `NewNodeError::NoDefault` (there is no fallback to another provider), an unregistered definition is `UnknownDefinition`, a pin for a parameter the contract does not declare is `UndeclaredPin`, a pin that cannot be substituted into a port type is `Substitution` (the port and a `SubstitutionFailure` kind; the unsubstituted type is never kept), and neither error retains pin keys or type text, and a document that locks the version to another digest fails on apply with `PackageLockConflict`. The module sits below `validation`, so `edit` stays free of it.
+
+Rebinds (2026-11-03; implementation subset): `orange_model::rebind::plan_rebind` (a layer above `validation`, so `edit` stays free of validation) takes a document, the current snapshot and a `RebindRequest` naming the bindings to move (`RebindSelection::Provider` for nodes whose binding and lock name exactly that `ProviderKey`, or `RebindSelection::Definition` for every bound node of that definition version) and the target `ProviderKey`. It never edits the document. A target absent from the snapshot is `RebindError::UnknownProvider`; an empty selection (nodes already on the target are skipped) is `NothingToRebind`; bindings and placeholders stay as they are. The edit is the existing `PutPackageLock` for the target's package version and digest followed by one `Rebind` of the affected nodes, so a different digest already locked for that version is a `TxError`. The edit is applied to a clone and both documents are validated: an error diagnostic whose code and subject the original did not report yields `RebindOutcome::Rejected { affected, errors }`, while errors the original already had (for example `E-PROVIDER-UNAVAILABLE` after a removal) do not block a repairing rebind. Otherwise `RebindOutcome::Ready(RebindPlan)` lists the affected nodes (root body first, document order) with its commands, and `apply_rebind` commits them as one transaction after the usual document-state and registry-generation freshness check. Earlier lock entries are kept; pruning unused locks, config/resource migration and type-level previews are not implemented.
+
+Package recovery defaults (P01, 2026-11-05; `orange-packages`): `JournalEntry::Committed` and `Recovery` carry `defaults: BTreeMap<DefinitionRef, Option<ProviderKey>>`. Map membership identifies a controlled definition: `Some(provider)` selects that exact provider and `None` explicitly clears its new-binding default. An absent map entry leaves an unrelated base-registry choice unchanged. Every committed checkpoint retains controlled definitions even after their provider is removed or revoked; rollback and compaction preserve the respective selection or absence. `restore` validates and applies this state only after all active packages are staged, then appends one complete checkpoint before publishing. A selected provider that is not registered fails with `RecoveryDefaultUnavailable { definition, provider }`; installation order never selects a fallback. Clearing a default does not remove a definition or provider and never changes saved graph locks or retained snapshots. The checkpoint has one current pre-beta representation; previous unreleased default-less checkpoint readers and migration branches are not supported merely for historical compatibility. `JournalEntry` remains `#[non_exhaustive]`; its atomic append/compaction contract remains unchanged.
+
+Registered language intrinsics (V5) are `Ports::Declared` definitions, except `core/for-each` (`Ports::ForEach`, ports chosen by `config.mode`); 11 §8.4 lists the contracts, including the zone pairs. Generic ones (`switch` with `$K: eq`, `register`, `try`, `match-result`, `select`, `coalesce`) resolve `type_args` like any generic definition.
+
 Hash lookups here are compile-time only. Publication validates namespace ownership, constraint coherence and converter ownership before the snapshot is visible ([04](04-expansion-plugins.md)).
+
+The current port-shape publication check also rejects a declared finite variadic range when `min > max` with `RegistryError::InvalidVariadicBounds`, identifying its definition, port and limits. Equal bounds, `0..0`, and an unbounded `max` remain valid. Publication keeps passive persisted port descriptors unchanged. Input-value validation also checks resolved variadic port instance counts from persisted order (absent state is zero) against inclusive bounds in both directions, reporting E-VARIADIC-COUNT on node/base port. It never derives counts from edges, literals or the next counter, and never rewrites authoring state.
+
+Implementation (00c.1): `orange_model::types::TypeRegistryBuilder` registers type metadata and interns concrete `TypeTerm`s; `build` validates schema references/member IDs and publishes an immutable `TypeRegistry`. The registry supplies the existing literal `Schemas` interface directly, preserving one record/enum layout model. Package registrations cannot replace core types or claim another package namespace. Handle constructors require registered handle-kind arguments. Recursive nominal schema references do not expand during registration; literal decoding/encoding retains its depth budget.
+
+The public host-side `TypeKey` wraps a dense `u32` slot with an opaque registry owner token; lookup rejects a key from another registry even when its numeric slot exists there. Registries are not cloned into independently mutable identity spaces. This checked host wrapper is not a wire representation or a change to future dense execution-plan indexes; keys are never persisted. Resolution rejects unresolved parameters, unknown names/majors, wrong arity and nesting beyond the existing parser budget. Read-only validation and owner/kind queries also accept uninterned terms, so inference need not mutate a published snapshot.
+
+Constraint proofs (00c.2a) use the same depth budget for nested terms and nominal-schema traversal. Publication rejects unavailable/cyclic/over-budget declared structural derives and invalid map key constraints before exposing the snapshot. `supports_term` returns a capability witness rather than invoking a kernel; the current numeric-operation proof set is add/subtract/multiply/divide, with other math operations still requiring their own implemented support. This is an implementation surface, not an exclusion of later math node families or performance evidence.
+
+Explicit proof registrations (00c.2b) carry `ConstraintImplementationRef`: the existing `ProviderBinding`, exact content digest and stable implementation ID. `ConstraintId` distinguishes core constraints from canonical versioned package constraints. A package may implement a core constraint only for a type it owns, and its own constraint for foreign types. Duplicate implementation slots and derive/implementation conflicts fail before publication. Numeric operations have separate slots, so a `num` declaration does not manufacture an add/multiply implementation. The future host authenticates the supplied authority and resolves code; this model validates coherence and preserves exact references only.
 
 ## 9. Execution plan IR
 
-Illustrative IR. The exact encoding is fixed in WU-00e, while the separation into pull programs, control blocks and dense slots is a contract.
+Illustrative full IR. The exact encoding is fixed in WU-00e, while the separation into pull programs, control blocks and dense slots is a contract. Lowering requires fresh successful semantic evidence through `is_ready_for_lowering`; the compiler additionally owns constant evaluation, preserved faults and executable-vocabulary proof before publishing its checked plan. The model's general `is_ready_for_compilation` remains false and is not an alternate approval path (see §3.2). The full IR below is not an implementation inventory.
+
+Concrete control subset (2026-10-24): `ControlPlan` privately owns a frozen `DataPlan`, dense `ControlIx` adjacency, source node IDs, ordered Sequence targets, Count/While metadata, declaration-owned variable layouts and a pre-resolved host-input source table. Consumption roots use original document ports without adding saved exports. Runtime input slots project Get, loop indices and failed-output Error values; control admission checks their region/outcome availability first. Unfrozen `PlanType` adds Duration/Error; no saved JSON/schema version changes. Unsupported executable families fail closed before resolver callbacks.
 
 ```rust
 pub struct ExecutionPlan {
@@ -572,6 +1377,7 @@ pub enum Instr {
     IterOpen(LoopIx), IterNext(LoopIx),
     StoreVar { var: VarIx, src: SlotIx }, StoreRegister { reg: RegIx, src: SlotIx },
     Emit { event: EventIx, payload: SlotIx },
+    AwaitEvent { event: EventIx, timeout: Option<SlotIx>, timed_out: Option<BlockIx> },
     Yield, Call { function: FunctionIx, args: SlotSpan, results: SlotSpan }, Return { results: SlotSpan },
     Fail { error: SlotIx }, EndStrand,
 }
@@ -582,7 +1388,34 @@ pub enum Instr {
 - Memo bits are grouped by stability class. The `const` class is folded into `consts`, `activation` bits reset per activation, and `epoch` bits reset per `Pull` (O(words)).
 - Each slot has one writer site. Its static type is in `FrameLayout`, so kernels need no tag checks in release builds (debug builds assert).
 
+Native prerequisite (N1a): `orange-bundled::math_definitions` supplies the ordinary replaceable definition contracts, while `MathPackage::register` adds one exact provider with its scalar specialization table. `MathPackage::resolve` checks that provider/version/digest exists in the supplied snapshot, that the snapshot admits the type arguments, and that the config is supported. Its private `ResolvedKernel` stores the Arc snapshot, ProviderKey, operation, scalar kind and normalized policy enums. `evaluate` accepts declared-order scalar Values and returns one Value or a typed KernelError; it neither validates a graph nor constructs a plan. Successful scalar evaluation contains no dynamic metadata lookups or buffer allocations by construction; no latency/allocation benchmark is implied. Retaining an old binding keeps old metadata alive and never consults a newly published provider default. The host must authenticate build identity and supply fresh resolved graph inputs. The final dense compiler/kernel ABI, source maps and full runtime error envelope remain unimplemented.
+
 ## 10. Runtime structures
+
+Timer catch-up cursor (review correction, 2026-11-09): each run timer entry may
+retain one fixed-size pending window (next/last ordinal, latest scheduled time and
+interval). The timer directory keeps the original ordering key until that window
+finishes. One actor turn admits one tick, then requeues the same owner or arms its
+next schedule normally. The cursor adds no per-tick queue and is cleared on stop
+or fault. This is private runtime state; saved graph/provider formats are unchanged.
+
+Structured-concurrency implementation separates activation-owned data evaluation, local cells and execution outputs from strand-owned control cursors, pending input snapshots and waits. The actor lends one shared activation state exclusively while executing a strand; it introduces no shared-state lock or new provider interface. A Fork must not initialize another activation or replenish its entropy/fuel.
+
+Live region instances now retain suspended structured continuations explicitly. Sequence steps and loop bodies retire before their caller resumes; their frames preserve the logical strand identity. `RunLimits::max_strands` (default 4096, including suspended continuation frames) and `max_regions` (8192) bound retained ownership, including the separately reserved On Stop entries. These additive unfrozen Rust fields require updates to exhaustive host struct literals; saved graph JSON is unchanged.
+
+Checked `ControlOperation::Fork` retains dense branch targets in persisted variadic order, a completed target and the closed `ForkJoin` enum (All/Any/Race/Detach). An explicit supported join configuration is required; missing or unknown values fail compiler admission before executable resolution. The unfrozen public operation enum gains a variant; downstream exhaustive matches must handle it. This extends existing host language execution, not the package extension authority.
+
+`Run::ownership` returns bounded metadata counts for retained activations, strand/continuation frames, regions and timers, including reserved On Stop entries. Terminal cancellation releases every supported owner. Cleanup has a non-refilling activation-wide work reserve. Each cancelled operation owns its cleanup deadline, clamped to the remaining run drain deadline; a later cancellation does not inherit an expired earlier deadline. Cleanup temporarily borrows data evaluation with separate fuel, then restores ordinary activation fuel/cancellation settings; it neither restarts entropy identities nor grants the surviving normal strand additional fuel. Pending cleanup pulls retain this scope across host pumps.
+
+Startup entries have dense activation sequences, so their shared activation frames use indexed optional boxes. The event profile below adds only live dynamic frames in a separate identity directory. This retains one mutable evaluator per activation and moves only an owning pointer while executing. Region identities are non-reused scalar IDs; a small identity-to-slot directory addresses reusable physical region slots. Retirement drops each region's contents immediately; vacant capacity follows peak live ownership rather than the total identities minted by long-running loops, and disposal releases it. Root enumeration sorts identities explicitly; child order remains ordered. Multi-member ownership sets keep ascending identities in one vector with one removal bit per slot: newly minted children append, removal is a binary search, and the vector compacts once fewer than half its slots are live, so it holds at most twice its live members. Run-internal identity directories (region slots, ready links, timers) use a fixed multiplicative hasher, because their keys are sequential run-minted integers, never external input. A region holds its waiting continuation in a pooled box, so regions that never wait (Fork branches, cleanup, detached joins) do not carry an inline strand. Fork reserves admitted region batches and reuses an empty temporary child buffer, drained before children execute. Race cancels the losing ownership subtree in one pass instead of rescanning it for each sibling. Admission bounds fan-out/depth and retained owners; bookkeeping and trusted callbacks are not wall-clock preemptible and are not one operation per table entry.
+
+Host input admission may reuse a map/list type check and nominal charge only when that same typed register still retains the identical immutable `Arc` allocation. This is per-register evidence within one pinned plan, not structural equality, an address-only global cache or evidence transferred across slots. The retained strong reference prevents address recycling and forces copy-on-write mutation to use different storage. New containers, including equal copies, and registers holding faults run the normal checked path. Epoch input stamps, cancellation/interruption, current per-activation limits and aggregate publication reservations still apply. No extra value is retained for the optimization. Measurements and regression evidence are recorded in [10](10-development.md#performance); this changes private storage and repeated work, not graph semantics or public interfaces.
+
+Concrete supported actor (2026-10-24): `Run` owns shared activations and independently scheduled strands, iterative Sequence/loop cursors, run cells, activation-local cells and bounded resumable data frames. Virtual timers own suspended strands and a non-reused insertion sequence under a process-unique run ID. Host methods take exclusive `&mut Run`, so stop/time commands are serialized at pump boundaries without a redundant command queue. R2 adds the general bounded event/completion inbox later. Operation slices rotate unfinished activations to the ready tail; state inputs are captured at epoch start and remain immutable across interleaving. State-store, data-frame, activation, timer, depth, trace and cleanup limits are explicit; they are not a measured RSS or callback-preemption guarantee. Segment inspection returns unique written variable IDs, not R2b notifications. The full structures below remain illustrative for general resources/services and remaining entry families not yet implemented.
+
+Resource table (C08a, 2026-11-06): `Run` holds a generational slab of host resources. A `ResourceHandle` is the run ID plus a `HandleId {index, generation, kind}` whose `kind` indexes the run's interned handle-kind expressions. Generations start at 1 and advance when a slot empties; a slot at `u32::MAX` is retired instead of reused. Lookup is one index plus generation and kind compare. Live entries are bounded by `RunLimits::max_resources`; disposal releases the table storage.
+
+Change tracking (C06, 2026-11-06): `Run` keeps, per plan variable, a watched flag, the value captured before the segment's first write and a first-write list, plus one source sequence per `ControlPlan::changes` entry. Ending a segment visits only that list. A change delivery's payload is a `list<T>` of `[value, previous]` on its private channel after events, manual entries and timers, so admission charges both values; dispatch projects it onto `HostSource::Change(owner, Value | Previous)`.
 
 ```rust
 pub struct Run {
@@ -601,7 +1434,7 @@ pub struct Run {
     pub clock: ClockRef, pub seed: u64, pub max_cause_depth: u16,
 }
 pub struct Activation {
-    pub id: ActivationId, pub entry: EntryIx, pub cause_depth: u16,
+    pub id: ActivationId, pub entry: EntryIx,
     pub frame: FrameRef, pub strands: SmallVec<[StrandIx; 4]>,
     pub regions: SmallVec<[RegionInstance; 4]>,           // live strand counts per instance
     pub status: ActivationStatus, pub cancel: CancelNode, pub entropy_counter: u64,
@@ -614,6 +1447,7 @@ pub struct Frame {
 pub struct Strand {
     pub pc: (BlockIx, u32), pub region_stack: SmallVec<[RegionCursor; 4]>,
     pub loop_stack: SmallVec<[LoopCursor; 2]>, pub status: StrandStatus,
+    pub cause_depth: u16,
     pub cleanup: Option<CleanupBudget>,
 }
 pub enum RunMessage {
@@ -622,10 +1456,14 @@ pub enum RunMessage {
     Timer { cont: ContinuationId },
     Command(RunCommand),                                             // stop, trigger, inspect, breakpoint
 }
+pub enum EventOrigin {
+    Graph { node: NodeId, scope: usize },
+    Host { source: HostSourceId },
+}
 pub struct EventEnvelope {
-    pub ingestion_seq: u64, pub source: SourceId, pub source_seq: u64,
-    pub cause: Option<ActivationId>, pub cause_depth: u16,
-    pub monotonic_ns: u64, pub wall_ns: i64,
+    pub ingestion_seq: u64, pub event: EventDeclId, pub origin: EventOrigin,
+    pub source_seq: u64, pub cause: Option<ActivationId>, pub cause_depth: u16,
+    pub monotonic_ns: u64, pub wall_ns: Option<i64>,
     pub payload: Value, pub payload_bytes: u32,
 }
 ```
@@ -645,6 +1483,14 @@ pub trait IteratorKernel {
 
 `ActionCx` exposes only the node's input and output slots, the node's own state cells, checked host-service handles for granted capabilities, the run clock and the node's entropy stream. A kernel cannot reach other slots, the scheduler or the document. This replaces the earlier `Complete | Suspend | Failed` outcome in [02](02-architecture.md), which could not select a Branch arm or an outcome group.
 
+Audit remediation (2026-10-27; `core/audit-remediation`):
+- **Data registers.** Dynamic data slots are dense `Value` registers with a one-byte state and a retained charge: 25 bytes per slot, down from 80 (`Option<FoldedValue>` plus charge) on x86_64-pc-windows-msvc. Full `ConstantFault` provenance lives in a register-keyed side store. An entry exists exactly while its register holds a fault, so the store never outgrows the slot count and needs no per-epoch sweep. Reads return `Result<&Value, &ConstantFault>`, the shape of `EvaluatedExport::outcome`. Charges and retained-byte accounting are unchanged.
+- **Single check.** A host input is checked once, then published through a private checked path. Zone results take the same path.
+- **Storage admission.** `data::activation_storage` sizes one activation from its own layout: registers, memo, reserved work, scratch, zone cells and entropy counters. Run startup adds its local cells, output cells and frame headers, then admits the total across all start and stop frames before building any.
+- **Strand transfers.** The mutually exclusive pending transfers (call, return, fault return, fork, unwind, body entry, wait) are one `Transfer` value. `yielded`, `reenter` and the cleanup budget stay independent, because they coexist with transfers. Idle pull scratch is lent to body and call children and returned on retire, return or unwind. Argument buffers return to the caller, an iteration frame no strand still captures is reused in place, and cancellation reuses run-owned traversal buffers. Logical identities (entropy, traces, timer order) never come from reused storage.
+- **Map checks.** Maps of at most 16 entries are checked and compared pairwise without allocating. Larger maps use one presized table. Duplicate rejection, order-independent equality and insertion-order iteration are unchanged.
+- **Dependency unions.** Host-input dependency unions are a k-way merge of strictly increasing slices with plan-wide scratch, costing O(Σ|sᵢ| log k). Identical sets still share one `Arc`, and checkpoints and item charges match the previous set semantics. Each node still stores its full transitive set, so a growing chain stays quadratic overall.
+
 ## 11. Invariants and complexity budgets
 
 | ID | Invariant |
@@ -652,20 +1498,158 @@ pub trait IteratorKernel {
 | I-1 | Each data input has ≤ 1 edge; each exec and event output ≤ 1; each stream output ≤ 1. |
 | I-2 | D is acyclic; every control cycle contains `suspends: always`; the call graph is acyclic. |
 | I-3 | Every exec node is in exactly one region; every consumed `execution` value satisfies availability ([11 §7.2](11-graph-language.md)). |
-| I-4 | Every non-intrinsic node has a signature snapshot, a provider binding and a lock entry. Edges to unknown ports are retained as orphan edges. |
+| I-4 | Every non-intrinsic node has a signature snapshot, a provider binding and a lock entry, except the exact host-owned `core/convert` special form: it always has a signature; absent provider means exactly its registered Core converter implementation, and a package provider requires its exact lock. The `None` specialization bucket of `RegistrySnapshot::specializations` is inference metadata for core providers, not evidence that an ordinary node resolves. Edges to unknown ports are retained as orphan edges, and unavailable package/provider metadata leaves the node unresolved while its snapshot remains available for edge checks. |
 | I-5 | `type_args` fully resolve every type parameter of a compiled node. |
 | I-6 | Plans and snapshots are immutable. Run state is mutated only by its actor. Workspace state only by the host actor. |
-| I-7 | No Bevy `Entity`, Rust `TypeId`, pointer, live handle or secret is ever persisted. |
+| I-7 | No engine or UI entity ID, Rust `TypeId`, pointer, live handle or secret is ever persisted. |
 | I-8 | The warm pure path for scalar types performs no hashing and no heap allocation. |
 
 | Operation | Complexity | Proposed budget |
 |---|---|---|
-| Connect/disconnect validation (kind, fan-in, types, cycle, region, availability) | Affected type component + topological interval + affected region roots | NFR-15: ≤ 2 ms p95 on W4 |
-| Layout edit | O(1) document + editor spatial index | Zero compile or preview work (NFR-04) |
-| Semantic edit compile | Nodes in the affected roots and their dependent functions | NFR-04: ≤ 50 ms p95 |
-| Epoch reset | O(memo words of one program) | Included in NFR-01 |
-| Scalar pure step | One indexed kernel call | NFR-01, NFR-05 |
-| Event enqueue / dispatch | O(1) amortized, bounded queue | NFR-02 |
-| Handle or continuation lookup | O(1) index + generation compare | NFR-02 |
+| Connect/disconnect validation (kind, fan-in, types, cycle, region, availability) | Affected type component + topological interval + affected region roots ([16](16-incremental-validation.md), proposed) | ≤ 2 ms p95 on W4 |
+| Layout edit | O(1) document + editor spatial index | Zero compile or preview work  |
+| Semantic edit compile | Nodes in the affected roots and their dependent functions | ≤ 50 ms p95 |
+| Epoch reset | O(memo words of one program) | Included in |
+| Scalar pure step | One indexed kernel call | |
+| Event enqueue / dispatch | O(1) amortized, bounded queue | |
+| Handle or continuation lookup | O(1) index + generation compare | |
 
-Requirements: FR-05, FR-08, FR-09, FR-44–50. Tests: G-suite in [11 §18](11-graph-language.md), V01/V02/V05 in [06](06-quality-and-validation.md). ADR-06, ADR-13–16 in [08](08-decisions.md).
+Tests: G-suite in [11 §18](11-graph-language.md), V01/V02/V05 in [10](10-development.md). ADR-06, ADR-13–17 in [08](08-decisions.md).
+
+### E1a concrete subset
+
+orange-compiler::PurePlan is private-construction, immutable and not serializable. It retains source graph/content state/revision, Arc registry snapshot, dense u32 NodeIx/SlotIx, slot types, node/port source maps, incident input EdgeIds, ordered bound steps, export slots and folded values or ConstantFault records. It has no Default or public constructor. All arrays are read-only through public accessors. The source revision is the compilation invocation's revision; freshness uses opaque content-state and registry-generation identities. Undo can restore a prior content identity and make its matching analysis reusable; evidence for the edited state is then stale. Saved type_args are never executable binding evidence.
+
+The provisional PureKernel trait takes Value input/output slices and returns a bounded static KernelFault; PureKernelResolver returns ordered ports and an Arc executable. Trusted implementations promise deterministic, bounded, effect-free behavior. This is the implemented folding subset of the target kernel/ExecutionPlan sketches above, not their final ABI. Slot/operation/admission quotas and cancellation are enforced; constant-byte accounting is conservative retained-value accounting, not a hard allocator or CPU limit. No plan hash, function/control regions, memo epochs or scheduled runtime are supplied yet. Lowering uses O((nodes + edges + ports) log(nodes + edges + ports)) ordered-map/set work and linear retained storage, excluding validation, callback work and value payload size; no throughput/NFR claim is inferred.
+
+E2b public result subset: PureEvaluation has private fields and no Default/public constructor; PurePlan::evaluate is its checked entry. It borrows plan storage and an optional AtomicBool cancellation signal. EvaluatedExport contains borrowed id/source/value-or-ConstantFault references plus PlanType. Dense SlotIx access stays internal to the checked plan, and export iteration preserves persisted order. EvaluationOptions limits the number of exposed export records, not repeated reads, downstream copies or process memory. EvaluationError has StaleDocument/StaleRegistry/ResourceLimit/Cancelled variants with safe static fallbacks. A running immutable result view keeps the old registry snapshot; new starts use the host's current snapshot. There is no persistence/cache encoding change and no heap frame or callback execution on this result-read path (source inspection, not allocator qualification).
+
+E1/E2d concrete lazy subset: PureStep.inputs and its KernelBinding.inputs now contain the actual demanded port projection for compiler-owned core/select/and/or steps; ordinary bindings retain their full fresh signature ABI. Lazy projections are specialized to a single immutable deciding value (or fault), not reusable dynamic branch instructions. Slot sources still name the actual exported node/port and preserve the original failing producer separately. Dead alternatives have no executable binding or materialized slots; another export can demand them later in the same compile, sharing memoized producers. Public Rust fields/method signatures and graph JSON remain unchanged; generic scalar/JSON type support is unchanged. Admission still bounds the entire potential cone and can reject a limit even when actual selected work would be smaller. There is no executable guest/lazy extension API or serialized-plan ABI change.
+
+E1/E2e concrete option subset: PlanType includes Option(Box<PlanType>) and is Clone rather than Copy. Parsing accepts only nested core/option@1 over supported scalar/JSON leaves, up to MAX_NESTING (64); there is no generic collection/Result acceptance. Slot value checks enforce the section 7 None/unboxed/boxed representation. Literal admission walks only the supported option envelope and scalar payload by reference before decoding, without serializing the JSON payload. Retained-value charging includes each nested Some child and JSON text, even when Arc storage is shared. These remain conservative charges, not process-allocation guarantees; type/source metadata and trusted callback costs retain their separate limits.
+
+EvaluatedExport.ty is now &PlanType, borrowed from the private checked type array; reading an export does not clone a recursive type tree. Coalesce bindings record only demanded fresh ports, unwrap exactly one present option layer, and retain the existing immutable constant-specialization limitation. The JSON document schema and Value/literal representation are unchanged.
+
+E2g1 concrete runtime subset: orange-runtime currently contains only entropy primitives. EntropyLayout is immutable Arc-owned UUID/order metadata plus a binding-time lookup map. Private EntropySlot fields retain that layout and a dense index; ActivationEntropy accepts only matching-layout slots, owns per-node next-invocation/memo state, and changes epochs by checked generation stamps. Bound sampling uses indexed state and stack hashing, with no UUID/name map lookup or source-document access. This is source inspection, not allocator/NFR qualification. No scheduler, Run/Activation/Strand, variables, host services or graph execution is implemented by the presence of the crate. Public errors have safe static fallbacks and core/entropy-* message keys.
+
+N1/E2g2 concrete metadata subset: NodeDefinition adds volatility: Option<Volatility> and determinism: Determinism. Both are explicit public Rust construction fields; no Default infers execution authority. RegistryBuilder validates classification after the established descriptor/default/availability checks, and immutable snapshots retain the full definition. Stored port-only signatures and NodeContract projections remain unchanged. Core variable-read registration explicitly chooses StateRead through VariableAccess::Read; bundled scalar definitions declare Deterministic/None. Package entropy is Seeded and may have inputs; host state/clock templates must prove no data input. These declarations are not provider authentication/conformance evidence.
+
+N1/E2g3 concrete binding subset: orange-compiler exports EntropySource, EntropyKernel, EntropyBinding and EntropyKernelResolver separately from pure kernels. Executable binding ports must match fresh ordered semantic inputs/outputs. ResolvedEntropyKernel in orange-bundled retains a registry Arc and exact ProviderKey; binding checks versions, empty config/specialization, class and presentation-stripped port semantics. The raw operation forwards one u64 from the supplied host source only after validating ABI shape. No source-document/type/provider lookup occurs in the native callback. This does not construct a checked dynamic graph plan or provide runtime memoization by itself.
+
+E1/E2g4b concrete DataPlan subset: all plan/node construction fields are crate-private and no Default/deserializer exists. Public projections expose ordered DataNode/DataInput/DataOperation, Const/Epoch stability, dense slot/source arrays, initialized constant outcomes versus uninitialized dynamic slots, exports and checked DataResources. Source inputs identify original port/edge and dense producer indices; lazy operands are numeric positions, including specialized constant choices. Shared admission bounds the whole potential cone before callbacks. The private constant folder borrows its already-built metadata maps, retains one memo across roots and supplies original constant faults/diagnostics; the data lowerer never substitutes an entropy callback into PureKernel.
+
+DataPlan::value_charge first validates a value against this plan's bounded resolved slot type, then returns the same nominal retained-value charge used by compilation; fault_charge validates the bounded safe fault envelope. These are runtime publication helpers, not arbitrary type/plan constructors or process-memory guarantees. DataResources bounds later scratch/work storage; it is an immutable projection, not caller-controlled plan metadata. No wire/cache format or global compiler-readiness state is introduced.
+
+E2g4c concrete consumption subset: DataPlan additionally stores ordered export->producer indices and computes checked initial nominal charges. Try instructions include the static result-boxing decision. DataActivation owns frame slots, generation-stamped node memos, checked retained charges, preallocated work/input/output vectors and private layout-bound entropy slots. Old slot storage remains charged across epoch changes. All typed outputs/replacement charges validate before node values/memos commit. Invalid callbacks/global limits abort that epoch; partial output buffers are discarded and released.
+
+ActivationEntropy::invocation_key reserves one identity on actual node demand and returns the same identity for further stream words in that epoch. EntropyReplayMetadata is algorithm/seed/activation scope only. Frame export reads borrow typed values/constant faults and prevent concurrent mutation through Rust lifetimes. No Default/deserializer can construct a frame, and live Debug omits value payloads. This is not the proposed general Run/Activation/Strand or service/resource executor.
+
+E3 prerequisites: DataOperation::Input marks a host-supplied node, and DataPlan::host_inputs lists them as dense NodeIx values. DataActivation::set_input publishes one epoch-stamped value through the same typed, charged path as callbacks, so the memo stamp is the "supplied" flag. EntropyKey carries a 32-byte FrameId, and ActivationEntropy keeps a dense root counter array plus a bounded map of callee-frame arrays. DataActivation holds an owned CancelToken and a non-refilling fuel counter beside the per-epoch operation count.
+
+Control review layout correction (2026-10-24): ControlPlan stores shared sorted host-input dependency slices per consumer root and direct Index/Error output destinations per control owner. Newly allocated dependency entries have a max_graph_items admission bound; identical slices share Arc storage. Runtime frames map data-node indices to host-input indices once. Private host demand retains the iterative pull stack and requests one frozen input only when reached; public DataPoll and MissingInput behavior remain unchanged. Pending host publication persists across pump(1), so small budgets make progress without recapturing state. Run owns separately bounded, preconstructed On Stop frames and preallocated ready capacity; they execute only after the graceful transition.
+
+Indexed authoring reuse (2026-10-24): `plan_edit_indexed` and `plan_connection_indexed` accept an exclusive document borrow and a retained DocIndex. They use journaled trial edits, restore content/revision/state identity and index on return, and rebuild a stale index on entry. An observer unwind restores document content and invalidates the index so its next indexed operation rebuilds it. Existing read-only planning APIs remain available and return the same plans; the connection wrapper needs one scratch copy. Converter/provider selection, shadowed literals, imported conflicts, generated identities and plan freshness checks are unchanged. This is authoring reuse, not incremental validation or NFR acceptance.
+
+Validation projection reuse (2026-10-24): private PortResolver scopes retain immutable document/resolved-signature references and memoize successful concrete-port descriptors in scope-local Rc storage, as well as lookup failures. Body acceptance shares a scope across connections, data cycles, regions and control cycles; the settled whole-document resolution hands its cache to final availability/export/resource checks. The private handoff checks document identity, and debug builds verify retained entries against that same resolution. Standalone pass APIs create their own scope. No cache survives its input resolution, a function-acceptance round or a new analysis invocation. Scope-local sharing introduces no locks or atomic reference counts; public document, registry and analysis results remain Send + Sync. Stored package signatures remain orphan-display fallback metadata; an unresolved intrinsic still has no fallback and cached metadata never establishes execution approval. Cache size follows encountered endpoints and remains within the input graph's admission bounds. General V12 incremental validation remains separate.
+
+Runtime storage reuse (2026-10-24): private PreparedData retains one checked immutable DataPlan, initial nominal charge, entropy layout and dense entropy/host lookup arrays for a run's frames. Slots, memos, entropy counters, fuel and cancellation remain per activation; frame admission still checks its own configured limits. Run and local variable cells use separate dense ownership layouts, and only actual Index/Error execution projections allocate activation output cells. Stable plan variable/source indices map to these private layouts without changing public provider identities. Disposal releases the layout. Public DataPoll and missing-input behavior are unchanged; a private HostPoll carries explicit Input demand. PullState owns active consumer identity, frozen input references and pending publication, resetting together while retaining reusable vector capacity. Cursor resumption and action completion have separate helpers, and one retained plan borrow covers a pump. These representations do not add function/event/resource execution or an allocator/RSS guarantee.
+
+### Pure call plans (2026-10-26 UTC)
+
+`PurePlan` supports the graph-local pure-call subset in 11. Private temporary scopes specialize fresh body signatures and keep separate output/completion maps per potential call instance. Arguments and successful results alias immutable typed slots. There are no synthetic UUIDs, document rewrites, graph clone/revalidation or generic resolver calls for `core/call`. The existing pure folder handles body kernels, lazy demand, decoding, types, faults and constant-byte accounting. Exact concrete provider support is checked before binding callbacks, including potential inactive calls. Uncalled declarations are not execution roots.
+
+`PurePlan::call_sites` exposes borrowed `PureCallSite` records (original call NodeId, FunctionId and optional parent table index). `PureStep::call_instance` and `PurePlan::slot_call_instance` identify source scopes; None means root ownership. Aliases retain their source slot/scope. These are compilation-instance indexes, not persisted/runtime frame IDs. Fault producer identity remains `ConstantFault.source`; these APIs do not supply a full runtime error envelope/call stack. Potential instances skipped by lazy demand may have no executed steps.
+
+`CompileLimits` gains `max_call_depth` (default256); downstream complete struct literals must add it or use `..Default::default`. Existing graph-item/fold-operation/slot/constant-byte limits additionally bound potential call expansion. For call-containing documents, conservative estimates include every root/called-instance node, structural markers and alias slots; they may reject a graph whose demanded plan would fit. Arithmetic is checked. Signature/index metadata, callback work and process RSS are not bounded by constant-payload accounting. No new dependency, saved format or provider trait is introduced. The runtime extension below admits this bounded Pure subset through `compile_data` and the data plane of `compile_control`; other model-accepted function kinds remain unsupported.
+
+Pure-call storage correction (2026-10-26 UTC): temporary PreparedBody records are shared by (FunctionId, fresh concrete TypeArgs). Unchanged signatures, including defaults, borrow settled ValidationAnalysis storage. A changed generic signature is copied once per specialization; its owned JSON/default/extension payload and nominal descriptor/type bytes are admitted before cloning, then reserved in the same max_constant_bytes total as folded values/export names. This conservative accounting can reject a generic compilation whose published constants alone would fit. Borrowed metadata needs no owned-copy charge. Call-interface and provider port matching uses checked declaration-order pairs; no saved inference cache supplies arguments. Potential operation/item/slot quotas still count every invocation, including cached bodies and inactive arms.
+
+Runtime ownership correction (2026-10-26 UTC): each region indexes child regions and live logical strand IDs, with an allocation-free singleton case and an ordered spill set. A strand-to-timer-key directory permits owned timer removal while the main timer BTreeMap preserves deadline/sequence ordering. Global live counts are adjusted from retired subtree counts. The ready queue owns reusable dense linked slots and an identity-to-slot directory, so front/back order and direct removal remain separate concerns. Directory hashing is never a semantic ordering source. Slot positions may be reused privately; run/owner identities keep their existing lifetime rules. Serial single-ready work avoids directory lookups. Queue links, spill transitions and slot reuse have focused deterministic model tests.
+
+PreparedData additionally maps dense plan slots to activation-owned dynamic cells. Initial immutable outcomes stay in DataPlan and are borrowed on reads; each activation keeps its own dynamic outcomes, memo stamps, entropy, fuel and cancellation. Conservative initial-value charge and the public admission thresholds are unchanged even though constants are now physically shared. This removes per-frame constant cloning/destruction without introducing shared mutable values or changing public data polling.
+
+### Expanded Pure data calls (2026-10-26; PR21)
+
+`DataPlan` retains a borrowed-view `call_sites` table of `PureCallSite` records. `DataNode::call_instance` and `DataPlan::slot_call_instance` index that table, with None for root ownership. Body node IDs remain unchanged across instances; dense indices separate their slots/memos. Function-entry argument aliases retain their source slot scope. Returned boundary slots belong to the calling scope, while body slots retain the child scope. These are compilation source indices, not runtime entropy FrameIds or a complete runtime error stack.
+
+Private lowering tasks and output/completion keys include a call scope. Immutable admission metadata is shared with ConstantFolder through one Arc rather than preparing/copying specialized bodies twice. Proven constant argument slots are imported once per source slot into that folder and aliased into child scopes, so body constant islands reuse the same typed folding/warning rules. Folder and published-plan payload accounting remain conservative quotas, not combined allocator measurements.
+
+`DataOperation::Call { arguments }` contains an argument prefix followed by all declared result references. Runtime Gather checks them in order and short-circuits the first fault before demanding the next reference. Successful publication copies only the result suffix through existing type/retained-byte checks. No provider callback implements a call. Existing prepared-data dynamic cells, epoch memo stamps, work-stack capacity, fuel and cancellation apply to the expanded body. Compile-time potential-expansion limits bound flattening; no runtime recursion or general call-frame lifecycle is added.
+
+Compatibility: the public `DataOperation` enum gains Call; downstream exhaustive matches must handle it. The source metadata accessors are additive; resolver traits, provider locks, dependencies, graph schema and entropy version are unchanged. Action/async/volatile calls, mutable call-local variables, package bodies and Return cleanup remain separate work.
+
+### Dense scoped entropy in expanded calls (2026-10-26; PR22)
+
+Private CallProfile distinguishes Pure compilation from the SeededData profile. Admission prepares the immutable scoped bodies once and passes that evidence into ConstantFolder; this avoids widening the PurePlan contract while reusing typed folding, provider support, lazy demand and expansion quotas. Call-site source records retain the existing PureCallSite Rust name for compatibility; DataPlan tables can now include supported seeded-volatile calls. No resolver trait or public enum variant changes are needed in this phase.
+
+PreparedData deduplicates the source UUID layout and binds each actual entropy DataNode to an EntropySlot, derived FrameId and distinct dense counter index. A temporary ancestry memo hashes only paths needed by those actual instructions; it is discarded after preparation. Pure plans and unused potential calls require no call-frame hashing. Per-activation counter storage follows expanded entropy instruction count, admitted through existing node resources; it does not allocate every source node for every frame. Existing public explicit-frame entropy owners retain their own bounded sparse API semantics. Both modes share invocation stamping/exhaustion logic and the version2 stream algorithm.
+
+Checked plans, immutable provider snapshots and private bindings prevent forged dense associations through public APIs. Dynamic state remains activation-owned; borrowed bindings do not introduce shared counters or mutexes. The structural test compares128dense counters with the public explicit-frame key semantics across epochs and asserts no private sparse frame allocations. This is a representation/count invariant, not allocator/RSS or timing qualification.
+
+### Typed dispatch tables and result projections (2026-10-26; PR23)
+
+ControlOperation gains Switch and MatchResult; ControlOutcome gains Case(original u16 instance), Default, MatchedOk and MatchedErr. HostSource gains Value(owner), ControlPlan exposes its value projection targets, and PlanType gains String. Downstream exhaustive Rust matches must handle these unfrozen enum additions. Saved schemas, resolver traits and dependency versions are unchanged.
+
+SwitchCase stores a typed language-owned SwitchKey, original instance and optional ControlIx. Case JSON is borrowed until its nominal charge is reserved, then converted once. Scalar cases charge64bytes each; string cases charge96 plus UTF-8 bytes. Aggregate case count additionally uses the graph-item budget. An allocation-free unstable sort orders unique keys; runtime binary search does not parse JSON or invoke a package comparator. SwitchKey's default Debug omits payloads. These nominal charges are not process allocation measurements.
+
+MatchResult retains the result root, boxing mode and outcome targets. Fresh value/error output descriptors become one host input each; explicit error ports suppress duplicate implicit materialization. Dense Value target directories share the existing host-source snapshot mechanism. ActivationState tracks retained Match value charges; transactional replacement validates target slot types and the combined local/Match state limit before changing cells. Error/index projections keep their existing fixed bounded representations. Checked data-plan and state quotas remain separate conservative admissions.
+
+Switch admission review correction: model case validation checks signedness/width bounds and uses a temporary HashSet of borrowed serde_json values for presence/duplicate checks. Iteration still follows the original variadic order; hash iteration never chooses diagnostic or runtime order. This removes repeated scans of prior cases without introducing serialized keys, payload cloning or a retained analysis cache. A1024-case regression checks acceptance/identity and a duplicated final case; no latency or NFR claim follows.
+
+Enum switch keys (2026-11-04): `SwitchKey` gains `Variant(u32)`, the schema tag of `Value::Enum`, and becomes `#[non_exhaustive]`. A case's variant ID string converts once to its tag through the key port's `EnumShape`; the table sorts by tag and keeps original instances, and its nominal charge follows the string-case rule. `SwitchKey::from_value` maps an enum value to its tag and ignores the payload, so the existing runtime binary search needs no change. Model validation builds one borrowed `HashSet` of the schema's variant IDs per switch and reads the switch's exec adjacency for a connected `default`; the region pass now receives the registry snapshot rather than only its origin. Saved JSON, diagnostics codes and resolver traits are unchanged; downstream exhaustive `ValueShape`/`SwitchKey` matches need a wildcard arm.
+
+State-control representation (2026-10-26): routing fields now carry ExecTarget (dense ControlIx plus resolved ExecInput), while region/loop ownership stays keyed by ControlIx. Inputs in/enter and in/store normalize only at checked lowering; unsupported port instances reject. ControlPlan.states holds checked ControlCell<NodeId> metadata; ControlVariable is the corresponding ControlCell<VariableId> alias. Per-scope dense directories select Run or activation stores without node-ID lookups during execution. HostSource::State reads a frozen typed cell per consumption. Initializers/case tables/variables share compiler byte admission; Register JSON copy is conservatively reserved before cloning. Run/local publication subtracts old charge and reserves replacement before mutation, counting retained Match payloads for local scope. Storage is nominal value accounting, not a hard allocator/RSS bound. Public routing types and enum variants change unfrozen Rust matches; graph JSON/provider ABI stays unchanged.
+
+Update representation (2026-10-26): UpdateOperation carries resolved Core arithmetic/policy or ordered/bitwise/append/CAS tags. UpdateDemand stores one or two export indices and a sorted host-input union. Identical operand directories share the existing Arc; only a distinct union allocates and consumes additional graph-item admission. HostSource::Update pairs canonical ControlIx with Old/New/Exchanged tags, reusing dense output storage/directories. PullState adds two optional Values and a count; advancing roots neither restarts the epoch nor resnapshots. Publication checks replacement cell/version and released/new projection charges before commit. Shared scalar operations carry no host authority; model/compiler still own type/capability/provider admission. New Rust types/variants are unfrozen API changes; saved fields/provider ABI remain unchanged.
+
+Collection representation (2026-10-26): PlanType adds Bytes/Timestamp/List/Map and public bounded ValueCheckError admission. DataPlan/ControlCell expose checked charges while existing optional-charge APIs remain. Map keys are restricted to the executable Core Hash subset; duplicate borrowed keys reject. Typed packed and generic lists have equal semantic values and conservative per-element charges. Raw public PlanType construction cannot bypass shape/depth guards through None or empty containers. Existing literal codecs/JSON stay unchanged. ListRepr::concat reuses matching packed representations and falls back to Value storage, with checked reservation and caller-owned type admission. Typed map equality ignores entry order while iteration preserves it. HostSource::Iteration carries a dense owner and projection tag; private lexical frames own values through Arc links and automatic byte guards, with boxed cursors keeping other cursor variants compact. Region ownership retires snapshots on every exit and retains canceled cleanup context; it adds no package dispatch authority. New Rust enum variants/helpers are unfrozen API additions, not a saved-schema or provider ABI change.
+
+Function state-input representation (2026-10-27): shared prepared call metadata now reaches control lowering before variable collection and is reused by data lowering. All potential called Get declarations are admitted before callbacks, rather than indexing root nodes with body IDs. A dense HostSource::Variable index selects run/activation state; HostSource::CallLocal selects the immutable initializer for an accepted read-only volatile body. Each expanded DataNode retains its call_instance and its own host-input slot. No runtime document traversal or body-name lookup is introduced. Call-local mutable storage, clock inputs and action/async frame lowering remain separate work.
+
+Effectful call representation (2026-10-27): compiler keys control identities and DemandRoots by static call scope plus original NodeId. ControlNode::scope and FunctionLayout expose immutable entry/local/result layout; ControlOperation adds Call/Return with shared ordered demand directories. HostSource adds FrameLocal, Argument and CallOutput; expanded body IDs are never looked up as root IDs. Control preparation admits effectful scopes without routing actions through a pure resolver. The same prepared signatures, slot source/call provenance and frozen union metadata feed data lowering.
+
+Private Run frames contain fresh locals/versions, arguments, scope/parent invocation and a shared RAII nominal-byte lease, keyed by never-reused function-region ID. Regions own their normal frame implicitly and transfer canceled descendants to a rare boxed retained-ID set until cleanup completes. This avoids recursive frame destruction and shared mutable locks. Explicit Return captures a boxed charged result until the barrier; publication releases old projections and checks the complete replacement before writing. Call-local Update reserves both cell and output deltas atomically. Rare pending call/result/fault fields are boxed. Run::control_state distinguishes expanded stateful controls; source-only node_state refuses ambiguous IDs. Write-intent inspection remains source-based. These additions are unfrozen Rust surface changes; saved format, provider locks/ABI, dependency versions and UI boundaries remain unchanged.
+
+Each FunctionLayout also owns a compact list of its execution host-input projection indices. Frame retirement releases those projections and their charges after cleanup, including frames transferred from canceled descendants. A startup source-index directory keeps source-only write intent deduplication independent of expanded state-cell identity. Bounded activation data caches retain their existing policy; these changes introduce no generic cache eviction, allocator/RSS or timing claim.
+
+Compile-bound review correction: Sequence/Fork actual variadic step counts are charged per expanded control before building target arrays, including inactive and unconnected steps. This closes the gap between the document/definition counts and owned expanded step storage; it does not turn nominal compile quotas into an allocator/RSS bound.
+
+
+Zone analysis projection (2026-10-27): `ValidationReport.regions.zones` is a model-owned immutable `ZoneIndex` with read-only pair/owner queries. `ZoneRegion` retains original begin/end UUIDs, `ZoneKind`, optional function identity and immediate enclosing end UUID. Begin markers own their parameter projections; a nested end is owned by its parent. Only one innermost owner per node is retained, rather than retaining a copy of every nested body set. Pairing is shared by region and port-level dependency analysis; a zone result has strict begin-prefix dependencies without turning begin iteration projections into computed outputs. This is validation metadata, not executable zone IR or a saved-format change.
+
+
+Zone compiler layout slice (2026-10-27): DataPlan now retains plan-local `ZoneIx`/`DataZone` entries per specialized call scope, original begin/end IDs, lexical parent and optional lowered parameter instruction. DataNode records its lexical memoization domain. `DataOperation::Iteration` has no producer inputs; `DataOperation::Zone` consumes strict begin-prefix inputs followed by end/body inputs. Host-state Input instructions retain the outer consumption domain. Metadata is charged before provider binding; constant calls containing zones lower as programs rather than scalar-folder unrolling. Unused admitted zones need no runtime machine. At this intermediate checkpoint, compile_pure explicitly refuses zones, and DataActivation explicitly rejects zone instructions until resumable execution is implemented. This is unfrozen Rust IR, not a saved-format or provider ABI change.
+
+Compare-and-set and harness (2026-10-27):
+- **Compare-and-set** relies on values having been checked when stored or published. It decides equality structurally and uses checked, order-insensitive map equality only for shapes that contain a map.
+- **Harness.** `orange-measure` is a development-only harness. Its counting allocator is the only `unsafe` code in the repository, contained by crate-local lints.
+
+Standalone data interruption (2026-10-31): `DataActivation` keeps a private drive-open marker separate from ordinary epoch failure/cancellation. A normal drive return clears it; unwinding leaves it set. Subsequent data pulls, input publication and epoch starts report `DataError::Interrupted`, so retained slots cannot appear as a new epoch's completed result after callback work was lost. The marker cannot be reset by a new epoch or cleanup to revive execution. The host releases the activation and constructs a replacement. This adds an unfrozen Rust error variant/private state, not a saved field, language outcome, provider interface or replay format.
+
+Run-scope event representation (2026-11-06; ADR-24): ControlPlan privately owns a stable EventDeclId-sorted ControlEvent table with checked payload ValueShape and EventHandler projections (entry, effective positive pending capacity, configured overflow, mode and maximum live roots). `EventHandler::mode` exposes Queue/Drop/Replace/Parallel; `max_parallel` is the positive Parallel bound and normalizes to one for Queue/Drop/Replace. `capacity` normalizes Replace to one while its positive saved capacity remains valid; the intrinsic latest-only rule supersedes its configured pending overflow selector. ControlOperation::Emit carries a dense event index and an optional payload demand root. With no root it carries an internal `None` value; event-only channels publish no payload port. HostSource::EventPayload points to the owning entry projection. Provider binding/freshness and saved graph JSON are unchanged. These additive enum variants and new RunLimits/RunOptions fields require unfrozen downstream exhaustive matches/struct literals to update.
+
+Run retains ordered eligible handler heads, one FIFO and a set of live root identities per handler, and only live dynamic activation frames. Queue/Drop/Replace become eligible with no owned root; Parallel remains eligible below its checked root bound. Drop additionally treats any pending item as busy before dispatch. Replace retains only the latest pending envelope. The existing bounded ownership identity-set representation tracks roots; dispatch and full retirement update the handler set together with the active payload reservation directory. Fixed startup roots keep their dense path; root liveness is tracked separately from a temporarily checked-out Option frame so interrupted roots can still retire. Dynamic roots are minted by the existing shared owner allocator and never indexed through an ever-growing sequence-sized vector. A retained initialization template is charged to the nominal frame-storage budget and freed on disposal. Frame/state/aggregate retained-value limits remain independently applicable.
+
+C02 targeted cancellation adds a per-handler `cancel_requested: Option<u64>` old-root marker and one run-owned FIFO of root IDs. All-handler staging records the possible request, but only successful complete admission sets the marker and queues it. FIFO order follows accepted emission and persisted handler order. A marker survives draining its FIFO entry until that exact root fully retires, preventing later latest admissions from cancelling cleanup again. The FIFO is bounded by owned Replace roots, not the history of emissions; it holds no graph payload. The pump drains it only after the executing strand/shared frame are restored and its transfer/requeue/retirement completes, before another timer/dispatch/node. It reuses the existing region cancellation/pruning and full-retirement paths; original function/iteration ownership and cleanup contexts remain intact. Naturally retired root IDs are ignored, and global cancellation/abort/release clears pending requests. Disposal releases FIFO backing storage. No new public limit, serialized field, provider ABI, message key or dependency is introduced.
+
+RunLimits.max_pending_events defaults to1024 pending handler or unpublished Await deliveries and max_pending_event_bytes to16MiB of nominal queued payload charge; fixed envelope/directory overhead is bounded by item and admitted plan counts. RunLimits.max_live_event_payload_bytes defaults to16MiB across queued and activation-owned event delivery reservations together. An On Event reservation survives pending-to-active transfer and is released only when its whole root retires, including cleanup; independent reservation ownership also handles an evaluator frame dropped by provider unwind. Replace may credit evicted pending envelopes during admission, but never the still-owned old active payload/frame: old plus new must fit before any cancellation intent commits. Charges conservatively cover both the queued value and its possible published projections, without discounting shared buffers. Activation/state/frame limits still apply independently. RunOptions.max_cause_depth defaults to64. Run.event_stats returns saturating accepted/delivered/dropped/overflow counters, exact pending count/bytes, live_payload_bytes and activation high-water. Accepted/delivered count per-handler or per-waiter deliveries; delivered means a handler activation started or an Await continuation received publication, not that its work completed. Each admitted latest increments accepted; superseded pending latest envelopes increment dropped without a capacity overflow. Ordinary hard-limit refusal still increments the refusal/overflow count. Disposal retains these safe terminal counters while releasing queue/template/frame storage. `Run.last_event` and a successful host-ingress result return the same payload-free `EventMetadata` (ingestion sequence, `EventDeclId`, tagged graph/host origin, source sequence, optional cause activation, causal depth, monotonic time and optional wall time); they never expose a graph value. `RunOwnership::host_sources` reports active C04a registrations, separately from Await waiter ownership. Capacity-blocked queues can sleep behind a future timer or registered Await without spinning ready; a timer still reports its next wakeup. Pending handler work with no runnable owner, possible dispatch, timer or registered Await fails closed with ResourceLimit. These are inspection facts, not replay/authority tokens or a hard RSS ceiling.
+
+### Await Event representation (C03 contract, 2026-11-06)
+
+The unfrozen compiler operation is `ControlOperation::AwaitEvent { event: usize, timeout: Option<usize>, timed_out: Option<ExecTarget> }`: the event is a dense checked event-table index, timeout is an optional data-demand root, and `timed_out` is the resolved outcome target. `HostSource::EventPayload(ControlIx)` serves both `core/on-event` and Await Event projections; the Await payload projection is live only on `then`. `ControlOutcome::TimedOut` identifies the timeout branch. These are additive public Rust enum/API changes; downstream exhaustive matches and struct literals update without legacy wrappers. Saved graph JSON and providers do not change.
+
+One run-owned waiter table is the sole owner of each parked `Strand`, keyed by a checked, never-reused registration token. Per-event matching indexes and optional timer entries hold only that token, not another strand or payload. The token is retired from every index before the strand resumes or enters cancellation cleanup. Registrations are bounded by `RunLimits::max_strands`; an optional deadline shares `max_timers`. `RunOwnership::event_waiters` reports the current live registration count. It counts owned suspended work, not runnable work. Pump readiness/idle handling must account for waiters without spinning or declaring them a resource deadlock; graceful stop drains them to its deadline, and immediate/fault/Replace-owner cancellation and disposal unregister or release them.
+
+An accepted Emit transaction stages current handler dispositions and every matching registered waiter together. It commits no queue mutation, counter, timeout removal or completion intent until combined item/byte/live-payload admission succeeds. Each waiter owns one nominal payload reservation, including the possible Await projection, with no shared-buffer discount. Deferred completion payloads count in the existing pending item/byte and live event payload budgets until publication transfers the charge once to the activation's retained/aggregate state; accepted completion canceled before publication increments dropped. `RunEventStats.accepted`/`delivered`/`dropped` count handler or waiter deliveries, not Emit calls; a waiter is delivered when publication resumes its continuation. Failed deferred publication follows current runtime fault/cancellation handling. No per-waiter payload clone is made before preflight.
+
+### Bounded host ingress representation (C04a contract, 2026-11-06; implementation evidence pending)
+
+The public handle is an opaque cloneable `RunEventSource` with `id -> HostSourceId` and `event -> EventDeclId`; its private fields bind the checked never-reused `HostSourceId` registration to the existing unique `Run::id`. `HostSourceId::get` exposes only the safe numeric identity. `Run::register_event_source(EventDeclId)` resolves an existing checked run-scope event in the pinned `ControlPlan`; unknown, unreferenced or workspace events fail without mutation. `RunLimits::max_host_sources` defaults to 64 and bounds active registrations. `Run::revoke_event_source(&RunEventSource)` rejects wrong-Run handles, removes an active source and returns true, or returns false for an already revoked same-Run handle. Revocation frees capacity and prevents later input through that handle, but leaves already accepted deliveries intact. Normal stop, fault cleanup and disposal revoke active sources; a pump-interrupted Run rejects ingress before its explicit stop/disposal cleanup releases them. The active table contains only live registrations; IDs fail closed on exhaustion and never reuse, with no historical ID vector. `RunOwnership::host_sources` reports its live count.
+
+`Run::ingest_event(&RunEventSource, source_seq, &Value, wall_ns)` returns accepted `EventMetadata` after committing through the same atomic handler-plus-Await fan-out as Emit. `source_seq` must be nonzero and strictly greater than the last accepted sequence for that registration; gaps are allowed, and `u64::MAX` may be accepted once. Refusal does not advance it, so retry is possible. The host call linearizes event-vs-timeout order: accepted input before an already-due timeout is processed detaches that timeout; input after timeout processing cannot revive its waiter. Graph origin has `cause: Some(activation)` and no wall time. Host origin has `cause: None`, depth zero, monotonic time from the run's current virtual clock and optional host-provided wall time. Core reads no OS clock.
+
+`IngressError` is fieldless and payload-free: `WrongRun`, `NotRunning`, `UnknownEvent`, `SourceLimit`, `IdentityExhausted`, `RevokedSource`, `SequenceNotIncreasing`, `InvalidPayload`, or `DeliveryLimit`. Stable presentation keys are namespaced under `core/ingress-*`, except `NotRunning` (`core/event-run-stopping`) and `DeliveryLimit` (`core/event-limit-exceeded`); all have safe static fallbacks and host-owned presentation (13). Wrong identity/state/source/sequence/type errors do not alter delivery counters. Only `DeliveryLimit` increments the existing overflow count once. A policy-deliberately-dropped event is still successfully admitted and advances source/ingestion metadata; delivery counters retain their existing per-handler/per-waiter meaning. No rejected payload or unbounded rejection history is retained.
+
+Host ingress never executes graph work inline. Host Replace cancellation intents are applied at the next pump actor boundary before due timers, dispatch or nodes, after whole-run cancellation observation. `pump(0)` executes no graph node or cancellation walk and reports ready when an intent remains. Host Await completions stay budgeted pump work. These are selected contract rules only; implementation evidence and NFR claims remain pending. `core/on-manual` entries lower to private one-handler channels fed only by `Run::trigger` (11 §10.2); `ControlPlan::manuals` lists them in persisted handler order, then node ID, and `EventMetadata::target` distinguishes `Declared(event)` from `Manual(node)`. Root timer entries follow as `ControlPlan::timers` in the same order; their handler channels come after the manual ones, their tick outputs are `HostSource::Tick` projections (`scheduled_at`, `missed`), and each armed entry is one `TimerTarget::Entry` in the run timer order beside a per-entry tick cursor (11 §10.2). A `core/now` read is `HostSource::Clock`, filled from `Run::now` in the epoch prologue with no output slot.
+
+Causal depth is stored on the strand so concurrent Fork siblings do not share writes to it. Event roots initialize it from the accepted envelope, ordinary roots start at zero, child strands inherit it, matched Await completion takes the maximum of existing and event depth, timeout preserves it, and serial call/loop/join continuation retains the maximum contributing lineage. Emit checks strand depth plus one for the produced envelope without changing the emitting strand's lineage. Registration, emission and completion use actor ordering: due timers run before graph nodes at pump entry; an already-due timeout wins there, while accepted Emit before advancing past the deadline wins. Each completed Await publication consumes one cooperative pump work item after due timers and before On Event dispatch or graph nodes. If Emit exhausts the pump budget, accepted completions stay pending for a later pump or cancellation. Await has no backlog/replay semantics and cannot execute a continuation inline.

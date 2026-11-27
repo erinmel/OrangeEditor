@@ -1,0 +1,1986 @@
+//! The host runs several graphs at once on real time, controls each independently, and
+//! runs an installed package's asynchronous node on a worker thread.
+use orange_testkit::{WAIT, core, edge, id, node, until};
+use std::time::Duration;
+
+use orange_host::{BASE_PACKAGE, PackageKind};
+use orange_host::{
+    ControlOutcome, FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions,
+    PackageAccess, RunState, StopMode, Value, VariableId,
+};
+use orange_model::binding::{NewNode, new_node_edit};
+use orange_model::document::DefinitionRef;
+use orange_model::{GraphDocument, from_json, to_json};
+use orange_packages::ArchiveFiles;
+use serde_json::{Value as Json, json};
+
+const I64: &str = "core/i64@1";
+const ACCUMULATE: &str = "org.example.probe/accumulate";
+const TOTAL: u32 = 100;
+
+#[test]
+fn a_running_graph_can_read_the_utc_clock() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let clock = host
+        .add_node(&mut draft, "org.orange.clock/utc-timestamp", [200.0, 0.0])
+        .unwrap();
+    host.connect(&mut draft, (trigger, "then"), (clock, "in"))
+        .unwrap();
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.observe(flow, true).unwrap();
+    let now = || std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
+    let before = now();
+    host.trigger(flow, trigger, None).unwrap();
+    let mut read = None;
+    until("UTC timestamp output", || {
+        read = events.try_iter().find_map(|event| {
+            if event.flow == flow
+                && let FlowEvent::Ports(values) = event.kind
+            {
+                return values.into_iter().find_map(|(node, port, value)| {
+                    (node == clock && port.to_string() == "timestamp").then_some(value)
+                });
+            }
+            None
+        });
+        read.is_some()
+    });
+    let Some(Value::Timestamp(read)) = read else {
+        panic!("UTC timestamp output has the wrong type")
+    };
+    assert!((before..=now()).contains(&u128::try_from(read).unwrap()));
+    host.close(flow).unwrap();
+}
+
+fn total() -> VariableId {
+    id(TOTAL).parse().unwrap()
+}
+fn with_total(mut saved: Json, nodes: Vec<Json>, edges: Json) -> String {
+    saved["nodes"].as_array_mut().unwrap().extend(nodes);
+    saved["edges"] = edges;
+    saved["variables"] = json!([{"id": id(TOTAL), "name": "total", "type": I64, "scope": "run"}]);
+    // Round-trip through the model so the text is exactly what a host would save.
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+fn empty(graph: u32) -> GraphDocument {
+    GraphDocument::new(
+        format!("20000000-0000-4000-8000-{graph:012x}")
+            .parse()
+            .unwrap(),
+    )
+}
+
+/// A manual entry that stores 7 in `total` each time the host triggers it.
+fn manual_graph(graph: u32) -> String {
+    let saved: Json = serde_json::from_str(&to_json(&empty(graph)).unwrap()).unwrap();
+    let mut set = core(2, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    set["inputs"] = json!({"value": {"type": I64, "value": "7"}});
+    with_total(
+        saved,
+        vec![core(1, "on-manual"), set],
+        json!([edge(1, 1, "then", 2, "in")]),
+    )
+}
+
+fn read_total(host: &Host, flow: FlowId) -> Option<Value> {
+    host.inspect(flow, |run| run.variable(total()).cloned())
+        .unwrap()
+}
+fn finished(events: &orange_host::Events, flows: &[FlowId]) -> Vec<HostEvent> {
+    let (mut seen, mut left) = (Vec::new(), flows.to_vec());
+    while !left.is_empty() {
+        let event = events.recv_timeout(WAIT).expect("flows finish");
+        if matches!(event.kind, FlowEvent::Finished) {
+            left.retain(|flow| *flow != event.flow);
+        }
+        seen.push(event);
+    }
+    seen
+}
+
+#[test]
+fn two_flows_run_at_once_and_one_pauses_without_holding_the_other() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let held = host.open(&manual_graph(1)).unwrap();
+    let free = host.open(&manual_graph(2)).unwrap();
+    assert_eq!(host.info(held).unwrap().manual_entries, [(node(1), false)]);
+    until("both running", || {
+        host.state(held) == Some(RunState::Running) && host.state(free) == Some(RunState::Running)
+    });
+
+    host.pause(held).unwrap();
+    until("the pause", || host.state(held) == Some(RunState::Paused));
+    host.trigger(held, node(1), None).unwrap();
+    host.trigger(free, node(1), None).unwrap();
+
+    until("the free flow", || {
+        read_total(&host, free) == Some(Value::I64(7))
+    });
+    // The paused flow took its trigger and kept it; it has not run.
+    assert_eq!(read_total(&host, held), None);
+    assert_eq!(host.state(held), Some(RunState::Paused));
+
+    host.resume(held).unwrap();
+    until("the held trigger", || {
+        read_total(&host, held) == Some(Value::I64(7))
+    });
+
+    host.stop(held, StopMode::Graceful).unwrap();
+    host.stop(free, StopMode::Graceful).unwrap();
+    let seen = finished(&events, &[held, free]);
+    for flow in [held, free] {
+        assert!(seen.iter().any(|event| event.flow == flow
+            && matches!(&event.kind, FlowEvent::Node(step) if step.node == node(2))));
+        assert!(matches!(
+            host.inspect(flow, |_| ()),
+            Err(HostError::FlowEnded)
+        ));
+    }
+    assert_eq!(host.events_dropped(), 0);
+    host.close(held).unwrap();
+    assert!(matches!(host.pause(held), Err(HostError::UnknownFlow)));
+}
+
+#[test]
+fn an_invalid_document_is_refused_with_its_diagnostics() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut saved: Json = serde_json::from_str(&manual_graph(1)).unwrap();
+    saved["variables"] = json!([]);
+    let text = saved.to_string();
+    assert!(!host.check(&text).unwrap().is_empty());
+    let Err(HostError::Invalid(diagnostics)) = host.open(&text) else {
+        panic!("a reference to an undeclared variable must not run");
+    };
+    assert!(!diagnostics.is_empty());
+    assert_eq!(host.flows().count(), 0);
+    assert!(host.check(&manual_graph(1)).unwrap().is_empty());
+}
+
+/// The probe package as a publisher would ship it: manifest, component and one
+/// definition file per node.
+fn probe_archive() -> Vec<u8> {
+    let component = match std::env::var_os("ORANGE_GUEST_PROBE") {
+        Some(path) => std::fs::read(path).expect("ORANGE_GUEST_PROBE names a readable component"),
+        None => include_bytes!("../../../platform/orange-guest/tests/fixtures/probe.wasm").to_vec(),
+    };
+    let definition = json!({"definition_id": ACCUMULATE, "definition_version": 1,
+    "config_version": 1, "kind": "async", "suspends": "always", "determinism": "external",
+    "ports": [
+        {"port_id": "amount", "direction": "input", "kind": "data", "type": I64},
+        {"port_id": "result", "direction": "output", "kind": "data", "type": I64,
+            "source": "execution", "available_on": ["then"]}
+    ]})
+    .to_string();
+    let mut manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.probe", "version": "1.0.0", "publisher": "org.example",
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "execution": {"kind": "wasm-component", "entry": "component.wasm",
+            "world": "orange:expansion/plugin@1.0.0"},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [ACCUMULATE],
+            "providers": [{"slot": format!("node:{ACCUMULATE}@1"), "id": "guest"}]
+        },
+        "permissions": ["log"],
+        "integrity": {"algorithm": "sha256", "content_digest": "0".repeat(64)},
+        "license": "MIT"
+    });
+    let files = ArchiveFiles::new(vec![
+        ("component.wasm".parse().unwrap(), &component[..]),
+        (
+            "nodes/accumulate.json".parse().unwrap(),
+            definition.as_bytes(),
+        ),
+    ])
+    .unwrap();
+    let digest = files
+        .content_digest(&serde_json::to_vec(&manifest).unwrap())
+        .unwrap();
+    manifest["integrity"]["content_digest"] = json!(digest.strip_prefix("sha256:").unwrap());
+    files.encode(&serde_json::to_vec(&manifest).unwrap())
+}
+
+#[test]
+fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let definition = DefinitionRef {
+        id: ACCUMULATE.parse().unwrap(),
+        version: 1,
+    };
+    assert!(host.registry().definition(&definition).is_none());
+    // The probe imports `log`, so the user's grant must include it.
+    assert!(matches!(
+        host.install(
+            &probe_archive()[..10],
+            Grants {
+                log: true,
+                files: false,
+                http: false,
+                http_local: false,
+                compute: false,
+                websocket: false,
+            }
+        ),
+        Err(HostError::Archive(_))
+    ));
+    let key = host
+        .install(
+            &probe_archive(),
+            Grants {
+                log: true,
+                files: false,
+                http: false,
+                http_local: false,
+                compute: false,
+                websocket: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(key.id.as_str(), "org.example.probe");
+
+    // On Start calls the package node three times, adding five each time, and stores
+    // each result. The node is authored against the host's registry, as an editor would.
+    let mut document = empty(3);
+    let mut call = NewNode::new(node(3), definition);
+    call.inputs = serde_json::from_value(json!({"amount": {"type": I64, "value": "5"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), call).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    let mut count = core(2, "count");
+    count["inputs"] = json!({"count": {"type": I64, "value": "3"}});
+    let mut set = core(4, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![core(1, "on-start"), count, set],
+        json!([
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "body", 3, "in"),
+            edge(3, 3, "then", 4, "in"),
+            edge(4, 3, "result", 4, "value"),
+        ]),
+    );
+
+    let flow = host.open(&text).unwrap();
+    until("three guest calls", || {
+        matches!(
+            host.inspect(flow, |run| run.variable(total()).cloned()),
+            Ok(Some(Value::I64(15))) | Err(HostError::FlowEnded)
+        )
+    });
+    host.close(flow).unwrap();
+    let seen = finished(&events, &[flow]);
+    let calls = seen
+        .iter()
+        .filter(|event| {
+            matches!(&event.kind, FlowEvent::Node(step)
+                if step.node == node(3) && step.outcome == ControlOutcome::Then)
+        })
+        .count();
+    assert_eq!(calls, 3, "{seen:?}");
+}
+
+const REMEMBER: &str = "org.example.tools/remember";
+
+/// A package with no code: its one node is a graph that stores its input in a local
+/// variable of its own and returns what it reads back.
+fn graph_package(output_type: &str, with_variable: bool) -> Result<Vec<u8>, HostError> {
+    graph_package_at("1.0.0", output_type, with_variable)
+}
+fn graph_package_at(
+    version: &str,
+    output_type: &str,
+    with_variable: bool,
+) -> Result<Vec<u8>, HostError> {
+    let port = |name: &str, direction: &str, ty: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": ty});
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.tools", "version": version, "publisher": "org.example",
+        "update": {"feed": "https://example.org/tools/feed.json"},
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [REMEMBER],
+            "providers": [{"slot": format!("node:{REMEMBER}@1"), "id": orange_host::GRAPH_PROVIDER}]
+        },
+        "permissions": [],
+        "license": "MIT"
+    });
+    let definition = json!({"definition_id": REMEMBER, "definition_version": 1,
+    "config_version": 1, "kind": "action", "suspends": "never", "determinism": "external",
+    "ports": [
+        port("value", "input", I64),
+        {"port_id": "result", "direction": "output", "kind": "data", "type": output_type,
+            "source": "execution", "available_on": ["then"]}
+    ]});
+    let mut keep = core(203, "set-variable");
+    keep["config"] = json!({"variable": id(210)});
+    let mut read = core(204, "get-variable");
+    read["config"] = json!({"variable": id(210)});
+    let variables = if with_variable {
+        json!([{"id": id(210), "name": "kept", "type": I64, "scope": "local",
+            "init": {"type": I64, "value": "0"}}])
+    } else {
+        json!([])
+    };
+    let graph = json!({
+        "format": orange_host::GRAPH_NODE_FORMAT, "format_version": 1,
+        "function": {"id": id(200), "name": "remember", "kind": "action",
+            "inputs": [port("value", "input", I64)],
+            "outputs": [port("result", "output", I64)],
+            "nodes": [core(201, "function-entry"), keep, read, core(205, "return")],
+            "edges": [
+                edge(201, 201, "then", 203, "in"),
+                edge(202, 201, "value", 203, "value"),
+                edge(203, 203, "then", 205, "in"),
+                edge(204, 204, "value", 205, "result"),
+            ]},
+        "variables": variables
+    });
+    orange_host::pack(
+        manifest.to_string().as_bytes(),
+        &[
+            (
+                "nodes/remember.json".into(),
+                definition.to_string().into_bytes(),
+            ),
+            (
+                "graphs/remember.json".into(),
+                graph.to_string().into_bytes(),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn a_package_node_made_as_a_graph_runs_like_any_other_node() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let key = host
+        .install(&graph_package(I64, true).unwrap(), Grants::default())
+        .unwrap();
+    assert_eq!(key.id.as_str(), "org.example.tools");
+
+    // The document holds a locked package node; it knows nothing of the graph behind it.
+    let mut document = empty(4);
+    let mut call = NewNode::new(
+        node(3),
+        DefinitionRef {
+            id: REMEMBER.parse().unwrap(),
+            version: 1,
+        },
+    );
+    call.inputs = serde_json::from_value(json!({"value": {"type": I64, "value": "5"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), call).unwrap();
+    assert_eq!(edit.provider.id, orange_host::GRAPH_PROVIDER);
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    let mut set = core(4, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![core(1, "on-manual"), set],
+        json!([
+            edge(1, 1, "then", 3, "in"),
+            edge(2, 3, "then", 4, "in"),
+            edge(3, 3, "result", 4, "value"),
+        ]),
+    );
+    assert!(text.contains(REMEMBER) && !text.contains("core/call"));
+    assert!(host.check(&text).unwrap().is_empty());
+
+    let flow = host.open(&text).unwrap();
+    host.uninstall(&key).unwrap();
+    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
+    assert!(
+        host.search_nodes("remember", "en")
+            .iter()
+            .all(|node| node.definition != REMEMBER)
+    );
+    host.trigger(flow, node(1), None).unwrap();
+    until("the graph node's result", || {
+        read_total(&host, flow) == Some(Value::I64(5))
+    });
+}
+
+#[test]
+fn a_graph_package_that_breaks_its_contract_or_is_invalid_is_not_installed() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    // The node promises a string result; its graph returns an integer.
+    assert!(matches!(
+        host.install(&graph_package("core/string@1", true).unwrap(), Grants::default()),
+        Err(HostError::Graph(name, _)) if name == REMEMBER
+    ));
+    // The body uses a variable the package does not declare.
+    let Err(HostError::GraphInvalid(package, diagnostics)) =
+        host.install(&graph_package(I64, false).unwrap(), Grants::default())
+    else {
+        panic!("an invalid graph must not be published");
+    };
+    assert_eq!(package, "org.example.tools");
+    assert!(!diagnostics.is_empty());
+    let definition = DefinitionRef {
+        id: REMEMBER.parse().unwrap(),
+        version: 1,
+    };
+    assert!(host.registry().new_binding_default(&definition).is_none());
+}
+
+/// `manual_graph(1)` after an edit: the entry now stores `value`, and the document has a
+/// second run variable.
+fn edited_graph(value: i64) -> String {
+    let mut saved: Json = serde_json::from_str(&manual_graph(1)).unwrap();
+    for node in saved["nodes"].as_array_mut().unwrap() {
+        if node["definition_id"] == "core/set-variable" {
+            node["inputs"]["value"]["value"] = json!(value.to_string());
+        }
+    }
+    // The new variable is written after the old one, so the plan holds it.
+    let mut also = core(3, "set-variable");
+    also["config"] = json!({"variable": id(TOTAL + 1)});
+    also["inputs"] = json!({"value": {"type": I64, "value": "5"}});
+    saved["nodes"].as_array_mut().unwrap().push(also);
+    saved["edges"]
+        .as_array_mut()
+        .unwrap()
+        .push(edge(2, 2, "then", 3, "in"));
+    saved["variables"].as_array_mut().unwrap().push(
+        json!({"id": id(TOTAL + 1), "name": "extra", "type": I64, "scope": "run",
+            "init": {"type": I64, "value": "3"}}),
+    );
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn an_edit_replaces_a_running_graph_and_keeps_its_variables() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&manual_graph(1)).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the first value", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+
+    // Moving nodes around is not an edit of what runs.
+    let mut moved: Json = serde_json::from_str(&manual_graph(1)).unwrap();
+    moved["editor"] = json!({"nodes": {"a": {"x": 10, "y": 20}}});
+    moved["revision"] = json!(5);
+    assert!(!host.update(flow, &moved.to_string()).unwrap().changed);
+
+    let updated = host.update(flow, &edited_graph(9)).unwrap();
+    assert!(updated.changed);
+    assert_eq!((updated.kept_variables, updated.reset_variables), (1, 1));
+    // The value written by the old graph is still there, and the new variable has its
+    // initial value.
+    assert_eq!(read_total(&host, flow), Some(Value::I64(7)));
+    let extra: VariableId = id(TOTAL + 1).parse().unwrap();
+    assert_eq!(
+        host.inspect(flow, move |run| run.variable(extra).cloned())
+            .unwrap(),
+        Some(Value::I64(3))
+    );
+    // The same entry now runs the edited graph.
+    host.trigger(flow, node(1), None).unwrap();
+    until("the edited value", || {
+        read_total(&host, flow) == Some(Value::I64(9))
+    });
+
+    host.stop(flow, StopMode::Graceful).unwrap();
+    let seen = finished(&events, &[flow]);
+    assert!(seen.iter().any(|event| matches!(
+        event.kind,
+        FlowEvent::Updated {
+            kept_variables: 1,
+            reset_variables: 1
+        }
+    )));
+    assert!(matches!(
+        host.update(flow, &edited_graph(11)),
+        Err(HostError::FlowEnded)
+    ));
+}
+
+#[test]
+fn a_refused_edit_leaves_the_flow_running_and_a_paused_flow_stays_paused() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&manual_graph(1)).unwrap();
+
+    let mut broken: Json = serde_json::from_str(&manual_graph(1)).unwrap();
+    broken["variables"] = json!([]);
+    assert!(matches!(
+        host.update(flow, &broken.to_string()),
+        Err(HostError::Invalid(_))
+    ));
+    assert!(matches!(
+        host.update(flow, &manual_graph(2)),
+        Err(HostError::Document(_))
+    ));
+    host.trigger(flow, node(1), None).unwrap();
+    until("the untouched graph", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+
+    host.pause(flow).unwrap();
+    until("the pause", || host.state(flow) == Some(RunState::Paused));
+    assert!(host.update(flow, &edited_graph(9)).unwrap().changed);
+    host.trigger(flow, node(1), None).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(host.state(flow), Some(RunState::Paused));
+    assert_eq!(read_total(&host, flow), Some(Value::I64(7)));
+    host.resume(flow).unwrap();
+    until("the edited value", || {
+        read_total(&host, flow) == Some(Value::I64(9))
+    });
+}
+
+#[test]
+fn the_host_lists_every_node_a_document_can_use() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let find = |host: &Host, id: &str| {
+        host.nodes()
+            .find(|node| node.definition.definition.id.as_str() == id)
+            .map(|node| (node.provider.cloned(), node.presentation.cloned()))
+    };
+    // A core node is implemented by the language, so it names no provider.
+    assert_eq!(find(&host, "core/on-manual"), Some((None, None)));
+    assert_eq!(find(&host, ACCUMULATE), None);
+
+    let key = host
+        .install(
+            &probe_archive(),
+            Grants {
+                log: true,
+                files: false,
+                http: false,
+                http_local: false,
+                compute: false,
+                websocket: false,
+            },
+        )
+        .unwrap();
+    let (provider, _) = find(&host, ACCUMULATE).expect("an installed node is listed");
+    assert_eq!(provider.unwrap().package, key.id.as_str());
+}
+
+#[test]
+fn an_observed_flow_reports_its_variable_values_as_they_change() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&manual_graph(1)).unwrap();
+    let quiet = host.open(&manual_graph(2)).unwrap();
+    host.observe(flow, true).unwrap();
+    for flow in [flow, quiet] {
+        host.trigger(flow, node(1), None).unwrap();
+        until("the value", || {
+            read_total(&host, flow) == Some(Value::I64(7))
+        });
+        host.stop(flow, StopMode::Graceful).unwrap();
+    }
+    let seen = finished(&events, &[flow, quiet]);
+    let reports: Vec<_> = seen
+        .iter()
+        .filter_map(|event| match &event.kind {
+            FlowEvent::Variables(values) => Some((event.flow, values.clone())),
+            _ => None,
+        })
+        .collect();
+    // Only the observed flow reports, each report names the one variable, and the last
+    // one holds the value the graph wrote.
+    assert!(!reports.is_empty());
+    assert!(
+        reports
+            .iter()
+            .all(|(from, values)| *from == flow && values.len() == 1 && values[0].0 == total())
+    );
+    assert_eq!(reports.last().unwrap().1[0].1, Some(Value::I64(7)));
+    // A value is reported once, not on every turn.
+    let sevens = reports
+        .iter()
+        .filter(|(_, values)| values[0].1 == Some(Value::I64(7)))
+        .count();
+    assert_eq!(sevens, 1);
+}
+
+#[test]
+fn an_observed_flow_reports_the_values_on_its_wires() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    // The entry's payload is wired into the variable write.
+    let saved: Json = serde_json::from_str(&to_json(&empty(1)).unwrap()).unwrap();
+    let mut entry = core(1, "on-manual");
+    entry["config"] = json!({"payload": I64});
+    let mut set = core(2, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![entry, set],
+        json!([
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 1, "payload", 2, "value")
+        ]),
+    );
+    let flow = host.open(&text).unwrap();
+    host.observe(flow, true).unwrap();
+    for value in [5, 6] {
+        host.trigger(flow, node(1), Some(Value::I64(value)))
+            .unwrap();
+        until("the value", || {
+            read_total(&host, flow) == Some(Value::I64(value))
+        });
+    }
+    host.stop(flow, StopMode::Graceful).unwrap();
+    let seen = finished(&events, &[flow]);
+    let on_wire: Vec<_> = seen
+        .iter()
+        .filter_map(|event| match &event.kind {
+            FlowEvent::Ports(ports) => Some(ports.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    // Each report names the entry's payload port, and the values arrive in order.
+    assert!(
+        on_wire
+            .iter()
+            .all(|(from, port, _)| *from == node(1) && port.to_string() == "payload")
+    );
+    let values: Vec<_> = on_wire.into_iter().map(|(_, _, value)| value).collect();
+    assert_eq!(values, [Value::I64(5), Value::I64(6)]);
+}
+
+#[test]
+fn installed_packages_are_there_again_after_a_restart() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-store-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = || HostOptions {
+        package_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    };
+    let listed = |host: &Host| {
+        host.nodes()
+            .any(|node| node.definition.definition.id.as_str() == REMEMBER)
+    };
+    {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        assert!(!listed(&host));
+        let _ = host
+            .install(&graph_package(I64, true).unwrap(), Grants::default())
+            .unwrap();
+        // A refused package is not stored.
+        assert!(host.install(b"not an archive", Grants::default()).is_err());
+    }
+    {
+        let (host, _events) = Host::new(options()).unwrap();
+        assert!(host.not_restored().is_empty());
+        assert!(listed(&host));
+    }
+    // A stored archive that no longer verifies is reported and the host still starts.
+    let archive = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|e| e == "orangeplug"))
+        .unwrap();
+    std::fs::write(&archive, b"damaged").unwrap();
+    let (host, _events) = Host::new(options()).unwrap();
+    assert_eq!(host.not_restored().len(), 1);
+    assert!(!listed(&host));
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn the_base_nodes_can_be_left_out() {
+    let packages = |base_nodes| {
+        let options = HostOptions {
+            base_nodes,
+            ..HostOptions::default()
+        };
+        let (host, _events) = Host::new(options).unwrap();
+        host.nodes()
+            .filter(|node| !node.definition.definition.id.is_core())
+            .count()
+    };
+    assert!(packages(true) > 0);
+    assert_eq!(packages(false), 0);
+    // The core language alone still runs a graph.
+    let options = HostOptions {
+        base_nodes: false,
+        ..HostOptions::default()
+    };
+    let (mut host, _events) = Host::new(options).unwrap();
+    let flow = host.open(&manual_graph(1)).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the value", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+}
+
+#[test]
+fn a_disabled_package_is_listed_and_left_out_from_the_next_start() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-toggle-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let start = || {
+        let options = HostOptions {
+            package_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        };
+        let native = orange_host::ServicePackage::new("org.example.native", "2.0.0")
+            .about("Native", "A native package without nodes.");
+        Host::with_services(options, vec![native]).unwrap().0
+    };
+    // (kind, active, enabled) of each package, by ID.
+    let states = |host: &Host| -> Vec<(String, PackageKind, bool, bool)> {
+        host.packages()
+            .map(|package| {
+                (
+                    package.id.to_owned(),
+                    package.kind,
+                    package.active,
+                    package.enabled,
+                )
+            })
+            .collect()
+    };
+    let base_nodes = |host: &Host| {
+        host.nodes()
+            .filter(|node| !node.definition.definition.id.is_core())
+            .count()
+    };
+    let all = |active: bool, enabled: bool| {
+        vec![
+            (BASE_PACKAGE.to_owned(), PackageKind::Base, active, enabled),
+            (
+                "org.example.native".to_owned(),
+                PackageKind::Native,
+                active,
+                enabled,
+            ),
+            (
+                "org.orange.clock".to_owned(),
+                PackageKind::Native,
+                active,
+                enabled,
+            ),
+            (
+                "org.example.tools".to_owned(),
+                PackageKind::Installed,
+                active,
+                enabled,
+            ),
+        ]
+    };
+
+    let key = {
+        let mut host = start();
+        let key = host
+            .install(&graph_package(I64, true).unwrap(), Grants::default())
+            .unwrap();
+        assert_eq!(states(&host), all(true, true));
+        let native = host.packages().nth(1).unwrap();
+        assert_eq!(native.name(), Some("Native"));
+        assert_eq!(native.version, "2.0.0");
+        // Disabling changes the choice, not what this host already uses.
+        for (id, ..) in all(true, true) {
+            host.set_enabled(&id, false).unwrap();
+        }
+        assert_eq!(states(&host), all(true, false));
+        assert!(base_nodes(&host) > 0);
+        key
+    };
+    {
+        let mut host = start();
+        assert!(host.not_restored().is_empty());
+        assert_eq!(states(&host), all(false, false));
+        assert_eq!(base_nodes(&host), 0);
+        for (id, ..) in all(false, false) {
+            host.set_enabled(&id, true).unwrap();
+        }
+        assert_eq!(states(&host), all(false, true));
+    }
+    {
+        let mut host = start();
+        assert_eq!(states(&host), all(true, true));
+        assert!(base_nodes(&host) > 0);
+        host.set_enabled("org.example.tools", false).unwrap();
+    }
+    // A package that was left out can still be removed from the directory.
+    let mut host = start();
+    assert_eq!(
+        installed(&host)
+            .map(|package| package.active)
+            .collect::<Vec<_>>(),
+        [false]
+    );
+    host.uninstall(&key).unwrap();
+    assert_eq!(installed(&host).count(), 0);
+    drop(host);
+    assert_eq!(installed(&start()).count(), 0);
+
+    // An application can also leave packages out without a directory.
+    let options = HostOptions {
+        disabled_packages: [BASE_PACKAGE.to_owned(), "org.orange.clock".to_owned()].into(),
+        ..HostOptions::default()
+    };
+    let (host, _events) = Host::new(options).unwrap();
+    assert_eq!(base_nodes(&host), 0);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+const ON_POKE: &str = "org.example.triggers/on-poke";
+
+/// A package with no code whose one node is a trigger: its fragment starts at a manual
+/// entry and emits what it received.
+fn trigger_package(with_event: bool) -> Result<Vec<u8>, HostError> {
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.triggers", "version": "1.0.0", "publisher": "org.example",
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [ON_POKE],
+            "providers": [{"slot": format!("node:{ON_POKE}@1"), "id": orange_host::GRAPH_PROVIDER}]
+        },
+        "permissions": [],
+        "license": "MIT"
+    });
+    let definition = json!({"definition_id": ON_POKE, "definition_version": 1,
+        "config_version": 1, "kind": "entry", "determinism": "external",
+        "ports": [{"port_id": "payload", "direction": "output", "kind": "data", "type": I64,
+            "source": "payload"}]});
+    let mut inner = core(301, "on-manual");
+    inner["config"] = json!({"payload": I64});
+    let mut emit = core(302, "emit");
+    emit["config"] = json!({"event": if with_event { id(310) } else { id(311) }});
+    let graph = json!({
+        "format": orange_host::GRAPH_NODE_FORMAT, "format_version": 1,
+        "trigger": {
+            "event": id(310),
+            "nodes": [inner, emit],
+            "edges": [
+                edge(301, 301, "then", 302, "in"),
+                edge(302, 301, "payload", 302, "payload"),
+            ]
+        }
+    });
+    orange_host::pack(
+        manifest.to_string().as_bytes(),
+        &[
+            (
+                "nodes/on-poke.json".into(),
+                definition.to_string().into_bytes(),
+            ),
+            ("graphs/on-poke.json".into(), graph.to_string().into_bytes()),
+        ],
+    )
+}
+
+#[test]
+fn a_trigger_made_as_a_graph_starts_the_documents_own_nodes() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    // A fragment that emits an event it does not own is refused, and the corrected
+    // package installs under the same version.
+    assert!(
+        host.install(&trigger_package(false).unwrap(), Grants::default())
+            .is_err()
+    );
+    let _ = host
+        .install(&trigger_package(true).unwrap(), Grants::default())
+        .unwrap();
+
+    // Two uses of the trigger, each writing its own variable.
+    let mut document = empty(1);
+    for n in [1, 3] {
+        let poke = NewNode::new(
+            node(n),
+            DefinitionRef {
+                id: ON_POKE.parse().unwrap(),
+                version: 1,
+            },
+        );
+        let edit = new_node_edit(&document, host.registry(), poke).unwrap();
+        let _ = document.apply(edit.commands).unwrap();
+    }
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    for entry in saved["nodes"].as_array_mut().unwrap() {
+        entry["activation"] = core(0, "on-manual")["activation"].clone();
+    }
+    let mut first = core(2, "set-variable");
+    first["config"] = json!({"variable": id(TOTAL)});
+    let mut second = core(4, "set-variable");
+    second["config"] = json!({"variable": id(TOTAL + 1)});
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([first, second]);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 1, "payload", 2, "value"),
+        edge(3, 3, "then", 4, "in"),
+        edge(4, 3, "payload", 4, "value"),
+    ]);
+    saved["variables"] = json!([
+        {"id": id(TOTAL), "name": "total", "type": I64, "scope": "run"},
+        {"id": id(TOTAL + 1), "name": "other", "type": I64, "scope": "run"}
+    ]);
+    let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
+    assert!(!text.contains("core/emit"));
+    let diagnostics = host.check(&text).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let flow = host.open(&text).unwrap();
+    // Each use has its own inner entry; firing them reaches only that use's nodes.
+    let inner = host.info(flow).unwrap().manual_entries.clone();
+    assert_eq!(inner.len(), 2);
+    host.trigger(flow, inner[0].0, Some(Value::I64(5))).unwrap();
+    host.trigger(flow, inner[1].0, Some(Value::I64(6))).unwrap();
+    let other: VariableId = id(TOTAL + 1).parse().unwrap();
+    until("both uses", || {
+        read_total(&host, flow).is_some()
+            && host
+                .inspect(flow, move |run| run.variable(other).cloned())
+                .unwrap()
+                .is_some()
+    });
+    let mut seen = vec![
+        read_total(&host, flow).unwrap(),
+        host.inspect(flow, move |run| run.variable(other).cloned())
+            .unwrap()
+            .unwrap(),
+    ];
+    seen.sort_by_key(|value| format!("{value:?}"));
+    assert_eq!(seen, [Value::I64(5), Value::I64(6)]);
+}
+
+/// A graph whose manual entry adds its payload to the shared counter, and which keeps
+/// what it last read from the counter in its own variable when told to.
+fn counting_graph(graph: u32) -> String {
+    let saved: Json = serde_json::from_str(&to_json(&empty(graph)).unwrap()).unwrap();
+    let mut add = core(1, "on-manual");
+    add["config"] = json!({"payload": I64});
+    let mut update = core(2, "update-shared");
+    update["config"] = json!({"variable": id(900), "operation": "add"});
+    let mut look = core(3, "on-manual");
+    look["activation"]["order"] = json!(1);
+    let mut read = core(4, "get-variable");
+    read["config"] = json!({"variable": id(900)});
+    let mut keep = core(5, "set-variable");
+    keep["config"] = json!({"variable": id(TOTAL)});
+    let mut saved = saved;
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([add, update, look, read, keep]);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 1, "payload", 2, "value"),
+        edge(3, 3, "then", 5, "in"),
+        edge(4, 4, "value", 5, "value"),
+    ]);
+    saved["variables"] = json!([
+        {"id": id(TOTAL), "name": "total", "type": I64, "scope": "run"},
+        {"id": id(900), "name": "counter", "type": I64, "scope": "workspace",
+            "init": {"type": I64, "value": "0"}}
+    ]);
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn flows_share_variables_declared_in_the_host() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    // Without a declaration a document that uses shared variables does not open.
+    assert!(matches!(
+        host.open(&counting_graph(1)),
+        Err(HostError::Workspace(_))
+    ));
+    host.share_variables(&counting_graph(9)).unwrap();
+    assert!(host.share_variables(&counting_graph(9)).is_err());
+    let counter: VariableId = id(900).parse().unwrap();
+    assert_eq!(host.shared_variable(counter), Some(Value::I64(0)));
+    assert_eq!(host.shared_variables(), [(counter, Some(Value::I64(0)))]);
+    let writes = host.shared_writes();
+
+    let first = host.open(&counting_graph(1)).unwrap();
+    let second = host.open(&counting_graph(2)).unwrap();
+    // Three each, within the entries' queue capacity.
+    for _ in 0..3 {
+        host.trigger(first, node(1), Some(Value::I64(1))).unwrap();
+        host.trigger(second, node(1), Some(Value::I64(10))).unwrap();
+    }
+    // No write is lost, whichever flow made it.
+    until("every write", || {
+        host.shared_variable(counter) == Some(Value::I64(33))
+    });
+    assert_eq!(host.shared_variables(), [(counter, Some(Value::I64(33)))]);
+    assert!(host.shared_writes() >= writes + 6);
+    // A flow reads what the other one wrote.
+    host.trigger(first, node(3), None).unwrap();
+    until("the read", || {
+        read_total(&host, first) == Some(Value::I64(33))
+    });
+}
+
+#[test]
+fn an_observed_flow_reports_what_a_pure_node_computed() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    // payload + 1 is written to the variable.
+    let mut document = empty(1);
+    let mut add = NewNode::new(
+        node(3),
+        DefinitionRef {
+            id: "org.orange.math/add".parse().unwrap(),
+            version: 1,
+        },
+    );
+    add.type_pins = serde_json::from_value(json!({"T": I64})).unwrap();
+    add.inputs = serde_json::from_value(json!({"b": {"type": I64, "value": "1"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), add).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    let mut entry = core(1, "on-manual");
+    entry["config"] = json!({"payload": I64});
+    let mut set = core(2, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![entry, set],
+        json!([
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 1, "payload", 3, "a"),
+            edge(3, 3, "sum", 2, "value")
+        ]),
+    );
+    let flow = host.open(&text).unwrap();
+    host.observe(flow, true).unwrap();
+    host.trigger(flow, node(1), Some(Value::I64(41))).unwrap();
+    until("the sum", || {
+        read_total(&host, flow) == Some(Value::I64(42))
+    });
+    host.stop(flow, StopMode::Graceful).unwrap();
+    let seen = finished(&events, &[flow]);
+    let on_wire: Vec<_> = seen
+        .iter()
+        .filter_map(|event| match &event.kind {
+            FlowEvent::Ports(ports) => Some(ports.clone()),
+            _ => None,
+        })
+        .flatten()
+        .map(|(from, port, value)| (from, port.to_string(), value))
+        .collect();
+    assert!(on_wire.contains(&(node(1), "payload".into(), Value::I64(41))));
+    assert!(on_wire.contains(&(node(3), "sum".into(), Value::I64(42))));
+}
+
+#[test]
+fn packages_are_listed_and_a_removed_one_stays_removed() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-remove-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = || HostOptions {
+        package_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    };
+    let placeable = |host: &Host| {
+        host.nodes().any(|node| {
+            node.definition.definition.id.as_str() == REMEMBER && node.provider.is_some()
+        })
+    };
+    let archive = graph_package(I64, true).unwrap();
+    let key = {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        assert_eq!(installed(&host).count(), 0);
+        let key = host.install(&archive, Grants::default()).unwrap();
+        let listed: Vec<_> = installed(&host).collect();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, key.id.as_str());
+        assert_eq!(listed[0].version, key.version.as_str());
+        assert_eq!(listed[0].manifest.unwrap().key(), &key);
+        assert!(placeable(&host));
+
+        host.uninstall(&key).unwrap();
+        assert_eq!(installed(&host).count(), 0);
+        assert!(!placeable(&host));
+        // Removing it again is refused, and nothing else changes.
+        assert!(matches!(host.uninstall(&key), Err(HostError::Uninstall(_))));
+        // It installs again in the same session, and is removed again.
+        assert_eq!(host.install(&archive, Grants::default()).unwrap(), key);
+        assert!(placeable(&host));
+        host.uninstall(&key).unwrap();
+        key
+    };
+    {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        assert!(host.not_restored().is_empty());
+        assert_eq!(installed(&host).count(), 0);
+        // The same version installs again.
+        assert_eq!(host.install(&archive, Grants::default()).unwrap(), key);
+        assert!(placeable(&host));
+    }
+    let (host, _events) = Host::new(options()).unwrap();
+    assert_eq!(installed(&host).count(), 1);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_release_from_a_feed_succeeds_the_installed_version() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let old = host
+        .install(&graph_package(I64, true).unwrap(), Grants::default())
+        .unwrap();
+    let provider_version = |host: &Host| {
+        host.nodes()
+            .find(|node| node.definition.definition.id.as_str() == REMEMBER)
+            .and_then(|node| node.provider.map(|provider| provider.version.clone()))
+    };
+    assert_eq!(provider_version(&host).as_deref(), Some("1.0.0"));
+
+    // The feed the installed package names announces 1.1.0.
+    let newer = graph_package_at("1.1.0", I64, true).unwrap();
+    let (mut scratch, _scratch_events) = Host::new(HostOptions::default()).unwrap();
+    let new = scratch.install(&newer, Grants::default()).unwrap();
+    let digest = installed(&scratch)
+        .next()
+        .unwrap()
+        .manifest
+        .unwrap()
+        .content_digest()
+        .to_owned();
+    let feed = json!({"format": "orange.update-feed", "format_version": 1, "releases": [
+        {"id": "org.example.tools", "version": "1.1.0",
+            "archive": "https://example.org/tools/1.1.0.orangeplug", "content_digest": digest}
+    ]});
+    let feed = orange_host::UpdateFeed::from_json(feed.to_string().as_bytes()).unwrap();
+    let manifest = installed(&host).next().unwrap().manifest.unwrap();
+    assert_eq!(
+        manifest.update().unwrap().feed(),
+        "https://example.org/tools/feed.json"
+    );
+    let release = feed.update_for(manifest).unwrap().clone();
+    assert_eq!(release.key(), &new);
+
+    // An archive that is not the announced one is refused and nothing changes.
+    let other = graph_package_at("1.1.0", I64, false).unwrap();
+    assert!(matches!(
+        host.install_release(&other, Grants::default(), release.content_digest()),
+        Err(HostError::Archive(_))
+    ));
+    assert_eq!(installed(&host).count(), 1);
+
+    assert_eq!(
+        host.install_release(&newer, Grants::default(), release.content_digest())
+            .unwrap(),
+        new
+    );
+    // Both versions stay, so documents locked to 1.0.0 still open; new nodes use 1.1.0.
+    assert_eq!(installed(&host).count(), 2);
+    assert_eq!(provider_version(&host).as_deref(), Some("1.1.0"));
+    let manifest = installed(&host)
+        .find(|package| package.version == "1.1.0")
+        .unwrap()
+        .manifest
+        .unwrap();
+    assert_eq!(feed.update_for(manifest), None);
+    host.uninstall(&old).unwrap();
+    assert_eq!(provider_version(&host).as_deref(), Some("1.1.0"));
+}
+
+/// The installed packages of a host, without its base and native ones.
+fn installed(host: &Host) -> impl Iterator<Item = orange_host::PackageInfo<'_>> {
+    host.packages()
+        .filter(|package| package.kind == PackageKind::Installed)
+}
+
+/// `manual_graph` with `total` persistent and starting at 0, and an entry that copies
+/// each new value of `total` into `seen`.
+fn persistent_graph(graph: u32) -> String {
+    let mut saved: Json = serde_json::from_str(&manual_graph(graph)).unwrap();
+    let zero = json!({"type": I64, "value": "0"});
+    saved["variables"] = json!([
+        {"id": id(TOTAL), "name": "total", "type": I64, "scope": "run", "persistent": true,
+            "init": zero},
+        {"id": id(TOTAL + 1), "name": "seen", "type": I64, "scope": "run"}
+    ]);
+    let mut changed = core(10, "on-variable-changed");
+    changed["config"] = json!({"variable": id(TOTAL)});
+    let mut copy = core(11, "set-variable");
+    copy["config"] = json!({"variable": id(TOTAL + 1)});
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([changed, copy]);
+    saved["edges"].as_array_mut().unwrap().extend([
+        edge(10, 10, "then", 11, "in"),
+        edge(11, 10, "value", 11, "value"),
+    ]);
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn panicking_inspector_does_not_stop_the_run() {
+    let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&persistent_graph(1)).unwrap();
+    assert!(matches!(
+        host.inspect::<()>(flow, |_| panic!("synthetic inspector failure")),
+        Err(HostError::Run(_))
+    ));
+    host.trigger(flow, node(1), None).unwrap();
+    until("the graph's write", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+}
+
+#[test]
+fn replacement_persists_new_variable_ids_even_when_the_values_are_equal() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-replace-state-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let (mut host, _) = Host::new(HostOptions {
+        state_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    })
+    .unwrap();
+    let original = persistent_graph(1);
+    let replacement = TOTAL + 2;
+    let edit = original.replace(&id(TOTAL), &id(replacement));
+    let graph = empty(1).graph_id();
+    let zero =
+        serde_json::from_value::<orange_host::Literal>(json!({"type": I64, "value": "0"})).unwrap();
+    let is_stored = |host: &Host, variable| {
+        let saved = host.stored_variables(Some(graph)).unwrap();
+        matches!(saved.as_slice(), [entry] if entry.id == variable && entry.literal == zero)
+    };
+    let flow = host.open(&original).unwrap();
+    until("the original variable to be stored", || {
+        is_stored(&host, total())
+    });
+    assert!(host.update(flow, &edit).unwrap().changed);
+    let replacement = id(replacement).parse().unwrap();
+    until("the replacement variable to be stored", || {
+        is_stored(&host, replacement)
+    });
+    host.close(flow).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn persistent_variables_survive_a_restart_and_can_be_edited() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-state-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let start = || {
+        let options = HostOptions {
+            state_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        };
+        Host::new(options).unwrap().0
+    };
+    let text = persistent_graph(1);
+    let graph = empty(1).graph_id();
+    let seen: VariableId = id(TOTAL + 1).parse().unwrap();
+    let stored = |host: &Host| -> Vec<(VariableId, String)> {
+        host.stored_variables(Some(graph))
+            .unwrap()
+            .into_iter()
+            .map(|variable| {
+                (
+                    variable.id,
+                    serde_json::to_string(&variable.literal).unwrap(),
+                )
+            })
+            .collect()
+    };
+    let literal = |value: i64| -> orange_host::Literal {
+        serde_json::from_value(json!({"type": I64, "value": value.to_string()})).unwrap()
+    };
+    let as_stored = |value: i64| vec![(total(), serde_json::to_string(&literal(value)).unwrap())];
+
+    {
+        let mut host = start();
+        assert!(host.check(&text).unwrap().is_empty());
+        assert!(stored(&host).is_empty());
+        let flow = host.open(&text).unwrap();
+        host.trigger(flow, node(1), None).unwrap();
+        until("the graph's write", || {
+            read_total(&host, flow) == Some(Value::I64(7))
+        });
+        // Only the persistent variable is stored, although `seen` changed too.
+        until("the value to be stored", || stored(&host) == as_stored(7));
+    }
+    {
+        let mut host = start();
+        let flow = host.open(&text).unwrap();
+        // The flow starts with the stored value; nothing triggered it.
+        assert_eq!(read_total(&host, flow), Some(Value::I64(7)));
+
+        // An edit from outside is seen by the graph, fires its trigger and is stored.
+        host.set_variable(flow, total(), Value::I64(40)).unwrap();
+        assert_eq!(read_total(&host, flow), Some(Value::I64(40)));
+        until("the change trigger", || {
+            host.inspect(flow, move |run| run.variable(seen).cloned())
+                .unwrap()
+                == Some(Value::I64(40))
+        });
+        until("the edit to be stored", || stored(&host) == as_stored(40));
+        assert!(matches!(
+            start().store_variable(Some(graph), total(), literal(99)),
+            Err(HostError::State(_))
+        ));
+        // A value of another type, or an unknown variable, changes nothing.
+        assert!(matches!(
+            host.set_variable(flow, total(), Value::Bool(true)),
+            Err(HostError::Variable(_))
+        ));
+        assert!(matches!(
+            host.set_variable(flow, id(999).parse().unwrap(), Value::I64(1)),
+            Err(HostError::Variable(_))
+        ));
+        assert_eq!(read_total(&host, flow), Some(Value::I64(40)));
+        host.close(flow).unwrap();
+
+        // With no flow running, the stored value itself is edited.
+        host.store_variable(Some(graph), total(), literal(99))
+            .unwrap();
+        let text_literal: orange_host::Literal =
+            serde_json::from_value(json!({"type": "core/string@1", "value": "x"})).unwrap();
+        assert!(matches!(
+            host.store_variable(Some(graph), total(), text_literal),
+            Err(HostError::State(_))
+        ));
+        let flow = host.open(&text).unwrap();
+        assert_eq!(read_total(&host, flow), Some(Value::I64(99)));
+    }
+    // A variable that changed type starts from its initial value again.
+    let mut host = start();
+    let retyped = text.replace(
+        &format!(r#""name":"total","type":"{I64}""#),
+        r#""name":"total","type":"core/u64@1""#,
+    );
+    if retyped != text {
+        // The set node no longer type-checks; the host refuses, and nothing is lost.
+        assert!(host.open(&retyped).is_err());
+        assert_eq!(stored(&host), as_stored(99));
+    }
+    // A host without a state directory keeps nothing.
+    let (mut plain, _events) = Host::new(HostOptions::default()).unwrap();
+    let flow = plain.open(&text).unwrap();
+    assert_eq!(read_total(&plain, flow), Some(Value::I64(0)));
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn persistent_shared_variables_are_stored_and_edited_through_the_host() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-shared-state-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let counter: VariableId = id(900).parse().unwrap();
+    let declaration = |persistent: bool| {
+        let mut saved: Json = serde_json::from_str(&counting_graph(9)).unwrap();
+        saved["variables"][1]["persistent"] = json!(persistent);
+        to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+    };
+    let start = || {
+        let options = HostOptions {
+            state_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        };
+        let mut host = Host::new(options).unwrap().0;
+        host.share_variables(&declaration(true)).unwrap();
+        host
+    };
+    {
+        let mut host = start();
+        assert_eq!(host.shared_variable(counter), Some(Value::I64(0)));
+        let (mut other, _) = Host::new(HostOptions {
+            state_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            other.share_variables(&declaration(true)),
+            Err(HostError::State(_))
+        ));
+        let literal = serde_json::from_value(json!({"type": I64, "value": "50"})).unwrap();
+        assert!(matches!(
+            other.store_variable(None, counter, literal),
+            Err(HostError::State(_))
+        ));
+        let flow = host.open(&counting_graph(1)).unwrap();
+        host.trigger(flow, node(1), Some(Value::I64(5))).unwrap();
+        until("the flow's write", || {
+            host.shared_variable(counter) == Some(Value::I64(5))
+        });
+        until("the write to be stored", || {
+            host.stored_variables(None).unwrap().len() == 1
+        });
+        // An edit from outside reaches the running flow.
+        host.set_shared_variable(counter, &Value::I64(100)).unwrap();
+        host.trigger(flow, node(3), None).unwrap();
+        until("the flow to read the edit", || {
+            read_total(&host, flow) == Some(Value::I64(100))
+        });
+        assert!(matches!(
+            host.set_shared_variable(counter, &Value::Bool(false)),
+            Err(HostError::Variable(_))
+        ));
+    }
+    let host = start();
+    assert_eq!(host.shared_variable(counter), Some(Value::I64(100)));
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_document_is_saved_autosaved_and_recovered_without_losing_a_version() {
+    use orange_host::{autosave_document, discard_autosave, recover_document, save_document};
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-docs-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("graph.json");
+    let (first, second, third) = (manual_graph(1), manual_graph(2), manual_graph(3));
+
+    assert_eq!(
+        recover_document(&path).unwrap(),
+        orange_host::Recovery::default()
+    );
+    // Text that is not a document is never written over one.
+    assert!(matches!(
+        save_document(&path, "{}"),
+        Err(HostError::Document(_))
+    ));
+    save_document(&path, &first).unwrap();
+    save_document(&path, &second).unwrap();
+    let recovery = recover_document(&path).unwrap();
+    assert_eq!(recovery.saved.as_deref(), Some(second.as_str()));
+    assert_eq!((recovery.autosave, recovery.backup), (None, None));
+
+    // Unsaved work is offered after a crash, and the saved file is untouched.
+    autosave_document(&path, &third).unwrap();
+    let recovery = recover_document(&path).unwrap();
+    assert_eq!(recovery.saved.as_deref(), Some(second.as_str()));
+    assert_eq!(recovery.autosave.as_deref(), Some(third.as_str()));
+    // An autosave equal to the saved file, or damaged, is not offered.
+    autosave_document(&path, &second).unwrap();
+    assert_eq!(recover_document(&path).unwrap().autosave, None);
+    autosave_document(&path, "half a docu").unwrap();
+    assert_eq!(recover_document(&path).unwrap().autosave, None);
+    // Saving removes the autosave, which is now older than the file.
+    autosave_document(&path, &third).unwrap();
+    save_document(&path, &third).unwrap();
+    assert_eq!(recover_document(&path).unwrap().autosave, None);
+    discard_autosave(&path).unwrap();
+
+    // A damaged file falls back to the version before the last save.
+    std::fs::write(&path, "damaged").unwrap();
+    let recovery = recover_document(&path).unwrap();
+    assert_eq!(recovery.saved, None);
+    assert_eq!(recovery.backup.as_deref(), Some(second.as_str()));
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_bundle_carries_a_document_with_its_packages_and_an_import_previews_what_is_missing() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-bundle-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = HostOptions {
+        package_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    };
+    let (mut author, _events) = Host::new(options).unwrap();
+    let key = author
+        .install(&graph_package(I64, true).unwrap(), Grants::default())
+        .unwrap();
+    // A document with one node of the installed package.
+    let mut document = empty(1);
+    let new = NewNode::new(
+        node(2),
+        DefinitionRef {
+            id: REMEMBER.parse().unwrap(),
+            version: 1,
+        },
+    );
+    let edit = new_node_edit(&document, author.registry(), new).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let text = to_json(&document).unwrap();
+
+    let requirements = author.requirements(&text).unwrap();
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].package, key.id.as_str());
+    assert!(requirements[0].available);
+    let (bundle, not_included) = author.export(&text).unwrap();
+    assert!(not_included.is_empty());
+    assert_eq!(bundle.packages.len(), 1);
+    let bytes = bundle.to_bytes();
+
+    // The receiver reads the bundle without installing or running anything.
+    let (mut receiver, _events) = Host::new(HostOptions::default()).unwrap();
+    let received = orange_host::Bundle::from_bytes(&bytes).unwrap();
+    assert_eq!(received, bundle);
+    let preview = receiver.requirements(&received.document).unwrap();
+    assert!(!preview[0].available);
+    assert!(receiver.open(&received.document).is_err());
+    // After installing what the bundle carries, the same document is satisfied.
+    for archive in &received.packages {
+        let _ = receiver.install(archive, Grants::default()).unwrap();
+    }
+    assert!(receiver.requirements(&received.document).unwrap()[0].available);
+
+    // Without a package directory the archive cannot be included, and that is said.
+    let (bundle, not_included) = receiver.export(&received.document).unwrap();
+    assert!(bundle.packages.is_empty());
+    assert_eq!(not_included.len(), 1);
+    for damaged in [
+        &bytes[..bytes.len() - 1],
+        &bytes[1..],
+        b"not a bundle".as_slice(),
+    ] {
+        assert!(matches!(
+            orange_host::Bundle::from_bytes(damaged),
+            Err(HostError::Document(_))
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_function_of_a_document_is_published_as_a_node_other_documents_use() {
+    // A document in which the author built "double and remember" as a function.
+    let port = |name: &str, direction: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": I64});
+    let mut keep = core(203, "set-variable");
+    keep["config"] = json!({"variable": id(210)});
+    let mut read = core(204, "get-variable");
+    read["config"] = json!({"variable": id(210)});
+    let function = json!({"id": id(200), "name": "Keep value", "kind": "action",
+    "inputs": [port("value", "input")],
+    "outputs": [port("result", "output")],
+    "nodes": [core(201, "function-entry"), keep, read, core(205, "return")],
+    "edges": [
+        edge(201, 201, "then", 203, "in"),
+        edge(202, 201, "value", 203, "value"),
+        edge(203, 203, "then", 205, "in"),
+        edge(204, 204, "value", 205, "result"),
+    ]});
+    let mut authored: Json = serde_json::from_str(&to_json(&empty(7)).unwrap()).unwrap();
+    authored["functions"] = json!([function]);
+    authored["variables"] = json!([
+        {"id": id(210), "name": "kept", "type": I64, "scope": "local",
+            "init": {"type": I64, "value": "0"}},
+        {"id": id(TOTAL), "name": "total", "type": I64, "scope": "run"}
+    ]);
+    let authored = to_json(&from_json(&authored.to_string()).unwrap()).unwrap();
+
+    let publish = orange_host::Publish {
+        package: "org.example.made",
+        version: "0.1.0",
+        node: "keep-value",
+        label: None,
+    };
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let preview = host
+        .function_package_preview(&authored, "Keep value")
+        .unwrap();
+    assert_eq!(preview.kind, "action");
+    assert_eq!(preview.inputs, [("value".into(), I64.into())]);
+    assert_eq!(preview.outputs, [("result".into(), I64.into())]);
+    let archive = host
+        .export_function_package(&authored, "Keep value", &publish)
+        .unwrap();
+    let mut incomplete: Json = serde_json::from_str(&authored).unwrap();
+    incomplete["functions"][0]["edges"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert!(matches!(
+        host.export_function_package(&incomplete.to_string(), "Keep value", &publish),
+        Err(HostError::GraphInvalid(_, _))
+    ));
+    // By ID too; a function that does not exist, or a bad node name, is refused.
+    assert!(orange_host::publish_function(&authored, &id(200), &publish).is_ok());
+    assert!(orange_host::publish_function(&authored, "nothing", &publish).is_err());
+    let bad = orange_host::Publish {
+        node: "Keep Value",
+        ..publish
+    };
+    assert!(orange_host::publish_function(&authored, "Keep value", &bad).is_err());
+    // A function that reaches a variable of the document itself cannot stand alone.
+    let reaching = authored.replace(
+        &format!(r#""name":"kept","type":"{I64}","scope":"local""#),
+        &format!(r#""name":"kept","type":"{I64}","scope":"run""#),
+    );
+    assert_ne!(reaching, authored);
+    assert!(orange_host::publish_function(&reaching, "Keep value", &publish).is_err());
+
+    // Someone else installs the package and uses the node with no trace of the graph.
+    let key = host.install(&archive, Grants::default()).unwrap();
+    assert_eq!(
+        (key.id.as_str(), key.version.as_str()),
+        ("org.example.made", "0.1.0")
+    );
+    const MADE: &str = "org.example.made/keep-value";
+    let listed = host
+        .nodes()
+        .find(|info| info.definition.definition.id.as_str() == MADE)
+        .unwrap();
+    assert_eq!(listed.label(), "Keep value");
+    let mut document = empty(8);
+    let mut call = NewNode::new(
+        node(3),
+        DefinitionRef {
+            id: MADE.parse().unwrap(),
+            version: 1,
+        },
+    );
+    call.inputs = serde_json::from_value(json!({"value": {"type": I64, "value": "21"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), call).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    let mut set = core(4, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![core(1, "on-manual"), set],
+        json!([
+            edge(1, 1, "then", 3, "in"),
+            edge(2, 3, "then", 4, "in"),
+            edge(3, 3, "result", 4, "value"),
+        ]),
+    );
+    assert!(host.check(&text).unwrap().is_empty());
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the published node's result", || {
+        read_total(&host, flow) == Some(Value::I64(21))
+    });
+}
+
+#[test]
+fn a_package_is_granted_only_what_its_manifest_asks_for() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    // The probe package asks for logging and nothing else.
+    let probe = probe_archive();
+    let asks = host.permissions(&probe).unwrap();
+    assert_eq!((asks.log, asks.files, asks.http), (true, false, false));
+    let too_much = Grants {
+        log: true,
+        files: true,
+        http: false,
+        http_local: false,
+        compute: false,
+        websocket: false,
+    };
+    assert!(matches!(
+        host.install(&probe, too_much),
+        Err(HostError::Install(_))
+    ));
+    assert_eq!(installed(&host).count(), 0);
+    assert!(host.install(&probe, asks).is_ok());
+    // A package with no code asks for nothing and is given nothing.
+    let graph = graph_package(I64, true).unwrap();
+    assert_eq!(host.permissions(&graph).unwrap(), Grants::default());
+    let logging = Grants {
+        log: true,
+        files: false,
+        http: false,
+        http_local: false,
+        compute: false,
+        websocket: false,
+    };
+    assert!(matches!(
+        host.install(&graph, logging),
+        Err(HostError::Install(_))
+    ));
+    assert!(matches!(
+        host.permissions(b"not an archive"),
+        Err(HostError::Archive(_))
+    ));
+}
+
+#[test]
+fn a_document_written_by_hand_is_bound_and_then_runs() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let _ = host
+        .install(&graph_package(I64, true).unwrap(), Grants::default())
+        .unwrap();
+    let _ = host
+        .install(&trigger_package(true).unwrap(), Grants::default())
+        .unwrap();
+    // What a person can write: the node's definition, its inputs, nothing about
+    // providers, package digests or signatures.
+    let by_hand = |definition: &str| {
+        let saved: Json = serde_json::from_str(&to_json(&empty(4)).unwrap()).unwrap();
+        let call = json!({"id": id(3), "definition_id": definition, "definition_version": 1,
+            "config_version": 1, "config": {},
+            "inputs": {"value": {"type": I64, "value": "5"}}});
+        let mut set = core(4, "set-variable");
+        set["config"] = json!({"variable": id(TOTAL)});
+        with_total(
+            saved,
+            vec![core(1, "on-manual"), call, set],
+            json!([
+                edge(1, 1, "then", 3, "in"),
+                edge(2, 3, "then", 4, "in"),
+                edge(3, 3, "result", 4, "value"),
+            ]),
+        )
+    };
+    let text = by_hand(REMEMBER);
+    assert!(!host.check(&text).unwrap().is_empty());
+
+    let bound = host.bind(&text).unwrap();
+    assert!(host.check(&bound).unwrap().is_empty());
+    assert!(bound.contains("\"signature\"") && bound.contains("org.example.tools"));
+    // Binding again changes nothing, and a document with nothing to bind is returned
+    // as it is.
+    assert_eq!(host.bind(&bound).unwrap(), bound);
+    assert_eq!(host.bind(&manual_graph(1)).unwrap(), manual_graph(1));
+    let flow = host.open(&bound).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the bound node's result", || {
+        read_total(&host, flow) == Some(Value::I64(5))
+    });
+
+    // An entry node written without an activation gets one.
+    let mut saved: Json = serde_json::from_str(&to_json(&empty(5)).unwrap()).unwrap();
+    saved["nodes"] = json!([{"id": id(1), "definition_id": ON_POKE, "definition_version": 1,
+        "config_version": 1, "config": {}}]);
+    let bound: Json = serde_json::from_str(&host.bind(&saved.to_string()).unwrap()).unwrap();
+    assert_eq!(bound["nodes"][0]["activation"]["mode"], "queue");
+    // A node this host has no definition for is refused by its ID.
+    let Err(HostError::Document(reason)) = host.bind(&by_hand("org.example.missing/thing")) else {
+        panic!("an unknown definition is refused");
+    };
+    assert!(reason.contains(&id(3)), "{reason}");
+}
+
+/// A document whose On Start calls the probe package's node once.
+fn probe_document(host: &Host) -> String {
+    let definition = DefinitionRef {
+        id: ACCUMULATE.parse().unwrap(),
+        version: 1,
+    };
+    let mut document = empty(3);
+    let mut call = NewNode::new(node(3), definition);
+    call.inputs = serde_json::from_value(json!({"amount": {"type": I64, "value": "5"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), call).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    with_total(
+        saved,
+        vec![core(1, "on-start")],
+        json!([edge(1, 1, "then", 3, "in")]),
+    )
+}
+
+#[test]
+fn package_access_is_kept_per_package_and_can_be_revoked() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-access-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = || HostOptions {
+        package_dir: Some(directory.clone()),
+        plugin_http_hosts: Some(vec!["app-wide.example".into()]),
+        ..HostOptions::default()
+    };
+    let logging = Grants {
+        log: true,
+        ..Grants::default()
+    };
+    let own = PackageAccess {
+        grants: logging,
+        http_hosts: Some(vec!["api.example.org".into(), ".example.net".into()]),
+        data_quota: Some(4096),
+    };
+    let key = {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        let key = host.install_with(&probe_archive(), own.clone()).unwrap();
+        assert_eq!(host.access(&key), Some(&own));
+        key
+    };
+    // The package's own limits and grants come back after a restart.
+    let (mut host, _events) = Host::new(options()).unwrap();
+    assert!(host.not_restored().is_empty());
+    assert_eq!(host.access(&key), Some(&own));
+    let flow = host.open(&probe_document(&host)).unwrap();
+
+    // A grant the package does not ask for is refused and changes nothing.
+    let too_much = PackageAccess {
+        grants: Grants {
+            files: true,
+            ..logging
+        },
+        ..own.clone()
+    };
+    assert!(matches!(
+        host.set_access(&key, too_much),
+        Err(HostError::Install(_))
+    ));
+    assert_eq!(host.access(&key), Some(&own));
+
+    // Revoking `log`: the probe imports it, so a flow opened now cannot bind its node,
+    // while the flow opened before keeps the instance it started with.
+    let revoked = PackageAccess::default();
+    host.set_access(&key, revoked.clone()).unwrap();
+    assert_eq!(host.access(&key), Some(&revoked));
+    assert!(host.open(&probe_document(&host)).is_err());
+    assert!(host.flows().any(|id| id == flow));
+    host.close(flow).unwrap();
+    drop(host);
+
+    // The revocation is stored, and granting again works without reinstalling.
+    let (mut host, _events) = Host::new(options()).unwrap();
+    assert_eq!(host.access(&key), Some(&revoked));
+    assert!(host.open(&probe_document(&host)).is_err());
+    host.set_access(&key, own.clone()).unwrap();
+    let flow = host.open(&probe_document(&host)).unwrap();
+    host.close(flow).unwrap();
+
+    // An uninstalled package has no access left to change.
+    host.uninstall(&key).unwrap();
+    assert_eq!(host.access(&key), None);
+    assert!(host.set_access(&key, own).is_err());
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_node_of_a_missing_package_names_it_and_keeps_its_wired_ports() {
+    let (mut with, _events) = Host::new(HostOptions::default()).unwrap();
+    let logging = Grants {
+        log: true,
+        ..Grants::default()
+    };
+    let _ = with.install(&probe_archive(), logging).unwrap();
+    let text = probe_document(&with);
+    let installed = with.view(&text).unwrap();
+    let card = |graph: &orange_host::GraphView| {
+        graph
+            .nodes
+            .iter()
+            .find(|card| card.id == node(3))
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(card(&installed).missing, None);
+
+    let (without, _events) = Host::new(HostOptions::default()).unwrap();
+    let shown = without.view(&text).unwrap();
+    let missing = card(&shown);
+    assert_eq!(
+        missing.missing,
+        Some(orange_host::MissingPackage {
+            package: "org.example.probe".into(),
+            version: "1.0.0".into(),
+        })
+    );
+    // The saved signature gives the card its ports, and the wire into it is kept.
+    let ports: Vec<_> = missing.ports.iter().map(|port| port.id.as_str()).collect();
+    for port in ["in", "amount", "result"] {
+        assert!(ports.contains(&port), "{ports:?}");
+    }
+    assert!(
+        missing
+            .ports
+            .iter()
+            .any(|port| port.id == "in" && port.connected)
+    );
+    assert_eq!(shown.wires.len(), installed.wires.len());
+    // Built-in nodes never count as missing.
+    assert!(
+        shown
+            .nodes
+            .iter()
+            .filter(|card| card.id != node(3))
+            .all(|card| card.missing.is_none())
+    );
+}
+
+#[test]
+fn an_unwired_variable_update_output_is_reported_once_it_completes() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../apps/orange-cli/graphs/counter-with-reset.json"
+    ))
+    .unwrap();
+    let flow = host.open(&text).unwrap();
+    host.observe(flow, true).unwrap();
+    let increment = node(1);
+    let add_one = node(2);
+    host.trigger(flow, increment, None).unwrap();
+    let mut seen = std::collections::BTreeMap::new();
+    until("Add one's old and new", || {
+        for event in events.try_iter() {
+            if let FlowEvent::Ports(values) = event.kind {
+                for (node, port, value) in values {
+                    if node == add_one {
+                        seen.insert(port.to_string(), value);
+                    }
+                }
+            }
+        }
+        seen.len() == 2
+    });
+    assert!(matches!(seen["old"], Value::I64(0)), "{seen:?}");
+    assert!(matches!(seen["new"], Value::I64(1)), "{seen:?}");
+    host.close(flow).unwrap();
+}
+
+/// Built-in packages keep their own version, not the application's, so a graph saved by
+/// an earlier release still finds the exact providers it pinned.
+#[test]
+fn built_in_packages_keep_their_own_version_across_releases() {
+    let (host, _) = Host::new(HostOptions::default()).unwrap();
+    let built_in: Vec<_> = host
+        .packages()
+        .filter(|package| package.kind != PackageKind::Installed)
+        .collect();
+    assert!(!built_in.is_empty());
+    for package in built_in {
+        assert_eq!(
+            package.version,
+            orange_host::BUILT_IN_PACKAGE_VERSION,
+            "{}",
+            package.id
+        );
+    }
+    // This example was saved with the base nodes pinned at the built-in version.
+    let saved = include_str!("../../../apps/orange-cli/graphs/json-extraction.json");
+    assert!(saved.contains(&format!(
+        "\"version\": \"{}\"",
+        orange_host::BUILT_IN_PACKAGE_VERSION
+    )));
+    assert!(host.check(saved).unwrap().is_empty());
+}

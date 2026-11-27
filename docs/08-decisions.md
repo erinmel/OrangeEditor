@@ -1,20 +1,121 @@
 # Architecture decision records
 
-Status key: **Selected** is the planning default; **Conditional** must pass a named feasibility probe before production adoption. Neither means implemented. Owners are responsibility roles for future work, not newly assigned people. Primary evidence was retrieved 2026-10-20; moving/development API sources are not exact dependency pins.
+ADR-21/23 host authoring amendment (2026-11-14; MAINT-CORE): front ends edit a retained
+`orange_host::Draft`, not document text. A draft owns the parsed document, model
+transaction inverses for undo and redo, and the ADR-23 `AnalysisSession`, which
+`Host::problems` feeds every committed change set. Every host editing operation takes
+`&mut Draft` and is one transaction; text is produced only to save, copy or start or
+update a flow. This replaces the text-in/text-out editing API and the editor's
+whole-text undo stack. Graph semantics, the saved format and flow updates are
+unchanged. Measurements: [10](10-development.md#performance).
+
+ADR-21 public-surface amendment (2026-11-14; MAINT-CORE): the public core API is what
+downstream crates and hosts call. Functions only tests used are removed from it. The
+individual validation passes (`validate_availability`, `validate_regions`,...),
+`analyze_functions`, `required_checks` and `validate_with_effects` are crate-private;
+`analyze*`, `validate`, `validate_nodes` and `validate_body_domains` remain public.
+`orange-model`'s behaviour suite in `tests/` compiles into the library's unit-test
+target so it can still check a single pass. Graph semantics and diagnostics are unchanged.
+
+ADR-02/21 implementation amendment (2026-11-14; PERF-EDITOR): use frame-local
+borrowed geometry/connectivity indexes and one registry-generation/search-keyed
+palette cache. The extra index memory is accepted to eliminate repeated scans;
+no pointer-identity cache may assume that a public mutable `GraphView` is unchanged.
+Saved positions bypass topology. A topological queue supplies unsaved DAG columns;
+cycle-blocked nodes stack in document order at columns reached from acyclic roots,
+replacing the old edge-order-dependent relaxation. UI polling yields after 256
+events and must continue on later frames. Graph/runtime/provider contracts and
+core/UI dependency boundaries are unchanged. [10](10-development.md#performance)
+records behavior regressions, measured scope and open qualification limits.
+
+**Scope precedence (2026-10-22): ADR-22 supersedes the earlier delivery scope in ADR-09–12 and ADR-21. Historical rationale does not reintroduce specialized integrations or deferred protocols as release gates.**
+
+Status key: **Selected** is the planning default; **Conditional** must pass a named feasibility probe before production adoption; **Proposed** awaits the product owner's acceptance and changes no contract until accepted. Neither means implemented. Owners are responsibility roles for future work, not newly assigned people. Primary evidence was retrieved 2026-10-20; moving/development API sources are not exact dependency pins.
 
 ## ADR-01 — Standalone typed graph core
 
-**Selected.** `orange-model/compiler/runtime` have no Bevy dependency. Desktop and CLI share the same execution plan/contracts. Alternatives: map every node to ECS systems/schedules; execute directly from widgets; adopt an unspecified external graph engine. Choose a compact plan because data dependencies, explicit effect sequencing, state visibility and async continuations are language semantics independent of frames/ECS. ECS remains useful for editor/scene entities. Consequence: Orange owns compiler/debug/source-map work; engine scheduling is not free infrastructure.
+**Selected.** `orange-model/compiler/runtime` have no UI, window or engine dependency. Desktop and CLI share the same execution plan/contracts. Alternatives: map every node to ECS systems/schedules; execute directly from widgets; adopt an unspecified external graph engine. Choose a compact plan because data dependencies, explicit effect sequencing, state visibility and async continuations are language semantics independent of frames/ECS. Consequence: Orange owns compiler/debug/source-map work; engine scheduling is not free infrastructure.
 
-Evidence: project requirements FR-07–16 and [Bevy dossier](09-bevy-0.20.md) schedule/headless evidence; this is an architectural inference, not a benchmark conclusion. **Falsification:** the WU-00 reference interpreter and the WU-04 executor agree on the G-suite and on compiled pure/effect/async fixtures; B-P03/05 completes network/timer work while rendering is paused and core build has no Bevy dependency. Failure of these invariants requires redesign, not another frame-loop workaround. Owner runtime lead; G2.
+Evidence: project requirements and the headless probe P-05 ([10](10-development.md)); this is an architectural inference, not a benchmark conclusion. **Falsification:** the WU-00 reference interpreter and the WU-04 executor agree on the G-suite and on compiled pure/effect/async fixtures; P-03/05 completes network/timer work while the UI is paused and the core build has no UI or engine dependency. Failure of these invariants requires redesign, not another frame-loop workaround. Owner runtime lead; G2.
 
-## ADR-02 — Bevy application, conditional native UI
+## ADR-02 — Editor UI on egui; no Bevy
 
-**Conditional.** Pin Bevy **=0.20.0**; provisional native UI/Feathers shell, custom canvas and independent accessible interaction model. Alternatives: exact-compatible egui integration; native shell with Bevy viewport. Selected direction supports scene expansion and avoids a premature multi-toolkit input/render bridge, while keeping a fallback if text/accessibility fails. Consequence: editor foundation remains a P1 risk; rendering functionality alone does not satisfy desktop controls, native dialogs, IME or screen-reader requirements.
+**Selected by the user, 2026-10-21; Conditional** until the probe below passes. Replaces the earlier Bevy 0.20 native UI/Feathers direction. The editor UI is a Rust library on **egui**, separate from the core (ADR-01, ADR-21). The reference desktop app hosts it through `eframe`. The UI crate depends on `egui` only, not on `eframe`, so a downstream product can host the same editor inside its own window or engine (`egui-wgpu`/`egui-winit` or another egui integration). **Bevy is dropped from the project** (user decision, 2026-10-21): no Bevy application, UI or adapter. A downstream product built on an engine embeds the core and the egui UI on its own side.
 
-Evidence: versioned/tagged sources and source conflicts in [09](09-bevy-0.20.md); [10](10-tooling-and-sources.md) shows local compiler below the verified MSRV. **Falsification:** B-P01/02/06 and WU-02 must demonstrate text composition, focus/caret preservation, clipboard, DPI and keyboard/screen-reader workflows on declared OSs. Fail required capability → compare a verified alternative before WU-05. No old Bevy tutorial counts as compiled 0.20 evidence. Owner editor/platform lead; G1.
+Why egui:
+
+- **Accessibility and input:** first pure-Rust toolkit with platform accessibility through AccessKit; IME works; 2026 community tests rate its IME and screen-reader support among the best Rust toolkits.
+- **Custom canvas:** immediate mode suits a node canvas that culls and draws only visible nodes and wires each frame and repaints only on input or animation.
+- **Embeddable UI layer:** the same editor runs standalone or inside any wgpu/winit host, which ADR-21's exportable UI needs.
+- **Testable:** `egui_kittest` drives the UI through the AccessKit tree, so focused UI tests also check accessible names and actions.
+- **Ecosystem and license:** MIT/Apache-2.0; existing node-graph crates (for example `egui-snarl`) show the canvas pattern, though OrangeEditor keeps its own canvas over its document model.
+
+**Known gap:** epaint's text layout does not implement bidirectional (RTL) reordering and strips bidi control characters (observed in the current source, epaint 0.36). 13 and OPEN-13 require RTL validation. Options, decided by probe: render editor text through a shaping/bidi engine (Parley or cosmic-text) behind egui's text APIs; ship LTR locales first and record the limitation; or switch toolkit.
+
+**Alternatives:**
+
+| Toolkit | Why not selected now |
+|---|---|
+| Bevy 0.20 UI/Feathers (previous direction) | Couples the editor to a game engine's schedule and version; text, IME and accessibility were the open P1 risk; harder to embed in non-Bevy products. |
+| Slint | Good IME/accessibility, but declarative markup fits a dynamic node canvas less naturally; royalty-free license requires attribution in every downstream product, or GPLv3 or a paid license. Fallback candidate. |
+| iced | Elm architecture and good text shaping, IME added in 0.14, but no screen-reader support yet (issue open since 2020); fails. |
+| Xilem/Masonry | Parley text and AccessKit, but still alpha. Revisit later. |
+| GPUI (Zed) | Fast, but partial accessibility, no standard text input widget, and tied to Zed's release cadence. |
+| Web UI (Tauri plus a JS node library) | Mature node editors and accessibility, but the UI would not be Rust and is harder to embed in Rust products. |
+
+**Consequences (applied 2026-10-21):**
+
+- AGENTS.md has no Bevy rules; the selected egui version is pinned when adopted.
+- [10](10-development.md) now lists engine-free probes P-01–06, and the Bevy source register left [10](10-development.md); [02](02-architecture.md) `orange-desktop` is an eframe app over an `orange-editor-ui` crate; WU-01/02 target egui; scene handles are downstream work (ADR-21); requires no UI or engine dependency in the core.
+- Pin the exact egui/eframe versions and record MSRV and license review in [10](10-development.md) when the probe starts, as for any dependency.
+
+**Falsification (Conditional probe, replaces P-01/02/06 for the UI):** on Windows, Linux and macOS, demonstrate IME composition with CJK, clipboard, DPI and 200% scale, keyboard-only authoring of a small graph, screen-reader names, roles and actions for nodes, ports and links, an RTL plan that meets 13, and W4 graph frame time within. A required capability that cannot be met → compare Slint, then the others, before WU-05. Owner: editor/platform lead; G1.
 
 ## ADR-03 — Component-first expansion, trusted worker escape hatch
+
+Native plugin library amendment (2026-11-11, selected by the user): a `ServicePackage`
+may also come from a dynamic library the application loads when it starts
+(`orange-native`). This reverses, for this tier only, the earlier rejection of Rust
+dynamic libraries as a plugin format. The reasons it was rejected still hold and are
+accepted as the user's risk for now: the code is not sandboxed and has every right of
+the application, a fault or panic in it ends the application, and Rust has no stable
+binary interface, so a library is loaded only when it reports the same SDK interface
+revision, compiler and target as the application, and it must be built against the
+application's lockfile. Libraries are never unloaded and are not installed while the
+application runs. Installable archives still refuse native library payloads; the
+sandboxed component remains the format for packages installed at run time. The
+workspace keeps `unsafe_code = "forbid"`; `orange-native` alone denies it and allows
+three reviewed blocks, and a plugin crate allows the unmangled exports of
+`export_plugin!`.
+
+Native service tier amendment (2026-11-10): work that needs the operating system is
+provided by trusted Rust compiled into the application as a `ServicePackage`, not by an
+installed native library. It is the third way to implement a node, beside graphs and
+components, and the only one that can hold a socket today. Network access for
+sandboxed components will be offered through these services behind grants rather than
+by giving guests sockets. A connection is declared data (11 §16.1); the live session
+belongs to the host. HTTPS amendment (2026-11-10, approved by the user): the license
+policy admits ISC and CDLA-Permissive-2.0 so the network package can use rustls, ring
+and the Mozilla root set. No other crate may depend on a TLS stack.
+
+Graph tier amendment (2026-11-10): code is not the only way to implement a package
+node. A provider with the ID `graph` is implemented by a function graph shipped in the
+archive and linked by the host as an ordinary function call. It needs no sandbox,
+because it can only do what the nodes it is built from can do, and it is the expected
+form for most packages: protocol command sets, hooks and automations composed from base
+nodes. Components remain the default for code.
+
+Plugin boundary amendment (2026-11-10; also ADR-21): the unreleased plugin world is
+replaced in place. Values gain binary cases for bytes and dense numeric lists, so
+bulk data does not cross as text, and packages may implement Action and Async nodes
+through an `effects` export. An async package node is an ordinary effect request the
+host runs off the run actor, so the run-side effect contract is unchanged and guest
+code never executes on a path the actor cannot bound. Package entries, iterators,
+resources and host service imports remain undelivered. The Rust interface for
+trusted native implementations moves to `orange-kernel` (02), so providers and the
+package loader no longer depend on the compiler. Generic second-domain dispatch stays
+deferred until a real per-sample or shader domain needs it; handle-backed buffers are
+the next data-plane step for images and long audio.
 
 **Selected, performance/SDK conditional.** Wasm components are normal installable code, importing only versioned host capabilities. Trusted external workers permit unsupported native/library integrations and register service adapters through the same broker-facing contracts. Statically linked built-in kernels/backends are explicit privileged exceptions. Alternatives: Rust dylib ABI, C ABI plugins, all workers, rebuilding Bevy crates. Components give portable hot addition and a guest memory boundary; workers supply practical native reach at IPC/trust cost. C ABI can stabilize a call layout but cannot isolate host crashes or revoke native OS authority.
 
@@ -24,13 +125,13 @@ Consequences: no arbitrary raw ECS/render/widget injection; custom panels/value 
 
 **Selected.** Resolve types/ports/provider dispatch before execution; pure values memoize by compile-time stability class (const/activation/epoch, 11 §7.4); effects execute through sequenced control tokens and async continuations. Standard native kernels run compact batches. Guest batches/macro-nodes are optional optimizations that retain locked provider behavior and source/error mapping. Alternatives: per-node dynamic map lookup; per-sample messaging; arbitrary parallel dispatch; automatic lowering of every guest to a standard math implementation. Chosen design targets low overhead without substituting semantics.
 
-Consequences: optimizer/debug contracts require equivalence tests; side-effecting work cannot be optimized as pure; selected custom provider may be slower than native. Evidence: language design in [03](03-data-and-execution.md), architecture proposal rather than measured Rust advantage. **Falsification:** V01 reference equivalence plus W1/W2/W3 direct/native/component scalar/batched profiles. Fail NFR-01 → optimize or revise batching targets explicitly. Ordinary floating rounding is not a failure; explicit numeric-domain/overflow/cast rules are. Owner runtime lead; G2.
+Consequences: optimizer/debug contracts require equivalence tests; side-effecting work cannot be optimized as pure; selected custom provider may be slower than native. Evidence: language design in [03](03-data-and-execution.md), architecture proposal rather than measured Rust advantage. **Falsification:** V01 reference equivalence plus W1/W2/W3 direct/native/component scalar/batched profiles. Fail → optimize or revise batching targets explicitly. Ordinary floating rounding is not a failure; explicit numeric-domain/overflow/cast rules are. Owner runtime lead; G2.
 
 ## ADR-05 — Dedicated async host and owned cancellation
 
-**Selected.** Tokio owns I/O/timers; bounded compute executor owns CPU work; Bevy main thread only bridges commands/view/scene changes. Run/session ownership, generations, bounded queues and continuation state machines determine cleanup. No whole-run pause in 1.0; debugger suspends eligible continuations while external lifetimes continue. Alternatives: frame polling for all I/O; unconstrained task spawning; assuming Bevy task pools supply all dependencies' network reactors. Consequence: separate executor integration and lifecycle tests are required; a blocked OS syscall may outlive logical cancellation.
+**Selected.** Tokio owns I/O/timers; bounded compute executor owns CPU work; the UI thread only bridges commands and view changes. Run/session ownership, generations, bounded queues and continuation state machines determine cleanup. No whole-run pause in 1.0; debugger suspends eligible continuations while external lifetimes continue. Alternatives: frame polling for all I/O; unconstrained task spawning; running network work on UI-owned task pools. Consequence: separate executor integration and lifecycle tests are required; a blocked OS syscall may outlive logical cancellation.
 
-Evidence: [Tokio runtime](https://docs.rs/tokio/latest/tokio/runtime/) resolved 1.54.0, not a project pin; [09](09-bevy-0.20.md) Bevy bridge/message retention. **Falsification:** B-P03 and WU-04 saturate event sources, pause renderer, race stop/completion, restart generations and verify NFR-02/13. Long UI freeze or stale continuation delivery rejects the model. Owner runtime/services lead; G1/G2.
+Evidence: [Tokio runtime](https://docs.rs/tokio/latest/tokio/runtime/) resolved 1.54.0, not a project pin; bridge probe P-03 ([10](10-development.md)). **Falsification:** P-03 and WU-04 saturate event sources, pause the UI, race stop/completion, restart generations and verify. Long UI freeze or stale continuation delivery rejects the model. Owner runtime/services lead; G1/G2.
 
 ## ADR-06 — Stable schema IDs, exact locks and immutable generations
 
@@ -38,43 +139,59 @@ Evidence: [Tokio runtime](https://docs.rs/tokio/latest/tokio/runtime/) resolved 
 
 Consequences: multiple package versions can coexist while runs drain; disk reclamation and migration tooling required; missing provider blocks execution but preserves authoring data. Evidence: document model [03](03-data-and-execution.md) and filesystem-specific verification requirement [05](05-services-and-platforms.md); no universal crash-durability guarantee. **Falsification:** save/load/migrate cross-language vectors and crash injection at every registry/document commit step; selected provider must remain unchanged after package update. Owner model/persistence lead; G2/G3.
 
-00b implementation review correction: undo tokens identify transaction-owned content states independently of persisted revision. A clone can share an inverse before divergence; new edits and loads allocate unique transient identities. Function-body maps reject key/entry ID mismatches atomically. Ordered replacements preserve their slot without remove/reinsert. These enforce existing identity/edit invariants; graph format and language rules are unchanged. Regression evidence is recorded in [10](10-tooling-and-sources.md#model-review-fixes-and-slice-4-analysis-2026-10-20).
+00b implementation review correction: undo tokens identify transaction-owned content states independently of persisted revision. A clone can share an inverse before divergence; new edits and loads allocate unique transient identities. Function-body maps reject key/entry ID mismatches atomically. Ordered replacements preserve their slot without remove/reinsert. These enforce existing identity/edit invariants; graph format and language rules are unchanged. Regression evidence is recorded in [10](10-development.md).
 
 ## ADR-07 — Explicit overrides, hot addition and safe draining
 
 **Selected.** Public typed slots cover node implementations, connection/service providers, audio control/backend under boundary limits and editor value/file-picker contributions. User selection defines defaults for new bindings; existing graphs require explicit rebind. Hot add publishes atomically; old runs pin old code; remove drains/cancels/revokes with barriers. Alternatives: last-installed-wins, monkey-patching internals, forced app restart, unloading a library with live pointers. Consequence: uninstall can leave pinned package bytes until references close while app stays open; rollback cannot undo external effects.
 
-Evidence: lifecycle design [04](04-expansion-plugins.md); Bevy startup cleanup is not dynamic unload, documented in [09](09-bevy-0.20.md). **Falsification:** WU-03 competing providers, in-flight network callbacks, denied revocation, stale handles and failed migration; unrelated graphs remain running and original graphs never silently switch implementation. Owner SDK lead; G2.
+Evidence: lifecycle design [04](04-expansion-plugins.md); recovery atomicity, checkpointed defaults and bounded rollback history (2026-11-05, `orange-packages`; [04](04-expansion-plugins.md), [12 §8](12-graph-data-structures.md), [10](10-development.md)). P01 clarifies that checkpointed policy includes explicit absence: removal/revocation must not resurrect a bundled new-binding default on restart. One current controlled-definition map replaces the previous unreleased representation; no legacy checkpoint reader is required before the first release. K01 (2026-11-06) adds a file-backed journal whose open truncates a torn tail and whose compaction commits by rename; it reads only the current record shape. Atomic publication, exact active-run pins and failure-preserving recovery remain product requirements. **Falsification:** WU-03 competing providers, in-flight network callbacks, denied revocation, stale handles and failed migration; unrelated graphs remain running and original graphs never silently switch implementation. Owner SDK lead; G2.
+
+K01 archive amendment (2026-11-06; ADR-03/06/07): the installable archive is a std-only canonical layout without compression, so every set of files has one byte encoding, cross-language vectors are exact and unpacked bytes never exceed archive bytes; deflate was rejected because its output is not unique without pinning one encoder. The lock digest is a domain-separated SHA-256 over the RFC 8785 manifest without `integrity` plus each file's path, size and SHA-256, so metadata and dependency locks are covered and the declared digest can live in the manifest. Signatures, when added, are detached over that digest. Verification streams under byte/entry quotas and finishes before any staged byte is usable. Contract in [04](04-expansion-plugins.md), evidence in [10](10-development.md).
+
+Journal ownership correction (2026-11-09; ADR-07): use
+one nonblocking OS writer lease on a stable sibling file for the full `FileJournal`
+lifetime, acquired before recovery. Locking individual appends cannot protect two
+stores' independently recovered identity histories. The guard survives compaction
+and failure; OS process exit releases it. The standard library suffices, with no
+dependency or journal-format change. Cross-process and compaction tests verify the
+ownership boundary; same-OS-user tampering remains outside guest isolation.
+
+Writer retirement follow-up (2026-11-09): hold the OS lock in a private RAII
+guard that explicitly unlocks after the journal append handle closes. Close-only
+release can be delayed by a duplicate descriptor inherited during process startup
+on Linux. A deterministic duplicate-descriptor unit case checks this lifetime
+rule alongside unchanged separate-owner exclusion; no sleeps or test serialization.
 
 ## ADR-08 — Incremental desktop editor and accessible declarative contributions
 
 **Selected, adapter conditional.** Persistent view state keyed by document IDs, transaction change sets, spatial index/culling, retained text edit session and virtualized controls. Guest UI is declarative with host accessibility labels/actions, not native widget pointers. Alternatives: full scene/UI rebuild on every graph change; raw guest widgets; draw-only canvas without accessibility model. Consequence: host provides a bounded widget vocabulary and versioned extension events; advanced widgets may require new host primitives.
 
-Evidence: FR-01–07, W4 performance workload and exact UI evidence gaps in [09](09-bevy-0.20.md). **Falsification:** WU-02/05 single-node edit preserves unrelated focus/caret/selection, clipboard/IME works, screen reader traverses graph semantics and W4 meets NFR-03. Owner editor lead; G1/G3.
+Evidence: W4 performance workload and UI probe P-02 ([10](10-development.md)). **Falsification:** WU-02/05 single-node edit preserves unrelated focus/caret/selection, clipboard/IME works, screen reader traverses graph semantics and W4 meets. Owner editor lead; G1/G3.
 
 ## ADR-09 — Host credential broker and versioned connection profiles
 
-**Selected.** OS vault refs in profiles/graphs; host owns auth/session/refresh. Guests receive checked authenticated operations or allowlisted auth transforms; arbitrary novel algorithm requires reviewed host primitive or explicit raw-secret grant. Generic WebSocket does not understand OBS: `org.orange.obs/auth-challenge@1` is a namespaced bundled host transform and OBS session adapter validates method-level requests when exposing that authority. Alternatives: plaintext application vault, credentials in node config, raw secrets to every plugin, assume native permissions enforce isolation.
+**Selected; scope narrowed by ADR-22.** Graphs/profiles contain OS-vault references. Guests receive checked authenticated operations and versioned leases; raw-secret access is exceptional authority. Baseline generic bearer/basic/mTLS policy is independent of any website. Novel transforms require a reviewed host primitive or explicitly granted raw-secret access. OAuth/provider-specific authorization is optional later work, not a Twitch/OBS delivery dependency.
 
-Consequences: locked/missing OS vault disables dependent operations; public desktop OAuth never relies on an embedded client secret; raw transport and protocol-method authority are distinct. Evidence: [WinCred](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew), [Secret Service](https://specifications.freedesktop.org/secret-service/latest/), [Apple Keychain entry point](https://developer.apple.com/documentation/security/keychain-services) (JS-only limitation), [05](05-services-and-platforms.md). **Falsification:** WU-06 and V09 test leaked canaries, redirects, locked vault, path/destination denial, auth-transform inputs and atomic token rotation; worker trust disclosure must accurately describe OS authority. Owner security/services lead; G4.
+Consequences: locked/unavailable vault blocks dependent actions with safe remediation; no plaintext fallback or unreviewed secret formatter. **Falsification:** WU-06 and V09 exercise canary redaction, destination restrictions, locked vault, rotation and denied grants. Owner services/security lead; G4.
 
-## ADR-10 — Separate protocol contracts, AMQP0-9-1 baseline
+## ADR-10 — Bounded generic networking; optional protocol packages
 
-**Selected assumption.** HTTP/REST/GraphQL, WebSocket, MQTT5/3.1.1, AMQP0-9-1, gRPC/HTTP2/protobuf and inbound webhooks have separate typed settings/lifecycle. Initial AMQ means RabbitMQ-compatible AMQP0-9-1; AMQP1.0 is later adapter. All gRPC streaming shapes are M baseline, delivered after a small unary slice. Alternatives: generic request node with opaque untyped settings; claim HTTP alone supplies gRPC/listeners; treat AMQP versions as interchangeable.
+**Selected revision, 2026-10-22 (ADR-22).** Foundation networking is HTTP/HTTPS and WebSocket with typed status/errors, finite payloads/queues, explicit TLS/auth/deadlines and owned cancellation. MQTT is conditional on a small named-broker lifecycle/interop probe and a later promotion decision; it is not required to pass baseline 1.0. AMQP, GraphQL, gRPC and specialized API clients are outside foundation delivery. Webhooks may be a separate plugin over an explicit HTTP listener capability; outbound requests do not imply a web server.
 
-Consequences: larger explicit fixture matrix and no universal exactly-once/retry promise; API convenience nodes can share transport services without sharing delivery semantics. Evidence: [HTTP](https://datatracker.ietf.org/doc/html/rfc9110), [MQTT5](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html), [RabbitMQ semantics](https://www.rabbitmq.com/docs/semantics), [gRPC concepts](https://grpc.io/docs/what-is-grpc/core-concepts/), sources/limits in [05](05-services-and-platforms.md). **Falsification:** WU-07–09 protocol fixtures, broker restart/duplicates, gRPC half-close/deadlines/trailers, webhook bind/auth/stop; failed broker interoperability changes published capability matrix, not protocol labels. Owner protocol lead; G4.
+Consequences: no universal retry/exactly-once claim and no host release gate for every protocol. Later packages declare their own wire versions, permissions, resource lifetimes and conformance evidence. **Falsification:** WU-07 HTTP/TLS/WebSocket fixtures, reconnect/limits and stop races; conditional WU-08 MQTT probe reports actual support. Owner protocol lead; G4 for baseline only.
 
-## ADR-11 — Native audio service and explicit platform routing
+## ADR-11 — Native playback, capture and off-callback level events
 
-**Selected, adapter conditional.** Host audio assets/players/mixer use native preallocated buffers and output leases. Linux PipeWire virtual source is an early required probe; Windows/macOS use existing endpoints, with no driver supplied in baseline. Guest algorithms may prepare buffered PCM but do not execute on real-time callbacks. Alternatives: let Bevy default sink determine every route; run guest calls in callback; create a virtual microphone by renaming a playback sink; assume user-space Windows app can install no driver yet expose a new endpoint.
+**Selected revision, 2026-10-22 (ADR-22); backend selection conditional on P-04.** Audio is a host service: selected-device playback, basic controls/mixing, selected-device capture, digital RMS/peak metering and threshold/hold events. Existing virtual cables are ordinary selectable OS endpoints. Virtual-device creation and drivers are outside baseline; earlier mandatory Linux app-owned source scope is superseded. Graph execution and plugin calls never run in hardware callbacks.
 
-Consequences: backend/decoder/resampling/clock/hotplug testing is a first-class workstream; multi-device clock sync is not promised. Evidence: [PipeWire loopback 1.6.9](https://pipewire.pages.freedesktop.org/pipewire/page_module_loopback.html), [Windows SYSVAD](https://learn.microsoft.com/en-us/samples/microsoft/windows-driver-samples/sysvad-virtual-audio-device-driver-sample/), [Apple driver entry](https://developer.apple.com/documentation/coreaudio/creating-an-audio-server-driver-plug-in) (JS-only detailed evidence gap), Bevy default sink evidence [09](09-bevy-0.20.md). **Falsification:** B-P04 with independent app capture of Orange source, clean removal on exit, existing Windows cable routing and V10 callback/decode/hotplug checks. Owner audio lead; G1 probe/G5.
+Capture/playback callbacks use preallocated bounded buffers; analysis and event delivery run off callback with timestamps, gap reporting and explicit rearm. TTS generation is a plugin concern: qualify the shared asset/PCM playback path with a synthetic producer. Pitch and frequency-band analysis remain separate conditional proposals, not sound recognition or an implied DSP engine. **Falsification:** P-04 and V10 verify actual input/output selection, permissions, device loss, level/hold semantics and cleanup on each advertised OS; synthetic timestamp/sample sequences test algorithm behavior separately. Owner audio/runtime lead; G1 probe/G5 baseline.
 
-## ADR-12 — Bundled integrations remain bounded expansion packages
+## ADR-12 — Specialized integrations are independently scoped plugins
 
-**Selected.** OBS and Twitch ship as package definitions/components/subgraphs reusing shared transport/profile/vault service contracts; only approved secret transforms/native platform primitives are host privilege exceptions. Initial node/event lists are exactly [05](05-services-and-platforms.md). Third-party OBS package obtains protocol-aware service authority rather than duplicating unmanaged socket lifetime. Twitch public device flow is preferred, with single-use refresh rotation and validation/rate/session policies.
+**Superseded delivery decision, 2026-10-22 (ADR-22).** The former bundled OBS/Twitch node lists and live-account gates are removed from foundation delivery. OBS, Twitch, website-specific clients, TTS generation and browser-canvas/web-server integrations may be built independently using public node/type/editor/event-source/service contracts. No promise is made that every new privileged primitive can be delivered without a compatible host release.
 
-Alternatives: hard-code all integrations into editor/core; promise entire upstream APIs; ship a confidential Twitch client secret. Consequences: service/SDK interfaces must be sufficient for real expansions; upstream changes require package updates/conformance fixtures. Evidence: [OBS5 protocol](https://raw.githubusercontent.com/obsproject/obs-websocket/master/docs/generated/protocol.md), [Twitch public device flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow), [validation](https://dev.twitch.tv/docs/authentication/validate-tokens/), [EventSub](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/); specific refresh-page conflict recorded in 05. **Falsification:** WU-11 can add a third-party OBS workflow without host rebuild or duplicate socket; public Twitch refresh succeeds without confidential secret; revoked/expired tokens terminate or reauthorize cleanly. Owner integration lead; G5.
+Expansion API qualification uses synthetic local fixtures: a guest contributes a typed node, event source and configuration UI, reuses a checked service, stays pinned through update and preserves documents after removal. No personal account or vendor-specific authentication transform is required. Owner SDK lead; G2.
 
 ## ADR-13 — Hybrid execution model: pull data, token control, async suspension, event activations
 
@@ -85,54 +202,853 @@ Alternatives: hard-code all integrations into editor/core; promise entire upstre
 - a task per node: per-node scheduling cost, nondeterministic order, locks;
 - an ECS system per node: frame coupling, conflicts with ADR-01.
 
-Consequences: effects happen only where exec wires put them. A Get re-reads committed state at each consuming action. Reactive features are glitch-free but coalesced per segment, so code that needs every intermediate value emits events explicitly. Evidence: architectural reasoning plus known node-editor pitfalls listed in [11](11-graph-language.md); no benchmark yet. **Falsification:** G-01–03, G-08, G-15, G-32 and W1/W5 on the WU-00 reference interpreter and the WU-04 executor; a glitch, a repeated effect or an NFR-02 violation rejects the model. Owner language/runtime lead; G2.
+Consequences: effects happen only where exec wires put them. A Get re-reads committed state at each consuming action. Reactive features are glitch-free but coalesced per segment, so code that needs every intermediate value emits events explicitly. Evidence: architectural reasoning plus known node-editor pitfalls listed in [11](11-graph-language.md); no benchmark yet. **Falsification:** G-01–03, G-08, G-15, G-32 and W1/W5 on the WU-00 reference interpreter and the WU-04 executor; a glitch, a repeated effect or an violation rejects the model. Owner language/runtime lead; G2.
+
+Definition-publication clarification (C3, 2026-10-23; ADR-13/16): the registry rejects a `pure` definition that declares an exec port, any event input, a declared data output without a `source`, a package definition with a true lazy port, suspension metadata incompatible with the definition kind, and finite variadic bounds where `min > max`. `async` and `iterator` require `maybe` or `always`; synchronous kinds allow omission or `never`, including contextual-port definitions. `max: null` remains unbounded, and only declared range ordering is checked here. Typed failures identify the definition and the relevant port or suspension metadata. A true lazy port is accepted only through host intrinsic registration; missing and false lazy values are both non-lazy. The data-output rule does not impose source requirements on other port positions or source-vs-node-kind legality. Passive saved signatures remain repairable. This is a bounded publication check, not a claim that all definition fields or runtime graph legality are validated.
 
 ## ADR-14 — One cooperative actor per run
 
-**Selected.** Each run executes one strand segment at a time on one logical actor that owns its state, activations and queues. Strands interleave only at suspension, yield and slice boundaries. Runs execute in parallel, heavy pure programs and async effects run off-actor, and workspace state has its own host actor with published snapshots ([11 §9](11-graph-language.md)). Alternatives: a multi-threaded run with locked state (data races become semantic, nondeterministic order, lock cost on every Get); a thread per activation (oversubscription, no replay). Consequences: no locks on run state and deterministic order given the ingestion log. Read-modify-write is atomic unless a value was captured across a suspension (`W-STALE-CAPTURE`). A single CPU-bound run uses one core plus offload. **Falsification:** W2/W5/W9 throughput and NFR-02 latency with offload enabled; G-14, G-32, G-33. If representative workloads cannot meet NFR-02 without intra-run parallelism, revise with explicit partitioning semantics, not shared locks. Owner runtime lead; G2.
+Pause amendment (2026-11-09): a host may hold a Running run in `Paused` and resume
+it. The actor model makes this immediate and lossless: nothing interleaves, so
+owned work stays owned. A paused run does no graph work and observes no time;
+admission of input and of results for already issued work continues under the
+existing bounded policies, and stop/cancellation still reach it. This replaces the
+earlier "pause is not supported in 1.0" position in 03. `RunState`, `RunError`,
+`IngressError`, `EffectError` and `StreamError` are now `#[non_exhaustive]` so
+later lifecycle additions are not breaking. `RunResource` gains default no-op
+`pause`/`resume` hooks, and `EffectLease` gains `is_paused` (2026-11-10). Entries gain an optional
+`while_paused` policy (`buffer` default, `latest`, `drop`) and host sources an
+optional paused rejection: the entry decides what the graph keeps, the source
+whether its sender can be told "not now". The field is omitted when default, so
+saved format v1 documents are unchanged. No dependency or provider ABI changes.
+
+Driver amendment (2026-11-10): the run stays a single-owner actor, and
+`orange-runtime` supplies the one place where input from other threads meets it:
+`RunDriver` with a bounded `RunInbox` (03). Cross-source order, fairness between
+input and graph work, and pause-aware host time are decided there once instead of
+by each embedder. It uses only `std`, starts no thread and reads no clock, so the
+planned `orange-host` composition root builds on it without changing the actor.
+
+C13 amendment (2026-11-08; also ADR-16/21): portable checkpoints contain only
+explicitly selected persistent values and a versioned compatibility seal. Reuse
+bounded native codecs and metadata-only type/provider checks; never deserialize
+executable objects or ask a provider to restore them. Bootstrap new Run/Workspace
+identities with selected values before initialization publication, leaving existing
+actors and borrowed artifact bytes unchanged on failure. Host storage, sensitivity,
+integrity and automatic stop-save policy remain explicit embedding responsibilities.
+Fresh On Start work is separate from replay. Add unfrozen Rust checkpoint APIs,
+RunError wrapper and the closed wire contract/schema in20; adopt existing exact
+serde/serde_json workspace pins as direct runtime dependencies. No new crate
+version/feature, graph format, provider ABI or UI dependency is introduced.
+
+C12c amendment (2026-11-08): preserve synchronous workspace Emit by explicitly
+borrowing a bounded native bus during the Run pump. Serialize only typed fan-out
+admission; never execute receiving graphs inline or change the Action suspension
+contract. Exact private endpoint/delivery identities and monotonic close signals
+define authority/lifetime, with queued plus host-drained messages leased against
+global item/byte limits. Stage whole fan-out before evictions, preserve causal
+source provenance and require explicit host ingress. Compact Run origins avoid
+duplicating envelope fields and preserve existing replay's default storage bound;
+external workspace replay remains refused. Unfrozen Rust enums/APIs add event
+scope, bus driving/delivery/error/metadata; saved formats/dependencies/provider pins
+do not change. Checkpoint persistence remains separate C13 work (03/11/12; evidence10).
+
+C12b amendment (2026-11-07): lower closed shared writes through the existing
+bounded async continuation machinery, with an explicit compiler-owned command
+tag and a separate host API. Private single-use requests/receipts prevent duplicate
+mutation without a historical command table. Host attachment and explicit
+immutable publication preserve actor boundaries and frozen epochs. Install an
+authenticated successful publication before graph continuation; cancellation
+cannot undo a host commit. Leases include host-held requests after cancellation.
+Unfrozen Rust APIs add SharedWrite, shared request/receipt/refusal/error and a
+RunError variant; saved graphs, dependencies and provider identities do not change.
+Cross-run events/checkpoints remain separate C12/C13 work (03/11/12; evidence10).
+
+C12a amendment (2026-11-07): host workspace values belong to a separate exclusively
+mutated actor with immutable versioned publications. Reuse the existing typed
+native Update implementation, with no per-write plugin dispatch or shared graph
+lock. Charge roots, cells and schema through lifetime leases so external old
+readers cannot hide retained generations from the workspace bound. Stage while
+retaining the old generation and publish only after whole admission. Graph command/
+receipt integration and the bounded event bus remain the next C12 increment; this
+does not claim asynchronous graph shared-state execution (03/11/12, evidence10).
+
+C07b amendment (2026-11-07; also ADR-23): authoring preview owns a separate pure
+compiler session rather than mutating a running activation or sharing its cache.
+Reuse only exact semantic/type/provider/input matches at the existing fold
+boundary; preserve ordinary IR, lazy demand and fault provenance. Explicit count/
+byte bounds make the cache optional without changing outcomes. Immutable typed
+publications and provider pins survive later authoring updates independently.
+Fresh admission/cancellation remains required, and a caught callback panic clears
+interrupted state before another update. This provides pure export preview, not
+an editor worker, live state/entropy reader or timing qualification (03/12/16).
+
+C05 amendment (2026-11-07): record the owning host's command boundaries and safe
+effect outcomes through a bounded reference-only journal. Intercept Action at its
+existing trusted callback boundary and consume Async requests internally during
+replay, so replay cannot resend effects. Pin the exact immutable in-process plan
+and keep restored runs read-only. Payload capture/resolution is an explicit trusted
+host policy, with no raw values or credential store in the journal. Full/incomplete
+histories cannot silently qualify as complete; cancellation remains available by
+abandoning recording. Portable log formats and resource/service replay are separate
+gates, not inferred from this in-memory profile (03/11/12, checks in 10).
+
+C10 amendment (2026-11-07): bounded push and Tee hubs remain Run-owned actor data,
+using existing affine resources and a live source/demand wakeup index. Fan-out
+preflights joint queue admission rather than giving each branch an independent
+effect or broadcast subscription. Preserve complete-once accepted pull results;
+per-consumer queues and one staged variable-sized source item have separate
+aggregate leases. Closing the last branch closes the hub-owned upstream, including
+across function Return. Nested Tee has a hard depth bound. No worker, lock, generic
+broadcast API or concrete service enters the core; 03/11/12 define the bounded
+profile and 10 records checks. Physical performance qualification remains deferred.
+
+C11a/C07a/C09a amendment (2026-11-06): keep trusted effect resolution separate
+from pure folding, and retain each executable generation in the immutable binding.
+Only synchronous bounded Action callbacks run on the actor; Async returns an inert
+command to a host-owned executor. Complete-once IDs own parked strands and typed
+state/aggregate leases until publication or cancellation. Reuse the existing region
+walk rather than adding per-node futures or a second scheduler. Runtime Watch uses
+a separate budgeted evaluator which pauses ordinary strands at segment boundaries;
+this preserves post-segment consistency and mixed notification order across host
+slices. Reuse the C08a generational slab for host affine streams and their pending
+pull/partial-collection ownership. Producer callbacks only initiate nonblocking work.
+No UI, OS executor, guest loader or concrete service dependency enters core crates.
+The implemented subsets and remaining graph-stream/preview/resource-value gates are
+specified in 03/11/12, with executed evidence in 10; broader unit/NFR gates stay open.
+
+**Selected.** Each run executes one strand segment at a time on one logical actor that owns its state, activations and queues. Strands interleave only at suspension, yield and slice boundaries. Runs execute in parallel, heavy pure programs and async effects run off-actor, and workspace state has its own host actor with published snapshots ([11 §9](11-graph-language.md)). Alternatives: a multi-threaded run with locked state (data races become semantic, nondeterministic order, lock cost on every Get); a thread per activation (oversubscription, no replay). Consequences: no locks on run state and deterministic order given the ingestion log. Read-modify-write is atomic unless a value was captured across a suspension (`W-STALE-CAPTURE`). A single CPU-bound run uses one core plus offload. **Falsification:** W2/W5/W9 throughput and latency with offload enabled; G-14, G-32, G-33. If representative workloads cannot meet without intra-run parallelism, revise with explicit partitioning semantics, not shared locks. Owner runtime lead; G2.
+
+**Run-owned resources (C08a, 2026-11-06; C08b amendment, 2026-11-07).** The run actor owns host resources in a generational table instead of the host keeping a side registry: one owner sees scope retirement, stop, fault and drop, so closing happens exactly once. Handles carry the run identity and a slot that would wrap its generation is retired. C08b now uses the trusted Async completion boundary to produce direct graph handles. Thin Arc aliases preserve `Value <= 16 bytes`; private issuer evidence plus canonical table identity prevents metadata forgery. Dynamic regions own acquisitions, descendants borrow, and successful Return transfers only returned owned resources to the caller. Cancellation reparents ownership to its cleanup barrier, avoiding early release while cleanup still reads an alias. A generic cleanup-safe close invalidates aliases idempotently. Host revocation cancels dependent pending results, and Return rechecks liveness after cleanup. This reuses the actor/slab rather than giving every alias an independent closer. Metadata is aggregate-leased even for invalidated aliases retained outside the Run. Closers are trusted bounded/nonblocking host code on the calling actor/host stack; resources remain `Send + Sync`. Resource containers, graph streams and concrete service adapters remain separate gates (03/11/12, evidence 10).
+
+C09b amendment (2026-11-07): direct graph streams reuse the C08b evidence/slab
+and the existing trusted pull ABI. One consumer key belongs to an activation,
+function frame and control node; copying a thin alias grants no claim. Parked reads
+have their own actor directory and wake only for matching completion or revocation,
+so blocked producers do not require polling. Collection requeues one read at a time;
+iterator cursors use existing body regions and immutable item/index frames, allowing
+Break/Return/Race/stop to close the producer while cleanup retains item context.
+Stream arguments transfer ownership into their callee rather than borrowing it;
+returned streams use the established transfer and publication checks. An issued
+terminal marker permits repeated None after normal end without resurrecting a slab
+entry. This avoids per-node futures, a second executor and independent alias closers.
+Tee/push bridges and concrete adapters remain later units; physical performance
+qualification is deferred while correctness/native/MSRV checks remain mandatory.
+
+Timer budget correction (2026-11-09; ADR-14): perform
+one catch-up admission attempt per actor work item. Retain the selected window and
+its original ordering key across slices; completed windows use ordinary timer
+rearming. This keeps cancellation and operation limits effective without reducing
+the saved catch-up maximum, adding an executor or changing graph format. Focused
+tests must compare small/large slices, later clock advances, queue refusals and
+stop. Trusted callbacks remain outside a wall-time preemption guarantee.
 
 ## ADR-15 — Structured regions, value availability and cycle classes
 
-**Selected.** Exec nodes belong to exactly one region. Exec edges cannot leave regions except through terminators. An `execution` output may be consumed only where its outcome dominates the consumer. A data cycle is legal only through a state boundary (register, variable), a zone or a loop. A control cycle must contain a `suspends: always` node. Event and reactive cycles are bounded by causal depth. Synchronous recursion is rejected in v1 ([11 §7–8](11-graph-language.md)). Alternatives: unstructured exec wiring with stale or default outputs (a common source of node-editor bugs); a pure DAG with no cycles (cannot express counters, polling or feedback); bounded synchronous recursion (needs dynamic frame sizes, breaks NFR-05 allocation-free frames and fixed memory). Consequences: some wirings need a local, register or `select`, and diagnostics must suggest them. Loops and feedback are explicit and analyzable. Frames have static size. **Falsification:** G-04–07, G-10, G-12, G-16, G-24, G-26, G-27; usability replay of the 00a fixtures in 02b/05a. If users cannot express listed workflows (01 workflows 1–4) without excessive workarounds, revise the rule by ADR with a new fixture. Owner language lead; G2/G3.
+**Selected.** Exec nodes belong to exactly one region. Exec edges cannot leave regions except through terminators. An `execution` output may be consumed only where its outcome dominates the consumer. A data cycle is legal only through a state boundary (register, variable), a zone or a loop. A control cycle must contain a `suspends: always` node. Event and reactive cycles are bounded by causal depth. Synchronous recursion is rejected in v1 ([11 §7–8](11-graph-language.md)). Alternatives: unstructured exec wiring with stale or default outputs (a common source of node-editor bugs); a pure DAG with no cycles (cannot express counters, polling or feedback); bounded synchronous recursion (needs dynamic frame sizes, breaks allocation-free frames and fixed memory). Consequences: some wirings need a local, register or `select`, and diagnostics must suggest them. Loops and feedback are explicit and analyzable. Frames have static size. **Falsification:** G-04–07, G-10, G-12, G-16, G-24, G-26, G-27; representative workflow trials in 02b/05a. If users cannot express listed workflows (01 workflows 1–4) without excessive workarounds, revise the rule by ADR with a focused regression test. Owner language lead; G2/G3.
+
+Get/Set clarification (00d.3b, 2026-10-22): declaration identity, type and scope are authoritative for contextual variable ports ([11 §11.1](11-graph-language.md)). A volatile Get reads `value` from state; a synchronous Set requires `value` and may mutate local/run state only. Workspace mutation remains an async host operation, with `E-VARIABLE-SCOPE` for synchronous Set. The registry computes this derived contract from the declaration without persisting signatures or changing initialization semantics. Stable diagnostics remain host-translated under ADR-17. Region ownership and execution remain subsequent checks, not consequences of successful port projection.
+
+Declaration-driven inference clarification (C2, 2026-10-23): when a declaration is added, changed or removed, inference persistence discovers dependent nodes through typed `RegistrySnapshot::references` in both document states and re-solves their connected components in the declaration transaction. Removed references provide no type evidence; cached `type_args` are not a fallback. Explicit pins remain preserved and are checked against current evidence. The implementation currently scans graph bodies and records the correctness-first cost in [12 §3.2](12-graph-data-structures.md); it does not claim performance.
+
+Initial contextual Update Add/Sub/Min/Max clarification (V1a/V1b, 2026-10-23; ADR-13/15/16): `core/update-variable@1` derives required `value` and execution-sourced `old`/`new` ports from its canonical local/run variable reference. The operation token is parsed centrally; Add/Sub require exact numeric-operation proof and Min/Max require exact Ord proof. Package-owned registrations may supply proof evidence, but no package kernel or comparator is executed. Workspace variables remain under async shared-update contracts. This V1a/V1b contract does not complete And/Or/Xor/Append, run-time mutation, region/availability enforcement or conflict analysis; Compare-and-set is specified by the V1c clarification below.
+
+Compare-and-set clarification (V1c, 2026-10-23; ADR-13/15/16): contextual Update requires exact Eq evidence and required expected/value operands of the declaration type. Its old/new outputs retain that type; exchanged is always bool, and all outputs are execution-sourced on then. Match replaces the value and reports true even for an equal replacement; mismatch completes then without writing and reports false with unchanged old/new. This is the future execution contract; this slice does not execute equality, mutation or notification rules. Compare-and-set gains no commutative Fork exception (11 §11.1–11.2).
+
+Logical/bitwise Update clarification (V1d, 2026-10-23; ADR-13/15/16): And/Or/Xor accept exactly core bool and i32/i64/u32/u64. Bool uses logical operations; integers use fixed-width bitwise operations. Required value and old/new ports preserve the declaration type; there is no lazy operand or conversion. Package constraint/arithmetic proofs do not imply these kernels. Metadata validation executes no operation (11 §11.1).
+
+Min/Max conflict clarification (V1b, 2026-10-23; ADR-16): package Ord proof establishes eligibility for sequential Update metadata, not commutativity when distinct values compare equal. The same-operation Min/Max Fork exception is limited to language-owned ordered scalar types; package Min/Max writes conflict unless last-writer-wins is explicit. A broader exception requires an executable conformance contract (11 §11.2).
+
+Intrinsic registration clarification (V5, 2026-10-23): switch, gate, do-once, flip-flop, register, try, match-result, select, and, or and coalesce are registered with the port contracts in 11 §8.4. Where 11 names no ports (select, and, or, coalesce) the strictest reading applies: the deciding input is eager and only alternatives are lazy, `and`/`or` take two inputs, `switch` needs at least one `case`. `for-each` and the four zone pairs stay unsupported because their ports and pairing are unspecified, so `E-ZONE-STRUCTURE` is unenforced and the `Regions` coverage is not claimed.
+
+Zone and for-each clarification (V5b, 2026-10-23): loops and Map/Fold are required scope, so 11 §8.4 now fixes the otherwise undefined contracts by their strictest reading: `core/for-each` ports follow `config.mode` (`list` or `map`), zones pair by `config.zone` within a body with the carried-item ports tabulated there (`$T`/`$U` for items, `$A` for the carried or accumulated value), the zone body is the data cone between a begin and its end, and a leaking, impure, unpaired or crossing zone is `E-ZONE-STRUCTURE`. `core/switch` case values (`config.cases`) must be unique, present and of the key's JSON kind (`E-SWITCH-CASE`). Zone and switch checks run inside the region pass, which therefore joins the covered checks (every 11 §7.1 rule is enforced). These are model decisions pending editor and compiler evidence; run-time zone semantics (yield at iteration boundaries, G-33) stay execution work.
+
+Validation coverage clarification (C4, 2026-10-23): the selected region, cycle and availability rules are not considered checked until their validation passes run. `ValidationReport::is_valid` remains pass-local; compilation requires fresh analysis with complete required-check coverage.
 
 ## ADR-16 — Nominal types, constrained generics and an explicit converter registry
 
-**Selected.** Canonical versioned type expressions, nominal package types, constraint implementations owned by the type's package, deterministic inference persisted as `type_args`, no `any` type, and conversions only as visible converter nodes classified lossless-total / checked-partial / lossy. The editor auto-inserts only a unique lossless-total converter, never a chain ([11 §5–6](11-graph-language.md)). Alternatives: implicit coercion (silent loss, ambiguous overloads); `any`/dynamic ports (tag checks on the hot path, run-time type errors); structural typing (accidental compatibility between unrelated packages); per-type definitions such as `add-i64` (palette explosion, no extension point for package types). Consequences: package types participate in core generic nodes through constraint implementations, and conflicts are impossible by the ownership rules. The editor needs a type-pinning UI and converter picker. **Falsification:** G-19–21; the shuffle property test in 00c; W9 inference cost within NFR-15. Owner language/SDK lead; G2.
+**Selected.** Canonical versioned type expressions, nominal package types, constraint implementations owned by the type's package, deterministic inference persisted as `type_args`, no `any` type, and conversions only as visible converter nodes classified lossless-total / checked-partial / lossy. The editor auto-inserts only a unique lossless-total converter, never a chain ([11 §5–6](11-graph-language.md)). Alternatives: implicit coercion (silent loss, ambiguous overloads); `any`/dynamic ports (tag checks on the hot path, run-time type errors); structural typing (accidental compatibility between unrelated packages); per-type definitions such as `add-i64` (palette explosion, no extension point for package types). Consequences: package types participate in core generic nodes through constraint implementations, and conflicts are impossible by the ownership rules. The editor needs a type-pinning UI and converter picker. **Falsification:** G-19–21; the shuffle property test in 00c; W9 inference cost within. Owner language/SDK lead; G2.
+
+Implementation clarification (00c.2a): language constraints are registry proofs, independent of Rust value equality and literal encoding. Explicit host-supported structural derives are validated before publication, with bounded schema traversal; unsupported automatic derivations can use owning-package implementations. Family membership does not imply every arithmetic operation. Serialize capability does not bypass value-level sensitive-detail validation. [11 §5.4](11-graph-language.md) and [12 §8](12-graph-data-structures.md) specify these boundaries; no kernel execution or performance gate is claimed.
+
+Constraint-provider boundary clarification (C3, 2026-10-23): the current registry resolves and checks constraint proof metadata during inference/validation; this does not mean arbitrary package constraint kernels are executed by `orange-model`. Executable package-provider integration remains host/runtime work.
+
+Implementation resource policy (00c.3b): structural unification uses iterative alias traversal and bounded expanded terms. The provisional node/depth limits in [10](10-development.md) report `E-TYPE-COMPLEXITY` instead of unbounded tree allocation or implicit type fallback. They remain subject to /memory qualification; passing foundational tests does not freeze the budget.
+
+Converter identity clarification (00c.5a): semantic entries and exact implementation alternatives are separate. Uniqueness counts entry contracts; provider defaults are explicit and affect new bindings only. The initial policy surface uses declared finite choices, and lossy conversions expose JSON loss details. This supports package extension without a generic schema interpreter or implicit selection by registration order ([11 §6](11-graph-language.md)).
+
+`core/convert` resolution clarification (00d.2b): the converter node is a host-owned registry special form, distinct from both ordinary fixed-control intrinsics and installable package definitions. Its exact entry derives ports; version-1 config and signature are required. Missing provider selects only `Core`; package bindings use the exact document lock and provider digest. Persisted options must contain every resolved choice and are checked without adopting updated defaults. Available metadata is authoritative, while a missing package leaves the saved snapshot usable for offline edge inspection and the node incomplete ([11 §6/§17](11-graph-language.md), [12 §5/I-4](12-graph-data-structures.md)).
+Pin clarification (00c.4a): an explicit user type choice is a **pin** stored in `type_pins`; `type_args` holds the resolved value of every parameter (pinned or inferred) and is only a cache. Inference seeds from pins, typed literals, edges and concrete port types, never from persisted `type_args`, so a disconnect cannot leave a stale binding that behaves like a pin. Documents without `type_pins` load with no pins ([11 §5.5](11-graph-language.md), [12 §3.1](12-graph-data-structures.md)). Connection selection follows the same rule: re-infer endpoint types after removing replaced wires, excluding the newly shadowed target literal. Reusing an edge ID invalidates inference at both old and new endpoints (00c review correction); pins and other surviving evidence remain authoritative.
+
+Collection admission correction (2026-11-09; ADR-16/21):
+reuse the model's nominal value charges when constructing bundled collections.
+Text Split preflights all pieces before owned allocation; List Concat counts one
+result header; Map Insert credits the replaced value while preserving its key.
+Small checked arithmetic helpers retain the existing typed kernel interfaces.
+No generic allocation framework, dependency or saved-format change is needed.
 
 ## ADR-17 — Host-owned localization, stable graph semantics
 
 **Selected; formatter/UI feasibility conditional.** Every product-owned visible/accessible string is a namespaced TextRef or structured MessageRef. Host modules resolve immutable package catalogues and project localized UI/CLI text; compiler/runtime retain stable codes and redacted typed arguments. [13](13-internationalization.md) owns the contract. Fluent FTL is the planned resource format; exact parser/formatter/Unicode/CLDR pins and licenses require WU-01/03 evidence. English is the source fallback; shipped language coverage is OPEN-13. Translation bytes remain part of package integrity and exact locks. Semantic signature hashes exclude presentation. Derived graph display uses canonical type/member IDs; UI locale never changes values, error choice, replay records or plan identity.
 
-Alternatives: hard-coded English followed by later extraction (misses SDK fields); pre-render all guest errors (loses locale/arguments); concatenate fragments (breaks reordering/plurals); inherit OS locale in graph nodes (breaks reproducibility); allow global translation overrides (breaks namespace/trust boundaries). Consequences: catalogue/schema validation before SDK freeze, retained IME sessions and search/accessibility updates on language switch, font/RTL/layout work and translation coverage evidence. New shipped languages need human review; language support is not inferred from Unicode input. Evidence: source register in 13; these are planning decisions, not measured capabilities. **Falsification:** G-39 plus L-01–08, NFR-16 and B-P02 on declared OSs. Changed graph bytes/outputs after a locale toggle, leaked arguments, clipped required controls or inaccessible translated UI blocks the relevant G2/G3/G5 gate. Owner editor/SDK/host leads.
+Alternatives: hard-coded English followed by later extraction (misses SDK fields); pre-render all guest errors (loses locale/arguments); concatenate fragments (breaks reordering/plurals); inherit OS locale in graph nodes (breaks reproducibility); allow global translation overrides (breaks namespace/trust boundaries). Consequences: catalogue/schema validation before SDK freeze, retained IME sessions and search/accessibility updates on language switch, font/RTL/layout work and translation coverage evidence. New shipped languages need human review; language support is not inferred from Unicode input. Evidence: source register in 13; these are planning decisions, not measured capabilities. **Falsification:** G-39 plus L-01–08 and P-02 on declared OSs. Changed graph bytes/outputs after a locale toggle, leaked arguments, clipped required controls or inaccessible translated UI blocks the relevant G2/G3/G5 gate. Owner editor/SDK/host leads.
 
 ## ADR-18 — One integration branch and small reviewed changes
 
-**Selected policy; enforcement state recorded in 14.** Use protected `main`, short-lived topic branches tied to delivery subunits, PRs, scoped required checks and squash merges. Release branches exist only for actual stabilization/supported older versions. [14](14-git-workflow.md) owns names, commits, review modes, integration checks, history/revert and release rules. Solo mode requires self-review/checks with zero independent approvals; team mode requires a non-author reviewer with stale-approval handling. AI review does not create independent human approval. Contracts, diagnostic/fixture changes and traceability stay in the same PR.
+**Selected policy; enforcement state recorded in 14.** Use protected `main`, short-lived topic branches tied to delivery subunits, PRs, scoped required checks and squash merges. Release branches exist only for actual stabilization/supported older versions. [10](10-development.md#git-workflow) owns names, commits, review modes, integration checks, history/revert and release rules. Solo mode requires self-review/checks with zero independent approvals; team mode requires a non-author reviewer with stale-approval handling. AI review does not create independent human approval. Contracts, diagnostic/fixture changes and traceability stay in the same PR.
 
-Alternatives: permanent `develop`/release trains add coordination before there is a product; direct pushes lose a durable review/evidence boundary; a branch per broad WU creates large delayed integrations. Consequences: PR-sized slices and explicit stacked dependencies, immutable protected history, phase-aware CI and separate proof that remote rules are active. Evidence: Git/hosting primary references in 14; initial inspection found no Git repository, followed by the user-authorized bootstrap recorded in 10/14. **Validation:** document consistency and active remote-rule inspection; use a disposable test target to verify direct/force-push, failed-check and unresolved-review rejection, plus one successful PR path. Before WU-12, verify tag/artifact provenance and hotfix forward-port records. Owner repository maintainer; relates to NFR-14 and WU-01/12 evidence, without adding a product FR.
+Alternatives: permanent `develop`/release trains add coordination before there is a product; direct pushes lose a durable review/evidence boundary; a branch per broad WU creates large delayed integrations. Consequences: PR-sized slices and explicit stacked dependencies, immutable protected history, phase-aware CI and separate proof that remote rules are active. Evidence: Git/hosting primary references in 14; initial inspection found no Git repository, followed by the user-authorized bootstrap recorded in 10/14. **Validation:** document consistency and active remote-rule inspection; use a disposable test target to verify direct/force-push, failed-check and unresolved-review rejection, plus one successful PR path. Before WU-12, verify tag/artifact provenance and hotfix forward-port records. Owner repository maintainer; relates to and WU-01/12 evidence, without adding a product FR.
 
 ## ADR-19 — One source repository, independent application and expansion packages
 
-**Selected by the user.** Public `erinmel/OrangeEditor` contains `app` for editor/engine source, `plugins/<name>` for authored installable expansions and `sdk` for their versioned public boundary. [15](15-monorepo-layout.md) owns placement, future workspace membership and release tag namespaces. One reviewed commit can coordinate host/SDK/plugin compatibility changes; source location grants no access to private host internals. The future root Cargo workspace builds host members; independent guest/worker plugin workspaces keep their own versions/locks and are excluded from host defaults. The native bundled-kernel exception stays under application crates.
+**Selected by the user.** Public `erinmel/OrangeEditor` contains `app` for editor/engine source, `plugins/<name>` for authored installable expansions and `sdk` for their versioned public boundary. [02](02-architecture.md) owns placement, future workspace membership and release tag namespaces. One reviewed commit can coordinate host/SDK/plugin compatibility changes; source location grants no access to private host internals. The future root Cargo workspace builds host members; independent guest/worker plugin workspaces keep their own versions/locks and are excluded from host defaults. The native bundled-kernel exception stays under application crates.
 
-Alternatives: separate repositories now add cross-repository synchronization before contracts are stable; one host build linking every expansion would violate hot installation and boundary/isolation requirements. Consequences: shared access/history/CI orchestration, explicit independent SDK/application/plugin release identities, and affected-component compatibility checks. No production crate or implemented plugin is created by bootstrap. **Validation:** inspect the initial tree and source-layout links now; WU-03 must package/install a plugin without rebuilding/restarting the host, and later SDK changes run host/plugin conformance fixtures together. Owner repository/SDK maintainers; NFR-14 and existing FR-34–38; existing delivery gates remain required.
+Alternatives: separate repositories now add cross-repository synchronization before contracts are stable; one host build linking every expansion would violate hot installation and boundary/isolation requirements. Consequences: shared access/history/CI orchestration, explicit independent SDK/application/plugin release identities, and affected-component compatibility checks. No production crate or implemented plugin is created by bootstrap. **Validation:** inspect the initial tree and source-layout links now; WU-03 must package/install a plugin without rebuilding/restarting the host, and later SDK changes run host/plugin conformance fixtures together. Owner repository/SDK maintainers; and existing existing delivery gates remain required.
+
+## ADR-20 — Numeric authoring, v1 control and focused tests
+
+**Selected by the user, 2026-10-21 (WU-00/00a).** Keep Float Single/f32 and Double/f64 precision plus integer math. New untyped numeric input defaults to Double; resolved or explicitly selected types win. Integer input parses directly into its integer type, preserving large exact values. Existing graph types, codecs and visible-converter rules stay unchanged; wider/arbitrary-precision numbers remain separate scope. and 11 §5–6 own the contract; product labels follow 13.
+
+Retain v1's rejection of synchronous recursion (`E-RECURSION`) and control cycles without suspension (`E-CYCLE-SYNC-CONTROL`). Structured loops remain available and yield at iteration boundaries; finite While bounds and cancellation remain required (ADR-15). This policy prevents non-yielding synchronous loops without removing ordinary loop-based workflows.
+
+Test contracts with Rust tests that live beside the code they verify: plain `#[test]` for focused behavior, `rstest` for named scenarios, `proptest` for invariants over generated inputs and edit sequences. The acceptance rule is that **each implemented semantic rule has enough meaningful evidence to distinguish correct behavior from plausible bugs**. One accept/reject pair is a starting point, never a ceiling; there is no fixed test count, diagnostic-code quota or coverage percentage. Equivalence checks (incremental = full validation, interpreter = executor) are paired with known-answer tests, because two implementations can share a bug. JSON goldens are kept for serialization and wire contracts only; G IDs remain explanatory references. The working rules are in [10](10-development.md). Alternatives: an exhaustive JSON G-suite written before code (rejected in 00a: it drifted from code that did not exist), and a test per catalog code (counts codes, not evidence). No runtime behavior or feasibility gate is claimed tested by these decisions.
+
+## ADR-21 — OrangeEditor is a foundation: an embeddable core with fixed extension seams
+
+Host amendment (2026-11-10): the core libraries alone are not an attachment surface.
+Composition — packages, several concurrent runs, effect execution, time and
+observation — is delivered once as `orange-host`, and every front end (terminal,
+editor, service) uses that API instead of assembling the layers itself. The host has
+no UI dependency. Each flow is one run on one thread, which keeps the single-owner
+actor of ADR-14 and gives multiple graphs real parallelism without shared locks. The
+`orange` CLI is the first front end and the proof that the surface is sufficient.
+
+**Selected by the user, 2026-10-21.** OrangeEditor is a **foundation**, not one end product. This repository builds the **core** (plus the foundation UI and basic application clarified by ADR-22): graph model, types, compiler and runtime, as Rust libraries with no UI, window or engine dependency (extends ADR-01). The editor UI is a separate layer on top of the core that a product may reuse, restyle or replace. Downstream products embed the core and specialize it, for example a music tool (MIDI, loops, audio analysis driving visuals), a VTuber or virtual-space program (Warudo-style blueprints driving scene objects), a streamer automation tool, or a game or 3D-art tool. Those products are not built here.
+
+The core must therefore be strong and general on its own, and expandable without forking it or changing the document format. Multi-domain node tools (Unreal, Blender, TouchDesigner, Max/Pure Data, Houdini) share one graph infrastructure and give each kind of graph its own evaluation model; none runs audio DSP, shaders and event automation under one scheduler. The core follows that pattern by fixing a small set of seams instead of designing every domain.
+
+**The core owns:**
+
+1. **Substrate.** Document format, stable IDs, transactions and undo, ports, nominal types with generics, constraints and converters, packages and provider locks ([12](12-graph-data-structures.md), 11 §4–§6, the 00b/00c code). It makes no scheduling assumption.
+2. **The `control` domain.** Today's 11 §2–§15: event activations, exec/data wires, async, structured loops. It is the only domain the core ships, and it is complete on its own for automation and blueprint-style logic.
+3. **Reusable node groups.** A graph built from nodes and published as one node (Blender node groups, Unity subgraphs): the existing function mechanism (11 §14), graph-local, shared in a workspace library, or published in a package and pinned by the lock. Its interface is versioned, and editing it previews affected callers.
+4. **Host adapter interfaces.** `Clock`, services and a scene/object bridge ([02](02-architecture.md)), so any Rust host can embed the runtime: the reference editor, a headless runner, a music or VTuber product, a game engine, later a C ABI or Wasm. The project has no Bevy dependency (ADR-02); an engine-based product embeds the core on its own side.
+
+**Extension seams the core guarantees:**
+
+These are delivery requirements. Current typed domain registration/dispatch and
+arbitrary scalar/codec registration remain undelivered; the implementation-status
+clarification below and [04](04-expansion-plugins.md) describe the executable subset.
+
+| Seam | Who uses it | Contract |
+|---|---|---|
+| Packages | Untrusted installed artifacts | Nodes, types, converters and node groups for existing domains through 11 §16 (unchanged; P7 holds) |
+| `domain` field | Documents | Optional on graphs and function bodies, default `control`. An unknown domain loads and is preserved but does not compile, like an unresolved provider. Format v1 stays compatible. |
+| Host extensions | Any downstream crate that depends on the core and is linked by the embedding product at build time (trusted code) | May add a domain (its node kinds, evaluation model, clock and backend), visible typed bridge nodes between domains, and an object model of handle kinds with schema-generated property nodes (11 §4.5 port templates). Each brings its own semantics document and tests. |
+
+**Not in the core:** extra domains (`signal`, `frame`, `gpu`, `field`), bridges, clocks and object models. The core provides none of them. Anyone adds them in their own crate by depending on the core crates and implementing the core's public extension interfaces, the same way packages add nodes. Forking stays possible but is never required: the core's job is to keep these seams public, documented and stable, and to guarantee an extension needs no substrate change.
+
+**Alternatives rejected:**
+
+| Alternative | Why rejected |
+|---|---|
+| One universal scheduler for every domain | Real-time audio cannot share a cooperative event actor, GPU code cannot run node by node, and per-frame push evaluation conflicts with ADR-13's effect ordering. |
+| Installed packages define scheduling | Untrusted code with unbounded semantics and no shared debugging or replay; violates P7. Trusted host extensions provide domains instead. |
+| One end product with the core as an internal detail | Couples the core to one product's UI and scope, so other products cannot reuse it. |
+| Designing music, game or scene domains now | Speculative contracts for products not built here; the seams are enough to keep them possible. |
+
+**Consequences:**
+
+- Public core APIs are a product surface: documented, semantically versioned, and free of editor or engine types.
+- 11 marks its substrate and `control` domain sections; [12 §3.1](12-graph-data-structures.md) defines the optional `domain` field.
+- The 00c type, constraint, unification and converter work is substrate and continues unchanged.
+- [00](00-overview.md) defines reusable libraries and, under ADR-22, a usable basic application. Generic playback/capture/level audio belongs to foundation services; specialized audio tools and graphics/scene products remain downstream work.
+
+**Falsification:** a downstream prototype must fork the core, patch core code to add a domain, or change the substrate format beyond the `domain` field; a node group cannot be published, versioned and reused through 11 §14 plus package locks; or embedding the core in an engine-based host needs an engine dependency in model, compiler or runtime crates. Any of these requires revising this ADR. Owner: language/runtime lead with the product owner; review before G2.
+
+**Core-first milestone supplement (selected by the user, 2026-10-21).** The next implementation sequence completes validation and compilation, then establishes deterministic headless execution for pure math/logic and seeded random, plus a reference runtime with virtual time, structured loops, cancellation, explicit resource ownership, and typed public service ports tested through in-memory adapters. Concrete HTTP, file, and audio backend adapters, package-host composition, and editor/window integration wait until a core boundary requires narrow evidence. This sequencing preserves the M foundation requirements selected by ADR-22 and does not claim G2 API freeze or runtime-gate completion. The UI remains replaceable and separate as selected above; no editor or window dependency enters core crates.
+
+**Implementation status clarification (2026-10-23).** The extension seams above are selected contracts, not delivered public interfaces. `orange-model` implements part of the substrate and control validation; it had no typed domain registration/dispatch interface, compiler, runtime or editor at that date. Since then `orange-compiler`, `orange-runtime`, `orange-bundled` and `orange-packages` exist for the control domain (02 and the later entries); typed domain registration/dispatch and the editor remain absent. The optional `domain` field is still preserved as unknown document data as described in 12 §3.1. The downstream-domain prototype and review of extensible public Rust types remain required before G2; making an enum non-exhaustive alone does not provide domain registration. This clarification changes neither the core-first sequence nor the closed installed-package language boundary.
+
+Validation boundary clarification (C4, 2026-10-23; ADR-21): the reusable core exposes `ValidationAnalysis` with private freshness evidence and actual versus required coverage. A downstream host or future compiler cannot treat a partial control-domain report as approval; unknown domains need explicit host support and checks. Supplied leaf effects remain host-trusted facts.
+## ADR-22 — Usable node editor foundation and bounded general capabilities
+
+Headless lifecycle clarification (2026-10-24; ADR-14/15/21): the supported control actor is driven by an embedding host's bounded pump and monotonic virtual time. No OS executor is required. Cancellation reserves separate bounded cleanup fuel while retaining the activation's entropy identities; this internal transition does not make failed data epochs resumable by ordinary callers. Branch/Sequence are safe structural cleanup traversal and Set is the currently executable cleanup-safe action; new waits, loops and generic effects are rejected in cleanup. Timers are run-owned, monotonically identified and retired once. Native callbacks remain trusted and cannot be preempted by operation quotas. No G2/API freeze or platform timing guarantee follows.
+
+E3 implementation note (2026-10-24, ADR-15/21): checked control plans retain original document/registry identity and lower explicit consumption roots internally rather than editing graphs or inserting persisted exports. On Start/Stop now have registered host Entry definitions. Duration and Error become supported executable plan leaves for virtual waits and failed outcomes; existing graph JSON and value layouts stay unchanged. These unfrozen Rust enums gain variants; downstream exhaustive matches must adopt them. This is not a full control/runtime or API-freeze gate.
+
+**Selected by the user, 2026-10-22.** Deliver a strong, expandable and usable basic node editor application, its reusable Rust graph libraries, and its separate extensible egui UI. Specialized products are built from this foundation. This is not a library-only delivery and does not require bundled OBS/Twitch or browser-canvas integrations. This decision supersedes earlier scope statements in ADR-09–12/21, FR priorities in 01 and the local delivery plan; existing graph invariants remain intact.
+
+**Required foundation:** logic/math; typed variables with declaration/Get/Set/Update authoring; enums and matching; structured branching/loops/time; import/export/save/recovery; versioned typed graphs saved as specialized callable nodes; manual/test-button and configurable key/combination triggers; bounded file editing/watch, HTTP/HTTPS and WebSocket services; basic selected-device audio playback/input, RMS/peak levels and above/below-threshold events with zero or continuous hold duration. UI configuration is reachable on the node and through accessible controls. File/network/input/audio code stays outside model/compiler/runtime.
+
+**Conditional extensions:** MQTT, frequency-band/pitch analysis and webhook plugins. Each needs focused feasibility, a bounded contract and an explicit promotion decision before becoming required. Zero hold means first qualifying analysis window; level units are dBFS, not calibrated physical loudness. Band energy and pitch are distinct. Existing output cables are supported only where verified; creating a virtual device/driver is outside baseline.
+
+**Outside delivery:** OBS, Twitch, website-specific API clients, TTS generation, browser-canvas/web-server products, AMQP/GraphQL/gRPC packages, speech/sound recognition, DAW/DSP and scene editors, marketplace operation. Generic requests, event-source ingress and plugin-produced asset/PCM playback make such later integrations possible without putting their logic into core.
+
+**Reuse boundary:** callable nodes use existing typed functions, pinned dependencies and explicit interface/version migration. Trigger/subscription-containing selections are insertable templates, preserving the function restrictions in 11 §14; future encapsulated event-driven components need a separate decision. Declaration nodes are authoring projections of stable VariableDecl records, not new runtime initialization instructions. No format/schema/API change or implementation pass is implied by this scope decision.
+
+**Acceptance:** a user configures a button/key trigger, declares state, branches/loops over math, reuses a saved callable graph, exports/imports and inspects it; later slices exercise file/request and selected input-level→hold-event→selected-output playback. A synthetic installed plugin adds a node, event source and usable configuration while the app remains open. Stop, missing devices/packages and failed saves/imports preserve ownership and user work. Verify UI/accessibility/latency and actual audio/input OS capability; neither documentation nor an attractive canvas passes these gates. Validate plugin-produced audio with a synthetic stream before audio interface freeze.
+
+**Consequences:** retain core-first 00d→00e→00f, then small editor/service/expansion slices. Foundation 1.0 requires all remaining M rows in 01; optional/deferred rows cannot quietly become gates or be advertised as working. and 05 define the added authoring/service scope. Public library, UI and installed-package seams need demonstrated external consumers before their respective freezes. Owner product, language, editor, SDK and services leads; G0/G2/G3/G4/G5 in their affected scope.
 
 ## Decisions still requiring evidence or product preference
 
+Core integrity clarification (2026-10-22, ADR-15/21): editing and embedding APIs must preserve user data independently of identity text, reject ambiguous lock identities and detect stale semantic evidence. Typed configuration reference metadata is host-owned and exact-versioned; packages cannot redefine intrinsic reference/control meaning. Authoring composes atomic transactions, so wire insertion and later collapse-to-function can remain separate from presentation and execution. These corrections do not freeze the SDK or qualify incremental performance.
+
+Write-conflict evidence note (2026-10-28, ADR-15): the Fork Add exemption promises an order-independent final value, so it requires exact evidence, a core fixed-width integer with wrapping overflow on every writer, instead of inferring commutativity from the operation name. Other Add combinations are `E-WRITE-CONFLICT` unless the variable opts into last-writer-wins ([11 §11.2](11-graph-language.md)).
+
+Checked construction note (2026-10-28, ADR-15/21): structural document invariants are admission rules for every public construction from serialized data, not only for `from_json`. Serde `Deserialize` shares the importer's checks, and the unchecked wire form stays crate-private. Graph JSON and the importer contract are unchanged.
+
 | ID | Owner / deadline | Recommended default and practical consequence |
 |---|---|---|
-| OPEN-01 Exact UI adapter | Editor lead / G1 | Begin native Bevy0.20 UI/Feathers experiment; select verified compatible integration/native shell only after text/accessibility comparison. This technical uncertainty blocks large UI commitment, not core/component experiments. |
+| OPEN-01 Exact UI adapter | Editor lead / G1 | Proposed: egui editor UI hosted by eframe (ADR-02 revision). Run the egui probe first (IME/CJK, accessibility, keyboard, DPI, RTL plan, W4 frame time); fall back to Slint if a required capability fails. |
 | OPEN-02 Dependency pins/toolchain/platform minima | Platform lead / WU-01 | Upgrade selected project toolchain to ≥1.97.1 when later authorized; exact feature/license/OS verification before dependency acceptance. Do not install anything in this planning task. |
-| OPEN-03 AMQ intended broker | Product owner / before WU-08 fixture freeze | AMQP0-9-1 + RabbitMQ first. If user actually needs ActiveMQ/Artemis/Azure AMQP1.0, reprioritize the separately typed 1.0 adapter rather than renaming 0-9-1. Can continue generic runtime/files/HTTP without answer. |
+| OPEN-03 MQTT feasibility / later protocols | Protocol lead / conditional WU-08 | MQTT is conditional; qualify explicit version(s), broker, QoS/session/reconnect and bounds before any promotion. AMQP is outside foundation delivery. |
 | OPEN-04 Trusted native worker distribution | Product/security owner / before downloaded-worker UX | Local explicit-trust workers enabled by deliberate choice; downloaded workers disabled by default. A mandatory native-only integration may justify real per-OS sandbox work and new release scope. |
-| OPEN-05 macOS/desktop minimums | Platform/product owner / B-P06 then G5 | Windows x64, Linux x64 Wayland+X11, macOS arm64 first; publish measured supported versions. Add macOS x64/other architectures when demand/hardware evidence warrants it. |
-| OPEN-06 Linux virtual-source adapter | Audio lead / B-P04 | Application-owned PipeWire client source with lifetime cleanup; no automatic persistent system config. If feasibility fails, redesign adapter and report gap; do not silently defer M FR-33 to claim complete 1.0. |
-| OPEN-07 Twitch application ownership | Product/integration owner / WU-11 live test | Developer-owned public test client for validation; decide product registered public client before distribution. No secret/client registration needed for mock CI. |
+| OPEN-05 macOS/desktop minimums | Platform/product owner / P-06 then G5 | Windows x64, Linux x64 Wayland+X11, macOS arm64 first; publish measured supported versions. Add macOS x64/other architectures when demand/hardware evidence warrants it. |
+| OPEN-06 Audio input/output adapter | Audio lead / P-04 | Verify selected-device capture and playback, permissions/hotplug and existing cables. Virtual-source/driver creation is outside baseline; no mandatory Linux source gate remains. |
+| OPEN-07 Specialized integration ownership | Resolved outside foundation, ADR-22 | No bundled OBS/Twitch client, vendor account registration or live integration gate. A later plugin owns its own qualification. |
 | OPEN-08 SDK canonical packaging/signature trust | SDK/security lead / WU-03 before G2 | Canonical manifest/payload digest and explicit trust store with conformance vectors; marketplace later. This must be finalized before actual package distribution, not guessed from synthetic hashes. |
 | OPEN-09 Quantitative budgets | Runtime/editor/audio leads / first relevant experiment then each gate | Use 06 targets as falsifiable proposals, attach results and revise only with rationale. No deadline/throughput promise until hardware evidence. |
-| OPEN-10 Synchronous recursion | Product owner + language lead / G2 | Rejected in v1 (ADR-15). Revisit only with a concrete workflow (for example tree traversal over JSON) and a bounded-depth frame design that keeps NFR-05. Iteration, zones and event chains cover the listed workflows. |
-| OPEN-11 Numeric literal typing in the editor | Product owner / 00a | An integer literal typed by the user defaults to i64 and a decimal to f64. If a generic port is already resolved, the literal adopts that type. Ports are never silently converted. |
+| OPEN-10 Synchronous recursion | Product owner + language lead / G2 | Confirmed rejected in v1 (ADR-15/20), alongside non-yielding synchronous control cycles. Structured yielding loops and queued event chains remain available. |
+| OPEN-11 Numeric literal typing in the editor | Editor lead / WU-05 | Selected Float Single/f32 and Double/f64 plus integer math (ADR-20). New untyped numeric input defaults to Double; resolved/explicit types win. Integer input parses directly without a float intermediate. |
 | OPEN-12 Package-defined control intrinsics | Language/SDK lead / after G2 | Not in 1.0. Iterators, async outcome groups and functions cover the known needs (retry, throttle, for-each-row). New intrinsics require a host language release with G fixtures. |
 | OPEN-13 Shipped translation languages | Product/editor owner / before WU-12 release packaging | Require complete English source coverage and full i18n contracts from G2/G3. Recommend Spanish as the first additional translation; advertise it only after L-07 human review. Other languages follow demand and complete coverage. Pseudo locales/CJK/RTL validation are required regardless of the shipped language list. |
+| OPEN-14 Foundation scope (ADR-21/22) | Resolved 2026-10-22 | Reusable core, separate extensible UI and usable basic application; general trigger/file/network/audio capabilities are foundation work. Specialized tools remain downstream/plugins. Only `control` is built in. |
+| OPEN-15 Pure closures and graph instancing | Language/runtime lead / after 00e | Two general core features that strengthen every product. Pure closures: typed function values from a pure body (Blender 5.0 closures), letting node groups and package nodes take behavior as input without new control intrinsics (eases OPEN-12); open choices are the type form and value-only captures. Graph instancing: one graph as a class with many runs bound to host objects, sharing one plan. Each needs its own 11 section, diagnostics and focused tests before implementation. |
+| OPEN-16 Conditional audio analysis | Audio lead / before promotion | Qualify band energy separately from pitch with declared window/rate/confidence, synthetic signals/noise and measured latency. RMS/peak and threshold/hold events are baseline. |
 
 These unresolved items have recommended paths. Only consequential user preferences lacking an implied default require clarification; evidence collection and independent reversible work should continue.
+
+Variadic instance-count clarification (2026-10-23): publication validates range metadata; validation checks the persisted number of instances in each resolved variadic port against inclusive min/max. Absent state counts as zero, sparse stable IDs and their next counter do not determine cardinality, and literals/wires do not create or delete instances. The check is read-only, includes both directions and uses E-VARIADIC-COUNT with a redacted base-port subject. Unresolved nodes await metadata resolution. This is an additional input-validation rule, not completion of DefinitionAndConfig or any other missing C4 category (11 §4.5).
+
+Append Update clarification (V1e, 2026-10-23): append means same-type concatenation for core string, bytes and list<T>, preserving order without coercion or normalization. It is not list-element insertion or map merge. Package nominal outer types do not acquire concatenation from arithmetic/equality evidence; registered package element types in a core list need no such proof. This metadata contract leaves general variable/resource/storage validation and runtime allocation/mutation budgets to their required passes. All nine Update tokens now have metadata contracts; E-UPDATE-UNSUPPORTED remains a compatibility diagnostic, while known ineligible operation/type combinations report E-CONSTRAINT-UNSATISFIED (11 §11.1).
+
+Input initialization metadata clarification (2026-10-23): defaults and true optional flags belong only on data inputs. True optional requires a well-formed exact core/option@1 wrapper with one type argument; option<$T> is allowed for a declared T. False optional flags are inert. Publication applies these checks after established descriptor rules, preserving their diagnostic precedence. Malformed type syntax, unknown inner type references and default payload/type checking remain separate responsibilities; saved passive metadata stays readable for repair (11 §4.1).
+
+Shared variable contract clarification (V2, 2026-10-23): exact set-shared/update-shared reference workspace declarations only, with Async/Maybe metadata. Local/run targets use E-SHARED-VARIABLE-SCOPE; synchronous workspace writes retain E-VARIABLE-SCOPE. Shared Update reuses the ordinary nine operation rules and operands/results. The language table owns typed variable-access facts for function analysis, which rechecks current contracts and propagates suspension while excluding workspace writes from run-variable effects. Maybe is conservative and does not certify a suspension cycle. Host actor publication, atomicity, cancellation/storage/initialization and execution remain required separate work (11 §11.1).
+
+Data-dependency cycle validation clarification (2026-10-23; ADR-13/15/16): data dependency is port-level, not node-level. Each valid data edge and each data input to each computed output contributes an edge in its own body; state/execution/payload/iteration outputs add no input dependency. Fresh metadata and actual stable variadic instances are required. Iterative component/witness traversal returns one closed concrete-port path per cyclic component; paths remain structured for host/UI presentation and never become raw message arguments. The combined analysis runs the pass after connection resolution, preserves explained metadata failures and records DataCycles as covered. This is the fifth covered category; ten required categories remain missing and compilation readiness remains false.
+
+Default literal publication clarification (2026-10-23; ADR-15): after established descriptor/input metadata checks, a known concrete registered declared type requires exact default type equality and successful canonical core literal decoding against the current schema registry. DefaultType/DefaultLiteral carry definition/port identifiers only. Types without literal representations reject defaults. Generic, malformed or unresolved declared types defer this validation; passive saved metadata remains repairable. This does not complete DefinitionAndConfig or establish execution readiness (11 §4.1).
+
+Execution-output availability clarification (2026-10-23; ADR-15): publication checks available_on only on execution-sourced data outputs. An explicit list is nonempty and unique and references actual output exec outcomes, including kind-provided outcomes. Omission means then and requires it to exist; custom outcomes replace then, so their execution outputs need an explicit applicable list. Input ports, event outputs and data outputs are not exec outcomes. Existing descriptor errors retain precedence; passive metadata is preserved for repair. No unconditional source-to-kind matrix is introduced. This does not implement dominance, region/value availability or complete DefinitionAndConfig validation (11 §4.1/7.2).
+
+Body-domain prerequisite clarification (2026-10-23; ADR-21): the current core accepts absent or exact control domain metadata on the root and flattened function declaration. Other JSON values, including null, remain preserved and receive a redacted E-DOMAIN-UNSUPPORTED body diagnostic. Combined analysis stops before the control passes, produces no resolved signatures or function summaries, and explains every incomplete node/function with E-DOMAIN-ANALYSIS-BLOCKED. Private coverage is invocation-specific: domain-only on prerequisite failure; six categories covered and nine missing on supported control documents. This creates no second domain, host registry framework or package extension authority. Compiler readiness remains false; standalone structural APIs remain available for inspection.
+
+Call-site type interface clarification (V3a, 2026-10-23; ADR-15/16): separate declared call typing from accepted execution metadata. The type-only projection carries target/parameters/data ports with no kind, suspension, effects or provenance; each call instantiates parameters in its own node scope. Current pins/literals/wires and constraints drive inference, and type arguments may be persisted without a call signature. Invalid/missing targets have no stored-signature fallback. Typed before/after function references invalidate callers and neighbours on declaration edits/removal; lost generic interfaces clear inferred arguments but preserve pins. Body generic parameters require one shared universal scheme, not independent marker inference. Accepted executable call contracts, body conformance and full contextual validation remain unimplemented; compile readiness stays false (11 §5.5/14).
+
+Accepted call contract clarification (V3b, 2026-10-23; ADR-15/16, 11 §14): calls resolve inside combined validation only from complete, conformant callee summaries, accepted callee-first to a fixed point. Function markers derive their ports from the declared interface, so conformance reuses the connection and required-input checks and adds marker multiplicity (`E-FUNCTION-BODY-MARKER`) and exec return coverage (`E-MISSING-RETURN`). Strictest-reading decisions, open for review: (1) generic function interfaces are not accepted, because rigid shared-scheme typing of body nodes against `$T` markers is not implemented; (2) a function with a declared-kind mismatch or any error on its body nodes is never accepted; (3) `core/fork` branches are exempt from return coverage and unresolved reachable nodes make coverage unprovable instead of passing; (4) literal values on `core/return` or `core/function-outputs` inputs do not supply outputs, only edges do. `ContextualContracts` and `FunctionRestrictions` stay uncovered: subscription, region-escape, detach and break/continue boundary rules are not enforced.
+
+Event and entry contract clarification (V4, 2026-10-23; ADR-15): `core/on-event`, `core/emit` and `core/await-event` derive their `payload` ports from the `config.event` declaration, like variable nodes. An unknown or malformed reference reports `E-EVENT-UNKNOWN` and leaves the node incomplete. Strictest readings where the spec is silent: a host-owned entry must persist an `activation` policy and no non-entry node may carry one; `capacity` is at least 1; `max_parallel` is present and at least 1 exactly for `parallel`; host-owned entries reject `backpressure` overflow because no protocol offers it (violations report `E-ACTIVATION-POLICY`). Package entries keep the earlier tolerance for an absent policy. In a function body, host entries report `E-ENTRY-IN-FUNCTION` and any non-entry node with an event output reports `E-SUBSCRIPTION-IN-FUNCTION`; Emit and Await Event stay allowed. Exports were added in V4b; see below.
+Regions (V6, strictest reading): a node reachable from any second region is a fault even when the regions are nested; a Return in a Fork branch is `E-REGION-ESCAPE`; `max_iterations` must be a positive JSON integer (zero, negative, float or missing is `E-LOOP-UNBOUNDED`); a child-region root (`body`, `then#k`, `branch#k`) is never traversed as the parent region. `Regions` stays uncovered until zone and for-each intrinsics are registered and `E-ZONE-STRUCTURE` is enforced.
+
+Value availability (V8, strictest reading): `validate_availability` expands each body into a control-flow graph (Sequence steps chained, Fork branches concurrent, loops with a zero-iteration edge and a back edge, Break to `completed`, Continue to the next iteration) and asks whether the consumer is reachable without crossing an `available_on` outcome edge of the producer. An unconnected outcome other than `failed` or `cancelled` ends the strand, so a branch that stops without merging does not hide the producer; an unhandled `failed` or `cancelled` continues nowhere. Fork `completed` is reached through an AND-join only when `config.join` is exactly `"all"`; a missing, unknown, `any`, `race` or `detach` join is an OR-join or an immediate edge, so branch values are rejected there. `payload` needs the same activation; `iteration` needs a consumer inside that iterator's own `body` region chain; `computed` and `state` are unrestricted. A different top-level region (entry, event output or function entry) reports `E-CROSS-ACTIVATION`, otherwise `E-UNAVAILABLE-VALUE`. Pure and volatile nodes are checked at their owned exec consumers, so an unconnected pure node reads nothing, and every lazy input is treated as read. Unowned (unreachable or ambiguous) nodes are skipped because regions already report them. The Fork `join` config value is not yet validated as its own diagnostic. `ValueAvailability` is counted as covered.
+Control cycles (V9, strictest reading): the exec graph per body uses every valid explicit exec and event-to-exec edge of resolved nodes; implicit structured-loop back edges are not document edges, so they never form cycles, but an explicit edge that re-enters a loop node from its own body does, and a loop node (`suspends: maybe`) never certifies it. Only a resolved `suspends: always` (including an accepted call summary) certifies; `maybe`, unknown or unresolved metadata does not. Unreachable cycles are still reported. Each cyclic component that survives removal of `always` nodes reports one `E-CYCLE-SYNC-CONTROL` at the lowest node of its witness. A cycle certified only by `core/yield` warns `W-BUSY-LOOP`; a cycle component that also contains an error cycle reports only the error. `ControlCycles` is covered.
+
+State and streams (V10, strictest reading): `validate_state` reports `E-WRITE-CONFLICT` on a Fork for each local/run variable written by two or more of its branches, counting nested regions, `set-variable`/`update-variable`, callee run-write summaries and known package leaf effects. A pair is exempt only under `conflict: last-writer-wins` or when the union of writes is one `add`/`and`/`or`/`xor`, or `min`/`max` on a language-owned ordered scalar; `sub`, `append`, `compare-and-set`, `set` and mixed operations conflict, and package-typed Min/Max conflicts. `validate_streams` reports `E-STREAM-STORE` for a stream type nested anywhere in a variable type or an exported port, `E-HANDLE-PERSIST` for a handle type nested in a workspace or persistent variable or an exported port, and `E-HANDLE-LITERAL` for a resource-typed variable initializer (stream input literals already fail decoding as `E-LITERAL-TYPE`). Not enforced yet, so `StateRules` and `StreamRules` stay uncovered: `W-STALE-CAPTURE` (needs suspension-aware dataflow), register write conflicts and stream-in-register (registers have no contract), `persistent` on a local variable, and initializer/type agreement.
+
+State follow-up (V10b): `W-STALE-CAPTURE` is an approximation of "captured before a suspension": it tracks only captures through exec-node data outputs on the path from a Get to a Set of the same variable inside a `parallel` entry's regions that contain any possibly suspending node; local-variable captures and exact ordering are not tracked (no false negatives are claimed). `persistent` on a local variable reports `E-VARIABLE-PERSISTENT`. `StateRules` and `StreamRules` remain uncovered until register rules land.
+
+Registers (V10c): register config is validated (`E-REGISTER-CONFIG`) and stream cells report `E-STREAM-STORE`; Fork write conflicts on a register stay `E-REGION-AMBIGUOUS`. `StreamRules` is covered (stream consumer nodes are unregistered, so only the enforced fan-out, storage, export and literal rules apply). `StateRules` stays uncovered solely for `W-CONST-ERROR`.
+Exports, function restrictions and config schemas (V4b, strictest readings): `EntryPoliciesAndExports`, `FunctionRestrictions` and `DefinitionAndConfig` are now covered; `ContextualContracts`, `Regions` and `StateRules` remain missing, so nothing is compile-ready. Exports: a duplicate `id` reports every later use (`E-EXPORT-DUPLICATE`); a target must be a data output of a root-body node (`E-EXPORT-TARGET`, so function-body nodes and exec/input ports are rejected); the type must be concrete with `serialize` evidence (`E-EXPORT-TYPE`; `core/error` passes at type level only, and records or enums need a derive); the whole pure/volatile cone is checked for payload, iteration and execution producers (`E-CROSS-ACTIVATION`, G-35); an unresolved target is `E-DEPENDENCY-UNAVAILABLE` and never judged from a stored snapshot. Function restrictions: break/continue, return-in-fork, missing return, entry/subscription, kind, marker and recursion rules were already enforced; V4b adds `W-DETACH-IN-FUNCTION` for any detaching fork in a function body (a warning; the body stays valid) and rejects the documented but unregistered host entries (`on-start`, `on-stop`, `on-manual`, `on-timer`, `on-timeout`, `on-variable-changed`, `on-watch`) with `E-ENTRY-IN-FUNCTION`. Definition and config: `config_schema` is checked only through the documented `orange.config-schema/v1` subset (12 §3.2); any other construct is `E-CONFIG-SCHEMA-UNSUPPORTED` rather than ignored, an absent schema constrains nothing, and registration checks stay with publication. Core intrinsics declare no `config_schema`; their configs keep their intrinsic-specific diagnostics.
+
+Generic function bodies and contextual-contract coverage (V3c, strictest readings; supersedes V3b decision 1): within a function body its `$T` are rigid (skolem) types shared by entry, return and outputs markers and by every body node, so conformance accepts generic interfaces and each call instantiates them per call site. Rigid parameters satisfy only constraints the function declares (exact match); compound types over them never satisfy a constraint; a bare `$T` output counts as a possible stream for fan-out; map keys and handle kinds over `$T` are rejected. `ContextualContracts` is now covered: variable get/set/update, shared writes, calls, events, converters and registers (config plus the generic `core/register` ports) are all enforced. Open for review: constraint implication (for example `num` implying `ord`) is not derived for rigid parameters.
+
+Security/performance review corrections (2026-10-23; ADR-13/15/16): Sequence availability uses persisted instance order, as 11 §4.5 already requires. Config minimum/maximum comparisons retain exact signed/unsigned integer precision instead of rounding through binary64; mixed numeric bounds order the represented values. Export pull cones stop at state outputs and use an incoming-edge index; a register's write inputs do not become dependencies of its current value. Resource storage checks traverse nominal record fields and enum payloads with cycle-safe schema expansion; register checks read fresh resolved cell types. Availability groups queries by producer/outcomes and discards each reachability set after use, reducing retained memory without changing Fork join semantics. Direct dependency requirements now enforce the already selected exact versions; Cargo.lock is unchanged. These are corrections to existing rules, with no new wire fields, public API or completed gate. Per-producer control-flow traversal, potentially large query sets and whole-component inference still require performance work; callee-first acceptance never implied every pass was linear. Evidence and limits are in 10.
+
+Readiness and analysis controls clarification (2026-10-23; ADR-13/15/16/20): semantic validation and compiler constant evaluation are separate phases. `DeclarationTypes` and metadata `StateRules` are covered; `ConstantEvaluation` remains compiler-owned and missing. A fresh, valid `ValidationAnalysis::is_ready_for_lowering` may enter lowering/folding while `is_ready_for_compilation` still requires every category and remains false. This resolves the prerequisite cycle without dropping `W-CONST-ERROR` or preservation of observable constant errors. Unused variable/event types are checked against the current type registry. Wide input-to-computed-output relations use a private linear hub; only real ports appear in cycle witnesses. Combined analysis now admits requests through configurable aggregate quotas and polls cancellation at pass/body boundaries; these controls are not a hard CPU/RSS bound or an OS sandbox. See 12 §3.2 and the measured verification in 10. Earlier coverage checkpoints above are historical.
+Bundled scalar prerequisite (N1a, 2026-10-23; ADR-03/15/16/20): add orange-bundled under the documented native exception, using ordinary product definitions and exact native provider specializations. Native scalar binding rejects another selected provider/build, unsupported type/config/version and missing metadata; it retains the old registry snapshot across updates. A host-supplied canonical digest names an authenticated build assertion, not library-verified executable authenticity. Integer division zero and MIN/-1 behavior, finite/IEEE float error order, signed zero and precision are explicit in 03 and 11 §5.6. This is a bounded prerequisite with known-answer/property tests, not compiler, evaluator, package lifecycle, API freeze or NFR qualification. Conversions and non-scalar/control execution remain later slices.
+Initial converter execution (N1b, 2026-10-23; ADR-15/16/20): implement only the four existing core numeric entries in orange-bundled. Preserve explicit Core/provider selection and complete saved choices, never adopt changed defaults or execute another provider through a native fallback. Finite out-of-range f64→f32 inputs are rejected before native casts; signed zero/infinity and NaN signaling/quiet/payload mapping have explicit bit-level semantics in 11 §6. Loss output is shared immutable JSON {lost:bool}, never source values. Snapshot/entry are pinned; graph compilation and freshness proof remain separate. This adds executable contracts without new registry semantics, dependency changes or compiler/runtime/NFR gate completion.
+Implementation clarification for ADR-01/15/16/20 (E1a, 2026-10-23): the first compiler surface is a privately constructed PurePlan for root eager pure scalar/JSON exports. It uses a public trusted resolver implemented by orange-bundled, preserving compiler independence from concrete providers. Bindings pin immutable registry metadata, use fresh signature types and exact provider locks, and expose explicit errors rather than falling back to another provider. Constant faults and original source IDs survive folding. These interfaces are provisional; they neither replace the versioned guest component ABI nor certify a complete ExecutionPlan, scheduler or sandbox. Full model ConstantEvaluation coverage remains absent because this compiler accepts only a restricted vocabulary.
+
+Persistence evaluation under ADR-01/15/16 (2026-10-23): retain format-v1 JSON as the editable source/interchange representation and typed/dense data as the execution representation, as already separated in 12 §1. An isolated exact rmp-serde 1.3.0 named-MessagePack experiment produced smaller files and faster raw decoding but slower encoding for the tested workload; no universal binary-speed claim follows. Remove the measured redundant JSON import buffer now. A binary document format or derived plan cache remains a separate future decision requiring versioning, migration/unknown-field behavior, bounded decoding and source/provider identity checks. No new product dependency or binary format was adopted, and the general runtime remains unimplemented.
+
+ADR-20 implementation evidence (E2a, 2026-10-23): add a test-only independent graph demand oracle with widened integer arithmetic, source-keyed memoization and original fault provenance. It consumes the original graph and shared fresh model analysis/literal codec, never compiler slots/constants or native executables. Compare exported values/errors over bounded generated DAGs and explicit known answers, including JSON round trips. Keep its scope narrower and explicit rather than presenting it as a production runtime or general interpreter. No public interface, persisted schema, dependency or language rule changes are introduced; JSON remains the selected graph persistence format.
+
+ADR-01/15/16 implementation clarification (E2b): add a checked borrowed pure-export result view in orange-compiler while every supported reachable operation is already folded. Beginning a view checks fresh document/registry identities, export count and cancellation; reads borrow typed results/faults without rerunning trusted executables. Existing views retain immutable pinned snapshots across later authoring/publication, while new starts reject stale inputs. This provides a narrow downstream consumer API without inventing a scheduled runtime, final runtime ABI or serialized plan cache. JSON remains the document format.
+
+ADR-20 evidence extension (E2c): extend the independent graph oracle to floating policies, all four numeric converters and distinct multi-output values/faults. Retain exact converter bit/loss assertions and named known answers alongside generated graph properties; explicitly distinguish shared platform floating primitives and arithmetic NaN classification from independent IEEE proof. This changes only tests/evidence, not production behavior, public ABI, graph schema or JSON persistence.
+
+ADR-01/13/15/16/20 implementation note (E1/E2d, 2026-10-24): implement only the existing host-owned Select/And/Or lazy rules in the constant pure compiler, using iterative demand after conservative potential-cone admission. Inactive alternatives never bind/fold/materialize during lowering; full source semantic validation still applies. Immutable specialized projection steps preserve source/fault identity and do not expose package-controlled lazy callbacks. Keep seeded entropy and dynamic epoch ownership separate; no metadata-only RNG or actor claim. This is an E1/E2 subdivision; E2's remaining acceptance and E3/R1 stay open. JSON is unchanged.
+
+ADR-01/13/15/16/20 implementation decision (E1/E2e, 2026-10-24): represent options structurally in checked PlanType rather than erase their static distinction into JSON or infer absence from Value alone. Add Option(Box<PlanType>) over the existing leaves, bounded by the model type-depth limit. PlanType loses Copy; EvaluatedExport.ty becomes &PlanType so nested result reads borrow metadata without cloning/allocating a tree. This is a source compatibility change to the unfrozen 0.0.0 compiler API: callers borrow or explicitly clone owned PlanType values and use borrowed type comparisons. There is no frozen SDK, serialized plan ABI or graph migration. Coalesce follows the existing language contract and remains a compiler-owned constant projection; package lazy authority is unchanged. Result/Try and deterministic entropy ownership are not folded into this slice.
+
+ADR-01/13/15/16/20 representation clarification (E1/E2f): add Value::Ok(Arc<Value>) for a successful Result only when its static payload can itself expose the Err discriminant. Keep ordinary success unboxed and Value at most 16 bytes; Option<Result> success needs the wrapper, while adjacent nested options already box their inner tag. This closes the previously ambiguous Ok(Err) representation without adding a Result literal or JSON format. NodeError gains optional original producer node identity for constant capture. These are source changes to the unfrozen 0.0.0 Rust API: exhaustive Value/PlanType matches handle the new Ok/Result variants; NodeError struct literals supply node (None for a detached host error). Complete runtime message/activation metadata is not invented by constant evaluation. Try catches graph input faults only; compiler infrastructure failures remain fatal to plan publication.
+
+ADR-15/16 entropy prerequisite decision (E2g1): freeze orange.entropy.sha256-counter@1 with fixed-width, explicitly ordered scope fields and four words per digest, using the already exact-pinned sha2 0.11.1 dependency. This gives an independently verifiable replay format without adopting another RNG dependency; no timing/allocator qualification follows. Bind node UUIDs to immutable dense handles before sampling and let each activation own invocation counters and generation-stamped epoch memoization. Fail on ownership mismatch or counter exhaustion, with no wrap/global sequence. Place execution-owned entropy in the reserved orange-runtime crate, independent of UI, host services and source edits. This is an E2 prerequisite, not R1 or seeded graph completion.
+
+E3 amendment: the identifier is now orange.entropy.sha256-counter@2, which adds a 32-byte call-path frame ID after the seed. Without it, two call sites of one function body in the same epoch would share a sample. No replay data existed for @1, so it is retired rather than kept readable. The root frame is all zero bytes; callee frames are hashed from caller frame and call-site node. Known-answer vectors for blocks, the final block and a callee frame were recomputed with an independent.NET SHA-256 implementation.
+
+ADR-13/15/16 metadata prerequisite (N1/E2g2): execution classifications are typed, mandatory host definition facts with no silent defaults. Pure contracts must be deterministic; entropy contracts must be seeded; package volatile authority is limited to entropy. Host state/clock readers cannot declare data inputs, and volatile nodes cannot expose exec ports. Keep fresh registry metadata authoritative rather than copying execution declarations into graph caches. NodeDefinition struct literals now explicitly provide volatility and determinism; the new enums/RegistryError variants extend unfrozen 0.0.0 Rust APIs. Existing construction sites were updated without a JSON schema or port-signature migration. Package manifest/provider conformance and graph execution remain separate gates.
+
+ADR-03/13/15/16 entropy ABI prerequisite (N1/E2g3): add a distinct trusted EntropyKernel/EntropySource binding rather than adapt a volatile Random node into PureKernel::fold. The first product definition is full-width random-u64 with no local seed or OS randomness; the host owns stream algorithm and scope. Preserve exact provider locks and semantic signatures while excluding presentation from binding identity. Retain old resolved metadata across publication. New traits are host Rust APIs, not guest/plugin wire calls. Runtime scoped graph evaluation remains a separate E2 prerequisite.
+
+ADR-01/13/15/16/20 dynamic data-plan prerequisite (E1/E2g4b): add DataPlan as a privately constructed immutable typed root data representation rather than place entropy outputs into folded PurePlan constants. Share semantic/resource admission and the existing constant-demand folder; bind pure and entropy ABIs separately. Only proven constant work folds; static lazy choices prune inactive cones, while unknown epoch choices retain both possible arms and may precompute their constant islands. Numeric operand/source indices are prepared before execution. Explicitly reject unimplemented host language intrinsics before generic resolution, closing the previous opaque-function fallthrough without claiming function support. PurePlan compatibility, JSON persistence and global readiness boundaries are retained; actual epoch/frame execution follows.
+
+ADR-01/13/15/16/20 root-data frame decision (E2g4c): execute immutable DataPlan through an exclusively mutable DataActivation with explicit epochs, dense memo/work storage and source-owned entropy scopes. Preserve plan constants once across activations, first-fault input order, lazy choice and typed node-atomic publication. Retain old-epoch value charges instead of resetting a budget while keeping their storage. Release unpublished callback buffers after faults. Treat observed cancellation/global infrastructure limits separately from catchable graph faults; add a sticky in-stream cancellation observation. Expose entropy replay fields without claiming a full run journal, and redact live frame Debug payloads.
+
+Unfrozen source/API notes: DataOperation::Try now carries its resolved success-boxing flag; DataPlan adds checked initial-charge and export-producer projections; runtime exports DataActivation/DataOptions/DataLimits/DataError and EntropyReplayMetadata. Runtime normally depends on compiler; bundled tests depend on runtime to verify the external consumer boundary. No new external versions, graph JSON/wire schema or serialized plan ABI.
+
+E2g4f API diagnostic policy: PurePlan/DataPlan and borrowed evaluation/export Debug are metadata summaries; binding Debug omits callback internals and never invokes downstream formatters. Explicit values remain accessible for host-owned inspection. No trait bound/signature/wire/schema change is required; Debug text is not a stable serialization contract. This bounds default plan logging without inventing a universal Value redaction/credential detector.
+
+Review follow-up decision: every activation API that observes cancellation invalidates an active root-data epoch; cancellation before an initial successful start does not create a scope. The host must explicitly begin a new epoch to recover. Per-invocation entropy exhaustion is a latched host graph fault and cannot be replaced by callback success/error; cancellation retains infrastructure precedence. These corrections preserve existing public signatures and JSON. They do not imply native code containment or a completed actor lifecycle.
+
+## ADR-23 — Incremental validation session with the full pass as oracle
+
+**Partially implemented, 2026-10-25.** `AnalysisSession` is kept beside the document ([16](16-incremental-validation.md)). V12a is implemented with journal-owned change provenance, semantic freshness, a retained optional index and borrowed diagnostic/signature views. Bounded V12b caching reuses configuration and variable/event declaration-type units through the full validator's existing unit functions. Full admission and the other semantic passes remain whole-document; the complete incremental design below remains a target.
+
+- The target stores each pass's results per unit (node, edge, generic component, top-level root, body port graph, export, function).
+- Implemented configuration/declaration buckets invalidate from immutable committed deltas; other pass-unit invalidation remains future work. Cache refresh and publication still visit current results, so hits do not establish O(delta) updates.
+- Registry, effects, limits, global metadata or identity-lineage mismatches use full analysis. Current cancellation precedes fast-path reuse; cancelled/rejected results cannot supply compiler approval.
+
+Review correction (2026-10-25): report freshness and execution readiness are distinct. Fresh deterministic domain/quota errors remain current through layout-only changes with unchanged analysis inputs; cancellation requires recovery. Both analysis routes borrow host effects and share rejection prerequisites before preparing indexes/results. Config checks borrow objects with registry-generation-bound schema support; indexed input checks share a diagnostic buffer and preserve body-scoped invalid-wire precedence. Change publication merges ordered keys once. These refinements preserve the full-pass oracle and do not complete V12b or any NFR gate.
+
+Its observable result must equal `analyze` for the same inputs. The full pass remains the test oracle and the fallback, and `materialize` produces the same `ValidationAnalysis` the compiler requires.
+
+Alternatives:
+
+- **Constant-factor tuning of whole-document validation:** about 230 ms at 10k nodes after V8 and projection/inference caching; cannot reach.
+- **A general query framework dependency:** adds a pinned dependency and reshapes the public API before the dependency structure is proven.
+- **Per-pass incremental updates without an oracle:** stale results would be silent.
+
+Remaining incremental consequences:
+
+- Root-scoped region, control-cycle and availability entries.
+- Reverse indexes for declarations, locks and signatures, calls and root ownership.
+- A dynamic topological order for data cycles.
+- Visit counters for.
+- Session memory measured against.
+
+Delivery follows the six V12 slices in 16 §9. Closely related slices may share a reviewable PR; each implemented behavior remains gated on full-pass equivalence. `EditStats` attributes full analysis attempts, index rebuilds and local work separately; document cardinalities are not total pass visits. No dependency, saved schema, general domain interface or NFR/API-freeze gate follows from this first cohort.
+
+**Falsification:** W9 edits on the W4 graph that exceed outside reported full-scope cases, or any equivalence failure that cannot be fixed without a full recompute, reject this design for that pass.
+
+PR #18 control review decision (2026-10-24; ADR-21 core boundary): preserve read-modify-write atomicity by retaining a pending Set action across internal work slices, rather than retrying seeded computations. Reserve bounded On Stop frame capacity at startup separately from normal activations, rather than rejecting graceful stop when admitted work saturates ordinary capacity. Host input publication follows actual lazy demand over consumer-specific frozen snapshots. These choices apply only to the supported headless control subset and do not qualify general event/resource/package lifecycles. Contracts and regression evidence are in 03, 11, 12 and 10.
+
+Core reuse amendment (2026-10-24; ADR-01/15/21): retain four dependency boundaries for the model, compiler, runtime and bundled providers. Share private graph mechanics, immutable projections and prepared metadata inside those boundaries; keep language legality, provider selection and mutable activation ownership explicit. Add indexed authoring entry points while preserving read-only APIs and journal rollback/freshness. No new external dependency, generic plugin execution path, overridable language intrinsic, implicit provider fallback or persisted format is introduced. 12 documents the representations; 10 records executed checks and measured limits.
+
+Structured concurrency amendment (2026-10-25; ADR-14/15/21): represent live dynamic region ownership explicitly so a Fork join notification cannot prematurely retire its parent. Activation locals, entropy and fuel stay shared across sibling strands. One pending data consumption owns the activation evaluator until publication/failure, preserving the standalone public data API and frozen prologue without locks or duplicate per-strand data frames. Cleanup borrows a separate bounded fuel scope and restores surviving normal fuel; race cancellation retires one losing subtree rather than rescanning every sibling. General resources, functions and events remain separate cohorts; no new dependency, graph schema, package scheduling authority or full gate is adopted.
+
+Core integrity review corrections (2026-10-25; ADR-07/15/16/20/21): retain malformed imported values/counters for repair, but reject inconsistent variadic identities and unresolved explicit codec locks before lowering. Query actual registered decoder capability; do not reinterpret unknown codec versions using the current decoder. Separate semantic freshness from edit/undo freshness so presentation edits preserve execution plans. Share an unwind rollback boundary across ordinary and scratch command iteration; fail paste on generated identity collisions before keyed collection. Cleanup entry errors restore activation ownership before retirement, and literal aggregates borrow type arguments. These are correctness/performance corrections within the existing subset; format v1, package overrides and public resolver interfaces remain unchanged. New unfrozen Rust surfaces are the semantic identity and codec capability accessors, codec identity constant, diagnostic/error variants and variadic invariant query. Contracts are in 03/11/12 and evidence in 10.
+
+Pure-function compilation amendment (2026-10-26 UTC; ADR-01/07/15/21): split constant pure-call lowering from scheduler-owned volatile/action/async frames. Specialize accepted graph-local bodies through fresh interface types, retain original UUIDs plus parent-indexed call metadata, and share the existing pure folder with scope-owned memoization. Share marker projection across inference/validation; defer provider specialization of rigid arguments until concrete compiler admission. Refuse erased generic arguments instead of reading saved inference. Bound potential expansion/depth before callbacks; no Rust-recursive calls, document rewriting, new dependency or generic plugin dispatch. Package bodies, Return cleanup and general core/API/NFR gates remain open. Contracts:03/11/12; executed evidence:10.
+
+PR18-20 review correction (2026-10-26 UTC; ADR-01/07/14/15/21): share compiler admission policy and immutable specialization metadata, keep call memoization separate, and precharge owned specialization copies. Use declaration-order port pairing instead of repeated scans. Index runtime region/strand/timer ownership and ready handles; preserve explicit scheduling links and deterministic timer order independently of directory hashing. Retain serial singleton fast paths and share immutable plan constants across activations. The changes use safe Rust/std collections, add no dependency/public provider trait/saved schema, and preserve cancellation cleanup and snapshot ownership. Verification and measured tradeoffs belong in10; no general runtime/core/NFR completion follows.
+
+Runtime Pure-call amendment (2026-10-26; ADR-07/14/16/21): lower the acyclic admitted graph-local Pure subset into per-instance dense data nodes/slots and ordered call boundaries. Reuse the existing constant folder, resumable demand stack, consumption epochs, fuel and provider bindings. Share immutable call admission metadata; preserve original body IDs plus explicit compilation-instance source metadata. This deliberately uses bounded expansion rather than introducing a second evaluator or general runtime call-frame lifecycle. DataOperation::Call is an unfrozen Rust enum addition requiring downstream exhaustive matches to update. It does not implement action/async/volatile calls, stateful calls, Return cleanup, package bodies or a completed public API/NFR gate.
+
+Seeded-function amendment (2026-10-26; ADR-07/14/16/21): extend the bounded data profile to accepted graph-local seeded-volatile functions while keeping PurePlan Pure-only. Reuse expanded call boundaries and exact original call-path entropy FrameIds; bind one dense counter per actual expanded entropy instruction, sharing invocation logic with the existing public entropy owner. Prepare only ancestry used by actual entropy nodes. This avoids a frame/node counter product in the expanded executor without changing the versioned entropy algorithm, sparse standalone API, provider authority, schema or dependencies. Other volatile/stateful/action/async functions and Return cleanup remain later work.
+
+Control-dispatch amendment (2026-10-26; ADR-07/14/16/21): lower exact Core scalar Switch keys into bounded sorted typed tables, preserving original case identities. Execute Match-result through existing typed host projections with strict result representation and transactional retained-value charging. Reuse data consumption, actor lifecycle, cleanup and source identity rather than adding a dispatch provider ABI. String plan support and public enum additions are unfrozen Rust compatibility changes; no saved schema, dependency or package authority changes. Enum/custom equality, other state/control families and action/async frames remain later work.
+
+Switch review correction: reject out-of-range Core integer cases during semantic validation as well as defensive lowering, and replace quadratic prior-case scans with borrowed JSON hash membership. Diagnostic iteration remains source-ordered. This improves authoring admission without a saved-format change or an NFR timing claim.
+
+State-control amendment (2026-10-26; ADR-07/14/16/21): preserve named destination exec commands in typed dense targets rather than synthetic nodes or runtime port dispatch. Reuse generic checked cell metadata and existing actor segments/data pulls for Gate/DoOnce/FlipFlop/Register; state is Run/activation-owned and quota-checked before publication. Make command/reset/suppression semantics explicit in11 §11.3. Public Rust routing fields gain ExecTarget and ControlVariable becomes a ControlCell alias; these are unfrozen API changes. No new dependency, saved field, package scheduling authority or service implementation is introduced.
+
+Variable Update amendment (2026-10-26; ADR-07/14/16/21): use compiler-resolved operation/projection tags and ordered frozen demand groups for synchronous local/run Update. Reuse actor segments and dense outputs; admit state plus results before commit. Share scalar arithmetic in the model value layer with bundled kernels to retain overflow/float semantics without generic provider callbacks. KernelError is reexported from ScalarError. Valid static capability proofs do not authorize unsupported execution families. No UI, service, workspace actor, dependency or saved-schema version is added.
+
+Collection/iteration amendment (2026-10-26; ADR-07/14/16/21): extend checked native representations rather than adding generic iterator/provider callbacks. Separate insertion-ordered map traversal from order-independent Core map equality. Preserve per-invocation iteration context through immutable lexical frames, with RAII quota ownership and iterative parent release; cancellation cleanup pins only its actual scopes. Share bounded value checks and existing typed actor publication. Count Break now retires its index after cleanup, matching the loop-body lifetime barrier. These public Rust additions remain unfrozen. Saved JSON, dependency/lock versions, pinned providers, package authority and UI boundaries do not change.
+
+Function state-read amendment (2026-10-27; ADR-07/14/16/21): share host-input admission between root and called State readers, prepare potential call metadata once before executable binding, and retain typed call-instance provenance. Read-only volatile call locals use immutable initializers rather than the caller local store; this follows local scope without inventing mutable action frames. Run supplies exact Get snapshots while the direct DataActivation host retains explicit input authority. PurePlan still refuses volatile bodies. The HostSource::CallLocal enum addition is unfrozen Rust surface; saved graphs, provider authority and dependencies remain unchanged.
+
+Effectful call amendment (2026-10-27; ADR-07/14/15/16/21): flatten bounded static call scopes into typed dense control/data plans while keeping actual invocation frames actor-owned and tied to region completion. Never alias mutable call locals to caller activation storage. Return publishes strict results after owned cancellation cleanup; cleanup contexts retain the original frames, with shared automatic quota leases and no shared locks or unsafe code. Preserve callback/provider authority and reject unsupported potential effect nodes before binding. Validation now follows Sequence region continuations and checks suppression/command fallthrough, while Fork branches remain exempt and their join paths require Return. Unfrozen public layout/enums/inspection additions are documented in12; saved JSON, dependencies and provider ABI do not change.
+
+Segment clarification (2026-10-27; ADR-14/15): distinguish a host pump work limit from a semantic suspension or actual strand switch. Preserve write intents and pending consumer/function ownership across host observation boundaries while the same strand continues; explicit Wait/Yield/loop boundaries and switching strands start new segments. This keeps internal action/function ordering and source intent coalescing independent of how often an embedding host polls. General event/Watch delivery and wall-time scheduling qualification remain separate gates.
+
+
+Zone dependency clarification (2026-10-27; ADR-15/21): omitting iteration carry back links does not omit the real dependency of a zone result on its begin count/items/initial inputs. Port-level cycle analysis includes those forward prefix dependencies and still cuts state/execution/payload/iteration output dependencies. A zone result feeding its own prefix, directly or through other zones/computed captures, is a data cycle; feedback through a state output remains legal. Region analysis exposes compact checked lexical zone ownership for compiler reuse instead of requiring a second pairing/closure implementation. This clarification neither implements execution nor closes core/API/NFR gates.
+
+
+Zone lowering clarification (2026-10-27; ADR-15/16/21): keep checked lexical iteration domains separate from actor control regions and the outer consumption epoch. A frozen capture keeps its enclosing memo domain; a body instruction and its expanded data calls acquire the iteration domain. Constant arguments do not authorize eager unrolling of a zone-containing call. The existing entropy node/call identity and actual-demand invocation counter remain authoritative; iteration invalidates the instruction's sample memo without changing pre-existing non-zone replay vectors. Strict Filter keep/item ordering and begin-prefix fault ordering are explicit in11. Compiler IR adoption precedes runtime acceptance and does not establish an execution/NFR gate.
+
+Data shape ownership clarification (2026-10-27; ADR-01/16/21): the model owns what an executable value is. Shapes resolve once from parsed type terms. One module owns the value check, the boxing rule, the nominal charges and the error-code rule. One list builder owns list packing. Intrinsic definition IDs are named once in `catalog::intrinsic_id`. The compiler's `PlanType` becomes `orange_model::value::shape::ValueShape`, and `ValueCheckError` moves with it. This is a source change to the unfrozen 0.0.0 Rust API: import both from the model. Growing value and error enums are `#[non_exhaustive]`, so downstream matches need a wildcard arm. Language-closed enums stay exhaustive on purpose, so that a language change stays a visible breaking change. Graph JSON, literals, values and diagnostics are unchanged.
+
+Nominal enum shape amendment (2026-11-04; ADR-01/16/21): package enums gain an executable shape, resolved only through the registry snapshot's schemas (`ValueShape::of_in`), so a shape never names a schema the plan's snapshot does not lock. Schema-free resolution keeps refusing nominal types. Switch on an enum routes by variant tag, not through package `eq`, because a case names a variant rather than a value; this keeps dispatch independent of package code. Records and package-Eq keys keep needing their own executable contracts.
+
+Derived-key enum amendment (2026-11-04; ADR-01/16/21): an enum keys executable maps only when its `eq` and `hash` are both declared structural derives over payloads that are keys themselves. Equality is then tag-and-payload identity, which `Value` already hashes, so map storage needs no package callback. Variable and event declarations resolve through the same snapshot schemas as ports. Package-implemented key `hash`/`eq` and Compare-and-set over enums stay refused at compile time until the runtime has an executable contract for them.
+
+Record shape amendment (2026-11-06; ADR-01/16/21): package records gain an executable shape through the same schema resolution as enums (`ValueShape::of_in`), so one checked shape contract covers both nominal kinds: one memo, one cycle guard, one nesting rule and one map-key rule. A record value keeps its canonical `TypeExpr` and schema-ordered slots, and is checked by index rather than by field name. A record charges its type text as retained bytes. That cost is per value until a runtime consumer owns interned keys (12 §7 "Record type"). A recursive record has no shape, as for enums, so no executable value needs unbounded traversal. Record comparisons, Update operations on records, and construction and field-access nodes stay outside this amendment.
+
+Derived-equality amendment (2026-11-06; ADR-01/16/21): the model owns one executable equality for every type whose language `eq` the host can run itself (`ValueShape::host_eq`): native Core equality, plus records and enums whose `eq` is a declared structural derive over such members. Resolution records the derive and member check once per nominal shape, so runtime Compare-and-set and the bundled comparison kernels share the check and the comparison instead of keeping separate copies. CAS keeps structural identity as its first test and uses the order-independent walk only for shapes that contain a map. A package-implemented `eq` is still refused at compile time, never approximated by structural identity, until package-defined Eq gets an executable contract (L05/K04). This supersedes the CAS refusal in the derived-key enum amendment above.
+
+Audit remediation decision (2026-10-27; ADR-16/21):
+- **Binding request.** Kernel binding gains a narrow, additive request: `BindingRequest` carries the node, the exact definition, the locked provider, the config version, the config, the signature and the pinned snapshot. The compiler builds it only after its exact-lock checks, and the bundled adapters implement it. (2026-10-28) The request is now the canonical, required resolver method; whole-document resolution survives only as a non-overridable caller convenience.
+  - The existing `resolve`/`resolve_entropy` methods remain required, and the new methods default to them, so current implementors compile unchanged and the defaults cannot recurse into each other.
+  - For an old-only resolver, a provider binding without exactly one lock entry now fails as `Unavailable` before the resolver is called; validated documents never reach that case.
+- **Frame storage.** `RunLimits` gains `max_frame_storage_bytes` for aggregate startup storage, because value-byte limits do not bound reserved capacity across frames. Struct literals of `RunLimits` need `..Default::default`. This is a source change to the unfrozen 0.0.0 API.
+- **Aggregate retained values (2026-11-05).** `RunLimits` gains `max_run_retained_bytes`, one run-owned nominal reservation for values retained across all activations, because per-activation counters do not bound their sum. It is nominal, not RSS, and excludes plan constants and run-scope cells (03). New `AggregateLimit` error variants and the field are source changes to the unfrozen 0.0.0 API.
+- **Layout.** Runtime register and strand layouts are internal, so this adds no persistence, plan ABI or graph migration.
+
+Standalone activation interruption amendment (2026-10-31; ADR-14/16/21): extend the Run interruption policy to direct data pulls. Mark the drive open before entering its resumable work and close it on normal return, including an ordinary error. An unwound drive stays interrupted and all subsequent execution/input/epoch entrypoints reject it before cancellation checks. The host drops and replaces that activation; no caught panic is converted into a graph fault or hidden recovery. The additive `DataError::Interrupted` variant is an unfrozen Rust source change requiring downstream exhaustive matches to update. Its static message key carries no input data. Saved JSON, provider identities and runtime replay rules are unchanged.
+
+Streaming JSON admission amendment (2026-11-01 UTC; ADR-15/16/21, review R5): add explicit decoded-structure budgets to the existing streaming importer after measuring substantial accepted extension-array heap amplification. Existing import entrypoints now use `ImportBudget::default` (1,000,000 values, 8 MiB decoded key bytes, 32 MiB decoded string bytes); hosts select another profile through `from_json_with_budget`. Preserve `ImportLimits` shape and graph format/meaning. Early JSON-budget failure takes precedence over later parse/envelope diagnostics to stop scanning promptly; ordinary error order remains when the budget holds. Add typed `ImportResource` dimensions, requiring unfrozen Rust exhaustive matches to update. This intentionally tightens default admission; larger trusted documents can reopen with explicit profiles. No allocator/RSS ceiling, process sandbox or limit on native provider allocation is inferred.
+
+## ADR-24 — Bounded run-scope event delivery and dynamic roots
+
+**Decision (2026-11-02):** extend the existing cooperative Run with actual graph-local On Event/Emit execution. The first executable profile admits run-scoped declarations and top-level FIFO Queue handlers; stored Drop/Replace/Parallel policies remain valid authoring vocabulary but are refused by this compiler profile; backpressure is never admitted for these synchronous emissions. Await Event, external sources, workspace bus, replay and reactive notifications stay separate increments. No host thread, service framework, dependency or engine is introduced.
+
+**C01 amendment (2026-11-06):** the executable profile additionally admits Drop and bounded Parallel. Drop is busy as soon as any delivery is pending or a root remains owned, including cleanup; its intentional skip retains no payload, increments dropped only, and takes precedence over capacity overflow. Payload/depth validation and complete fan-out admission still precede mutation. Parallel counts all still-owned roots against positive `max_parallel`, keeping pending capacity separate and applying ordinary run/frame/state/value limits. Eligible heads are reinserted when a slot remains after dispatch and after complete root retirement; handler/ingestion order and non-recursive Emit remain unchanged. Existing bounded ownership identity sets replace a single active flag; no scheduler framework or dependency is added. Replace was reserved for the separate C02 amendment below. Contracts: 11 §10 and 12 event representation. Focused graph tests cover busy boundaries, local isolation, overload atomicity, exact resource boundaries and stop/fault cleanup; physical latency, full R2 and release qualification remain open.
+
+**C02 amendment (2026-11-06):** admit Replace through the same checked event table and ownership tree, with one active root and one latest pending envelope. A positive saved capacity is required; effective pending capacity is one, and intrinsic latest-only eviction supersedes the configured pending overflow selector. Superseded pending deliveries count as dropped, without a capacity overflow. Complete fanout payload/causal/quota admission precedes all queue, counter and cancellation-intent publication, with no credit for the still-owned old active payload. Refusal requests no targeted cancellation and leaves all target queues unchanged. Ordinary graph failure policy can independently stop a run.
+
+Targeted cancellation is uniformly deferred until the emitting strand/frame return to actor ownership after the step's transfer/requeue/retirement. It runs before the next timer, event dispatch or graph node, so self-emission in a function or Fork child cannot leave a checked-out strand beyond the cancellation walk. A per-handler old-root marker deduplicates requests through full retirement; later admitted emissions replace pending only and never replenish cleanup fuel or restart cleanup. Existing descendant/function-frame barriers keep the old active payload and root slot reserved until all owned work retires, including bounded cleanup or its normal truncation. Naturally retired terminal self-roots are skipped by their non-reused identity. Global stop/fault/abort clears pending requests; Graceful drains already accepted latest work and rejects new Emit. No inline handler/cleanup execution, new scheduler, saved field, dependency or provider authority is introduced. This selects a bounded cleanup-serial replacement contract; Await Event, external/workspace ingress, replay/reactivity and physical latency qualification remain separate. Contracts: 03, 11 §10 and 12. Actual execution evidence remains in 10.
+
+**C03 amendment (2026-11-06; Await Event contract).** Admit the existing graph-declared run-scope `core/await-event` intrinsic on the cooperative actor. Registration begins only after the current strand/shared frame returns to actor ownership and retains that same strand; it creates no activation. Every accepted matching Emit broadcasts to all waiters already registered for the event, with no backlog or replay, and the complete handler-plus-waiter fan-out is admitted atomically. Each waiter holds one nominal payload reservation through deferred completion and transfers it once to the existing activation budget on publication. A checked, never-reused run-local token owns the registration; event and timeout indexes carry identity only. Existing `max_strands` bounds registrations and optional timeouts share `max_timers`; no new public limit, scheduler, dependency or saved syntax is introduced.
+
+Absent/None timeout waits indefinitely; checked nonnegative `Some(duration)` uses virtual time, and zero duration suspends before due-timer processing at a later actor boundary. Due timers precede graph nodes at pump entry; an already-due timeout wins there, while an Emit accepted before time advances beyond the deadline wins and removes the timeout. Cancellation and stop unregister the waiter and timeout before bounded cleanup; graceful stop drains accepted work only to its existing deadline. Keep causal depth strand-local: event completion resumes at the maximum of prior and accepted event depth, timeout retains prior depth, and serial call/loop/Fork continuations preserve the maximum contributing lineage. This prevents Await from resetting runaway-chain checks or mutating concurrent sibling depth. `ControlOperation::AwaitEvent` and `ControlOutcome::TimedOut` are additive unfrozen Rust enum variants; `RunOwnership::event_waiters` is additive inspection metadata. Downstream exhaustive matches and struct literals must be updated without compatibility wrappers. Contracts: 03, 11 §10 and 12. This amendment selects semantics and public metadata; implementation and execution evidence are recorded in 10, with full qualification remaining separate.
+
+**C04a amendment (2026-11-06; bounded host ingress contract, implementation evidence pending).** Add explicit host source registration for existing checked run-scope `EventDeclId`s in the pinned plan, routed through the shared On Event/Await admission path. `RunLimits::max_host_sources` defaults to 64 and bounds active source registrations. Opaque cloneable `RunEventSource` handles bind to the existing checked non-reused Run ID and checked non-reused `HostSourceId`; the handle exposes its ID and event only. Same-run revoke frees capacity and is idempotent; it does not retract accepted deliveries. Only active registrations are stored. The API borrows payloads, accepts nonzero strictly increasing per-source sequence (gaps permitted) and an optional caller-supplied wall timestamp. It validates run/state/source/sequence/type before complete fan-out quota admission, and advances source and run ingestion metadata only after successful admission. Invalid identity/state/source/sequence/type errors are typed, fieldless and redacted; only delivery quota refusal increments the existing overflow counter. Host origin has `cause: None`, depth zero and monotonic time from `Run::now`; graph origin retains node/scope and `Some(activation)`. No OS time read, workspace bus, replay, service, timer or manual-entry lowering is added.
+
+Host calls linearize ingress against `pump`: acceptance before an already-due Await timeout is processed wins and removes the timeout; acceptance after timeout processing does not resume that waiter. A host-originated Replace cancellation is applied at the next pump boundary before timers, dispatch or graph nodes; whole-run cancellation takes priority. `pump(0)` does no graph node or cancellation walk and reports ready while a host Replace intent remains. This does not change graph Emit's post-step cancellation boundary. Contracts: 01 03, 11 §10, 12 and 13; and all FR execution gates remain open pending implementation evidence and qualification. C04b (2026-11-06) then registers `core/on-manual`: its typed `payload` comes from config like For Each's mode-derived ports, so no generic parameter or inference is involved; each root entry is a private one-handler channel fed only by `Run::trigger`, so graph Emit and host sources cannot reach it, and it reuses the staged handler admission instead of a second queue. `EventMetadata` names its target as `Declared(event)` or `Manual(node)`. C04b2 adds `core/on-timer`/`core/on-timeout` the same way, with target `Timer(node)`: each entry keeps one run timer and admits ticks on the virtual clock. C06 adds `core/on-variable-changed` as a fourth channel family fed at segment ends. Only watched variables capture a previous value, on their first write of a segment, so the cost follows writes rather than state size. The notification is admitted, not run, before the next strand executes (O10). Requiring an initializer keeps `previous` a plain value instead of an option, and requiring host `eq` keeps package code out of the segment boundary. `skip` delivers only ticks handled exactly on time, so it differs from `coalesce`, which delivers the latest late tick. `missed` counts ticks the timer did not admit, including refused ones, while handler drops stay in event statistics; a refused tick never faults the run because, as with host ingress, the source is not graph work. C04b3 adds `core/now` as the clock volatile: it reuses the state-read host-input path instead of a new evaluation mode, outputs a duration since the run clock's zero rather than an instant (11 §5 keeps monotonic instants out of values), and leaves wall-clock time to host-supplied `wall_ns`.
+
+Emit stages every target disposition and admits aggregate pending item/payload and queued-plus-active payload quotas before mutating any handler queue. Fault-overflow or a hard limit rejects the complete emission and preserves existing queued deliveries; the rejection is counted. Lossy policies apply per handler: DropNewest skips that delivery, DropOldest evicts its oldest pending delivery, and CoalesceLatest on overflow clears that handler's pending queue before keeping the newest. Evictions occur before replacement retention. Queue capacity excludes its active activation. Equal-ingestion handlers dispatch in persisted order then stable node ID; otherwise eligible heads follow ingestion order. Emit never executes a handler inline.
+
+Startup activation frames remain dense. Dynamic frames use a directory containing only live owners and are removed when the whole root region retires, including detached children and cleanup. The existing region/strand allocator mints dynamic root identities, so recycled storage never aliases old semantic identities or Fork/function owners. Frame-layout quotas and activation-local state quotas remain separate from pending payload quotas. Initialization and fan-out bookkeeping are admitted bounded work, not wall-clock preemption guarantees.
+
+Graceful Draining rejects new Emit with core/RunStopping while draining already accepted root deliveries under the run deadline; their descendant Emits are refused too. Immediate stop, fault and deadline cancellation discard pending deliveries with counters; disposal releases their backing storage and initialization templates. Provider unwind is terminal: a checked-out frame may already have been dropped, but its live root still retires during stop. No ordinary work resumes after such an interruption. Exact source/provider/fault identities and locale-independent values remain unchanged. The completion gates for full R2/R3, UI and NFRs remain open.
+
+Runtime storage note (2026-11-05; ADR-16/21): implement physical region slot reuse with a small identity directory, ordered root enumeration, admitted Fork batch reservation and a drained reusable child buffer. Retire contents immediately and free pooled capacity on disposal; never use monotonic logical IDs as unbounded physical indices. Reuse host map/list admission only through the exact immutable allocation already retained by that same typed register, while preserving current publication and resource checks. This is a private implementation optimization within the existing runtime/embedding decisions, not a new semantic or provider contract. Evidence and rejected alternatives: [10](10-development.md#performance).
+
+Runtime storage note, second cohort (2026-11-05; ADR-16/21): keep derived check evidence inside the immutable container it describes (never in an address-keyed cache), remember only complete checks, and keep it out of equality, hashing and persistence. Ownership spill sets may hold up to twice their live members as removal flags to avoid per-node tree allocations, with ascending iteration preserved. Only run-minted identity keys may use the non-flooding-resistant hasher; directories keyed by graph, host or network input keep the standard hasher. Region continuations use pooled out-of-line boxes so regions that never wait stay small without per-call allocation. Additive memory must be judged at the expected graph sizes (19). Evidence and the rejected timer-slot experiment: [10](10-development.md#performance).
+
+Integer vocabulary amendment (2026-11-08; ADR-16/20/21): extend the
+ordinary exact bundled math provider, without adding language intrinsics or a
+compiler dependency on bundled code. Thirteen `T:int` definitions and four exact
+native specializations have closed operation-specific configuration. Remainder
+and Euclidean modulo avoid quotient overflow; shifts validate/mask counts only,
+with saturating config refused. Safe Domain/OutOfRange kernel faults retain node
+provenance. Existing scalar/state arithmetic semantics and provider locks remain.
+This is the first missing vocabulary increment, not a full core/API-freeze gate.
+
+Float vocabulary amendment (2026-11-08; ADR-16/20/21): extend the
+ordinary bundled math provider with sixteen `T: float` definitions and exact
+f32/f64 specializations, again without language intrinsics. Operations that share
+an integer name get distinct `float-` definitions rather than revising the L02a
+`T: int` contracts, because NaN, signed zero and domain rules differ. Finite
+policy follows IEEE exception order (invalid input, pole, domain, overflow) with the
+existing error codes; IEEE policy returns native results. Platform-library
+transcendentals keep replay platform-scoped. Not a full core/API-freeze gate.
+
+Float predicate amendment (2026-11-08; ADR-16/20/21): IEEE comparisons and
+total order are explicit `float-`/`total-order-less` definitions returning bool
+with empty config, not Core `eq`/`ord` implementations, so floats still cannot key
+maps or drive Switch. Boolean XOR is an eager ordinary definition, not a lazy
+intrinsic. Trigonometry follows the L02b finite/IEEE policy and platform scope.
+
+Numeric cast amendment (2026-11-08; ADR-16/20): Core owns one converter entry
+per ordered pair of numeric scalars. Exact widening is lossless-total, narrowing and
+float→integer are checked-partial, and inexact integer→float is lossy with loss
+metadata. Float→integer requires a saved rounding policy (truncate by default for
+new bindings) and never saturates. Wrapping integer casts are not offered; use
+bit operations explicitly. Existing four entries keep their contracts.
+
+Text conversion amendment (2026-11-08; ADR-16/20): parse and display are
+registry converters, not nodes, so they stay visible and explicit like numeric
+casts. Formats are invariant and locale-free. Float display uses shortest
+round-trip digits in an ECMAScript-like layout with signed zero kept; parsing is
+correctly rounded in the target precision. Strict and replacing UTF-8 decode are
+separate entries, so a lossy decode is never chosen implicitly.
+
+Text package amendment (2026-11-08; ADR-16/21): string nodes live in their
+own ordinary package, `org.orange.text`, rather than the math namespace. The same
+bundled native build provides it under a second exact provider key, so embedders
+still pass one resolver. Indexing names its unit (scalar default, byte explicit);
+graphemes wait for an exact Unicode segmentation dependency. Case mapping is
+Unicode default, locale-independent. Text results are capped at 16 MiB.
+
+Collection package amendment (2026-11-08; ADR-16/21): list/map/option nodes
+are an ordinary third package of the bundled build, `org.orange.collections`,
+not intrinsics; per-element graph logic stays in the existing zones. Generic nodes
+list no provider specializations and bind to the concrete container shape, as the
+comparisons do; membership tests require host-executable `eq`. Results are new
+values capped at 16 MiB of nominal charge.
+
+Record/enum node amendment (2026-11-08; ADR-16/21): record and enum
+construction/projection are ordinary package definitions whose ports the registry
+derives from config and the locked schema (`Ports::Nominal`), not intrinsics.
+Optional fields are `option<F>` ports, relying on 12 §7 boxing to keep missing and
+present None distinct, so no optional-port compiler form is needed. Payload-free
+variant projection is refused in favour of enum Switch.
+
+JSON read amendment (2026-11-08; ADR-16/21): JSON nodes are an ordinary
+fourth bundled package, `org.orange.json`, that navigates validated text rather
+than a parsed tree, so exact number text survives without a new serde feature.
+Duplicate keys resolve last-wins. Wrong-kind navigation is `core/Domain`, typed
+reads of another kind are None, and parse/text are Core converters.
+
+ADR-03 runtime selection (2026-11-08; K02a, selected by the user): the component
+runtime is Wasmtime **48.0.8**, an LTS release (every twelfth major version; 24 months
+of security support, MSRV 1.95.0 below ours). Normal releases (50.0.1 was current)
+are supported for two months, too short for the SDK boundary; the next LTS is 60.
+Only the `runtime`, `cranelift`, `component-model` and `std` features are enabled:
+no WASI, async runtime, compilation cache or debug support. It lives in the host
+crate `orange-guest`; graph-core crates never depend on it (ADR-21, metadata policy).
+Precompiled native artifacts are never loaded, so the crate needs no unsafe code.
+`deny.toml` now allows `Apache-2.0 WITH LLVM-exception` (Cranelift/Wasmtime) and
+`BSD-3-Clause` (required with MIT/Apache by `encoding_rs`, used for component
+string transcoding). The K02a probe (10) meets the ADR-03 isolation items for traps,
+fuel, interruption, memory limits and denied imports; host capability imports,
+package-archive loading, hot replacement and W3 benchmarks remain open.
+
+ADR-03 interface amendment (2026-11-08; K02b, selected by the user): guests are built
+with a Rust toolchain (`wasm32-unknown-unknown`, pinned wit-bindgen 0.63.0 and
+wit-component 0.262.0 in the separate `sdk/` workspace), not hand-written fixtures,
+because the SDK must ship generated Rust bindings. Graph values cross the boundary as
+`orange.value.v1` literal JSON text with the declared type, reusing the one tested
+codec for every type instead of a second typed encoding; WIT cannot express recursive
+values, and serialization cost is accepted until measured (performance deferred).
+Imports are linked per grant; guest-reported errors are namespaced identifiers only.
+
+Guest kernel fault amendment (2026-11-09; K02c, ADR-03/16/21, user-selected):
+`KernelFault` code and message key use `FaultText::Static(&'static str)` for built-ins
+or `FaultText::Shared(Arc<str>)` for package text. Fallback messages remain static.
+This supersedes the initial process-lifetime interning table: unrelated packages'
+error history must not consume a global identifier allowance or change graph-visible
+error identity. Identifiers compare by text regardless of storage. Faults and
+`WorkspaceError` are Clone, not Copy; `WorkspaceError::message_key` borrows its text.
+Guest identifiers remain validated and limited to 128 bytes each; invalid/overlong
+ones map to `core/PackageFault`. Retained shared text is charged by compiler, preview,
+runtime, stream and replay admission and released with its final owner. This is an
+unfrozen Rust API change, with no WIT, graph-format, provider-lock or locale change.
+Guest kernels still compose through `orange_guest::WithGuests`.
+
+Scoped guest cancellation amendment (2026-11-09; K02d1, ADR-03/14/21): choose
+host-driven epoch ticks plus store-local monotonic cancellation flags. One shared
+engine must support stopping a selected instance while another guest continues;
+engine-wide interruption remains an explicit separate operation. Cancellation is
+terminal for an instance, so handles cannot later target a replacement. Wasmtime
+48.0.8 sets a renewed deadline after its callback; a single signal can race that
+renewal. Hosts therefore advance epochs periodically while guest code runs. Do not
+create hidden ticker threads or claim blocked-host-call preemption. This additive
+host Rust API changes no WIT, graph semantics, dependency/features or provider lock.
+Async/service imports, graph cancellation lease wiring and wall-time qualification
+remain open.
+
+Package integrity/recovery correction (2026-11-09; ADR-03/07/21): authenticate a separately stored executable against its verified
+entry size and SHA-256 before compilation. A reused in-memory sink owns only the
+current archive. Journal format 2 adds a checksum of the declared frame length;
+complete header/payload corruption preserves and refuses the log rather than
+discarding later valid commits as a torn tail. Physically short final writes retain
+prefix recovery. This replaces the unreleased journal encoding without a legacy
+reader; package archive, graph/provider-lock and guest interface formats do not
+change. CRC detects accidental corruption; it does not authenticate journal bytes.
+
+Guest resource admission amendment (2026-11-09; ADR-03/14/21): raw and plugin
+stores share one limiter for aggregate memory and table elements, including initial
+allocation and failed-growth refunds, plus finite object counts. Use Wasmtime48.0.8
+`Store::set_hostcall_fuel` for bounded canonical lifting; its128MiB default was
+present but not selected by OrangeEditor. Choose an explicit1MiB default and an
+aggregate decoded-output check under that policy. Keep owning generated bindings
+so post-return cleanup cannot invalidate lazy borrowed results. No custom unsafe
+lifting, new dependency or encoding is needed. Check container minimum storage
+before reserve and include absent record slots/identity text in codec admission.
+Each import/result has its own nominal allowance; no RSS/wall-time claim is added.
+Use the synchronized live-store cancellation tests in place of sleep-based readiness.
+Per-binding mutable instances remain shared by plan users; asynchronous run-lease
+integration must first define an operation/activation owner and must not cancel a
+shared binding for one run. Pooling remains deferred.
+
+Error-output admission correction (2026-11-09; ADR-14/16/21): include error-as-value
+execution projections in the same nominal retention contract as successful output
+values. A selected Match-result arm replaces both projection sets in one staged
+admission; function retirement releases the callee's error charge. This completes
+the ownership correction for these paths without changing error identity, graph
+semantics, public Rust signatures, WIT or dependencies. Quota refusals remain
+infrastructure errors and never become an ordinary error arm or partial publication.
+
+## ADR-25 — Value nodes hold constants on their input
+
+**Decision (2026-11-15):** a graph holds a plain value in a value node: a pure language intrinsic with input `value` and output `result` of one type. There is one node per common type, `core/number` (f64), `core/whole-number` (i64), `core/text` (string) and `core/true-or-false` (bool), each defaulting to its zero, plus one generic `core/value` (`T`) for any other type with a literal form, typed by a pin or its wires. The palette names them from their IDs ("Number", "Whole number", "Text", "True or false", "Value").
+
+**Why one per common type and a generic one:** a person picking "Number" should not first choose a type, and a fixed type gives the card its number field, checkbox or text field and a sensible zero at once. Records, enums, durations and lists are reached through the generic node and the existing type chooser rather than one node each.
+
+**Why the constant is an input literal, not config:** input literals already have a canonical codec, validation, diagnostics, card controls and folding (11 §4.4). Keeping the value there adds no saved field, literal form or diagnostic, and the same edit operation types a value on any input. The cost is that `value` can also be wired; the node then forwards what reaches it, which is harmless and matches how literals are shadowed elsewhere.
+
+**Lowering:** the compiler treats value nodes with the language-owned projection already used by Select and Coalesce. A literal folds to a compile-time constant; a wired input forwards without a provider binding, so packages neither implement nor replace them (11 §16). Runtime and host need no new operation. The host view now shows a generic port's settled type (pin, else inferred) so a value can be typed on it.
+
+**Contracts:** 11 §8.4. Verification is the focused `orange-host` and `orange-editor-ui` tests.
+
+## ADR-26 — Groups in the layout, extraction as a checked edit
+
+**Decision (2026-11-15):** a group is presentation, as 11 §14 already says: `editor.groups.<id>` holds `name`, `color` (`#rrggbb`), `nodes` (top-level node IDs) and `collapsed`. The compiler, validation and signatures never read it, and a node is in at most one group. Groups list only nodes still at the top level, so deleting or extracting a node takes it out of its frame without a second edit, and an undo brings it back.
+
+"Make function" is the editor refactoring 11 §14 names: one transaction removes the selected nodes, adds a `FunctionDecl` holding them (same node IDs, with `core/function-entry` and `core/return` or `core/function-outputs`), adds a `core/call` in their place and rewires the boundary. A value wired in from one outside output becomes one input; a value used outside becomes one output; ports take the inside port's name, deduplicated and kept off the implicit names. The kind is the strongest kind among the nodes (calls count as their callee's, and Count, While and For each count as async). Steps may enter at one input and leave from one output. The selection preview rejects triggers, other iterators and crossing types that are still unresolved.
+
+**Why a checked trial instead of new rules:** the language already owns what a function may hold (`E-ENTRY-IN-FUNCTION`, `E-MISSING-RETURN`, `E-FUNCTION-KIND`, …). The host applies the edit as a trial and withdraws it, with history and redo as they were, when it adds an error the draft did not have (compared by code, node, port and variable, ignoring the function and wire IDs that change). No diagnostic, G-suite rule or saved field of the language changes.
+
+**View:** the host now draws a `core/call` with its function's declared kind and interface, named after the function, so a call is wired and typed like any node. Editing a function's body on the canvas is not part of this decision.
+
+**Contracts:** 11 §14 (unchanged), 12 editor layout. Verification is the focused tests.
+
+## ADR-27 — Adapters describe their settings; the editor stores typed secrets
+
+**Decision (2026-11-16):** a connection adapter describes itself and its settings through default methods of `ConnectionAdapter`: `about` (name and purpose), `texts` (text settings, each possibly `secret`, `required` or a `list`, addressed by names joined by `/` for one inside an object), `toggles`, and the existing `choices` and `fields`. An editor draws its form from these and keeps the settings' JSON for anything else. A secret typed in the editor goes to the host's `SecretStore` under `connection/<connection ID>/<setting>` through `Host::declare_connection_with_secrets`, before the declaration is committed; the document, its undo history, events and the editor's debug output hold only the `credential://` reference.
+
+**Why default methods, not a settings schema file:** adapters are Rust values in service packages; a default that returns nothing keeps every existing adapter valid, and an adapter's code already knows its settings. A JSON schema would have to be kept in step by hand and still could not mark a value as a secret for the store.
+
+**Why the name follows the connection ID:** the ID is stable across renames, unique in a document and valid as a secret name, so typing a secret again replaces it rather than leaving copies. Undo does not delete a stored secret: the store has no delete operation for hosts, and a redo needs it again.
+
+**Contracts:** 05 connection manager. Verification is the focused tests.
+
+## ADR-28 — Saved files upgrade forward; replaced definitions are rebuilt on open
+
+**Decision (2026-11-17):** every saved format has one `History` in `orange-model` (12 §6.3): the oldest readable version and one pure JSON step per later version. Reading runs the steps from the file's version; writing uses the current version; newer or unknown versions are refused with the version they name. Graph documents, the package index, the disabled-package list and stored variables use it. Definition files may list the definitions they replace with renamed ports and config fields (12 §6.4); a host collects them and, when a document opens, rebuilds each node of a replaced definition that is no longer registered as a node of its replacement, in one transaction.
+
+**Why now:** the product is before its first release and every format is at version 1, so the first format change will need an upgrade path and an older file to test it with. The planned audio rebuild already renames nodes and ports. Adding the mechanism before that change keeps the change itself small.
+
+**Why JSON steps, not versioned Rust types:** a step must read fields the current types no longer have. Keeping one Rust type per old version would multiply the document model; a JSON step is small, pure and tested with a saved file of the old version.
+
+**Why only unregistered definitions are rewritten:** an installed old version keeps running exactly as locked (ADR-07), and the result never depends on which package was installed last. Conflicting declarations refuse the package for the same reason.
+
+**Not covered:** config value transforms beyond renamed fields (`config_version` upgrade hooks), editor settings files, and showing `Draft::opened` in the editor before saving.
+
+**Contracts:** 12 §6.3–6.4, 04 "Definition evolution". Verification is the focused tests.
+
+## ADR-29 — Documents declare their own types; the registry is per document
+
+**Decision (2026-11-17):** a graph declares enums and records in its `types` section (12 §6.5). Each is a nominal type in the reserved `local` namespace, named by a stable UUID, with structural derives where its members allow. A host checks, compiles and runs every document against the package registry plus that document's types (`Host::registry_for`), keeping recent ones so analyses stay current.
+
+**Why:** enums only existed when a package declared one, so a person could not make a Switch on their own choices. Types in the document need no install, travel with the file and keep their identity across renames, which is how variables already work.
+
+**Why a per-document registry rather than a global one:** two documents may declare different types; a global table would make one document's types depend on what else is open. Layering keeps the package registry immutable and shared.
+
+**Not covered:** carrying local types through copy and paste, promoting local types to a package, and value editors for local types in the variables list.
+
+**Contracts:** 12 §6.5. Verification is the focused tests.
+
+## ADR-30 — Audio sources are shared and analyzers own their settings; signal wires next
+
+**Decision (2026-11-17):** an audio source connection is a device or a sound file and is opened once; it only captures (or plays) into a ring and measures. Entries and nodes that listen carry their own band and thresholds (On band level, On transient, Band level) and read the ring with their own cursor off the audio callback. A file source owns its transport (Play, Pause, Resume, Stop, Jump to time, On finished). The first On level is replaced through `replaces` (ADR-28).
+
+**Why:** thresholds on the device made two listeners open the device twice and hid what each entry listened to; files could not be analysed; transport paused every sound of an output. A source shared by many listeners is how mixing consoles and node tools (TouchDesigner, Bitwig Grid) separate a signal from what measures it.
+
+**Future audio patch domain.** ADR-31 adds visible graph wiring using the shared stream record. The separate proposal for sample-routing patches uses a port kind `signal` (type `audio/signal@1`): signal edges are routing, resolved when a flow activates, never per epoch; they fan out, fan in only at mixers, convert to nothing, and cannot be stored, emitted or exported. Entries may take signal inputs. The compiler extracts each flow's signal subgraph as an audio patch that the host instantiates on activation and tears down on stop or update, through the domain seam of ADR-21. Sources (device, file), sinks (output), analyzers (band level, onsets) and effects (filter, EQ) become patch nodes; editors tap a patch node for meters, spectra and hit markers instead of opening their own capture. Until then the audio stream record stays for Audio in, Audio out, Level and Record.
+
+**Contracts:** 05 "Sources and analyzers". Verification is the focused tests.
+
+**Wired analyzer presentation:** Audio Spectrum samples the shared ring on a
+provider worker and publishes bounded frequency buckets through the existing live
+read contract. The editor uses a selected range to create a Band Level or Band
+Trigger on that source. Each trigger owns its threshold and hysteresis. Analyzer
+selection is an authoring operation and needs no audio-specific core port type.
+
+## ADR-31 - Live reads and root arguments for sources
+
+**Decision:** The graph can wire inputs to an always-armed package entry or live
+read. Both use one checked root demand per input and one consumption epoch for the
+argument set. The run stages incoming typed values. Provider callbacks stay in
+the host, which retains or replaces guards as arguments change. Changes in
+published signals can drive the same When entry as run variables.
+
+The audio route uses the existing typed audio stream record and shared ring. The
+editor hides superseded nodes from search and the registry continues resolving
+their saved definitions. Flow-started subscriptions and audio-specific signal
+ports remain separate future work. The native Rust SDK ABI identifier is
+`orange-plugin 8` for the source and emitter interface changes.
+
+**Contracts:** 05, 11 §10.5, 12 §4–.
+
+## ADR-32 - Audio analysis on two stream-wired cards
+
+**Decision.** Audio Spectrum owns its bands, each continuous reading, and the
+selected outcome ports on one persisted graph node. Noise Level owns the
+full-stream meter and one configurable threshold rule. Both use package
+entries with typed computed publications. Named execution outcomes use the
+existing variadic identity model and each gets its own bounded delivery channel.
+Spectrum shares one capture reader across the chart and all of its bands.
+The editor hides the earlier separate band nodes from palette discovery and
+the registry retains their definitions for saved graphs.
+
+**Version 2.** New Spectrum cards provide one filtered audio stream per band.
+Users can connect a band to Noise Level for thresholds or to Audio Out for
+playback. The provider reuses the shared input cursor and exposes each
+bounded derived ring as an ordinary audio stream. Version 1 cards retain
+their existing data and event outputs.
+
+**Version 3.** Frequency Splitter adds each filtered stream output as soon as
+the range is drawn. Older cards upgrade in the same undoable edit. An upgraded
+version 1 band retains its original level and event outputs and also exposes its
+filtered stream. Audio Level Trigger remains a separate RMS threshold node.
+
+**Playback.** Audio Out version 2 is armed by its stream and Boolean enable
+input. It uses the shared mixer on a provider worker, stops its own voice when
+the guard is dropped, and publishes playback status. Version 1 stays available
+for graphs that start playback using an execution wire.
+
+**Contracts.** 04 native sources, 05 capture and level analysis, 11 package
+entries and §10.5, 12 §4, 22 §6.
+
+## ADR-33 - Definitions describe how their fields are shown
+
+**Decision.** A definition's `editor` object may carry control hints: `controls`, one
+hint per setting or data input naming a widget (`slider`, `dial`, `toggle`,
+`segmented`, `dropdown`, `stepper` or the default `field`) with its unit, range,
+step, scale, decimals, marks, notch or knob style and caption, and `layout`, which
+places fields in card regions (`header`, `aside`, `body`, `advanced`, arranged in a
+column, a row or a grid) and may name a built-in visual (`level-meter`, `spectrum`,
+`waveform`). The editor turns hints into the shared controls of
+`orange-ui-controls`, on cards and in Properties alike, so a package node gets a dial
+or a slider without editor code. A settings enumeration can use a segmented row
+of two to five short choices. A whole-number setting can use a stepper. Slider
+marks guide placement, and dial captions use package text references.
+
+Hints are presentation only. Validation, inference, compilation and execution never
+read them; they never change a value, an ID or a lock, and a hint's range may narrow
+what a control offers but not what the value may be. A hint that does not fit its
+field, or uses a word this version does not know, is dropped and reported in
+`Presentation::hint_problems`; it never stops a definition from loading. An editor
+that does not know a hint shows its usual field. Packages cannot draw their own UI:
+they can only choose among these words and name built-in visuals.
+
+Audio Level Trigger was the first node moved onto hints: its meter, dials and
+regions come from its definition, and the editor no longer recognizes it by ID.
+Every bounded number setting of the audio package asks for a slider with a typed box.
+
+**Contracts.** 04 (SDK builders, `orange-plugin 11`), 12 §4, 22.
+
+## ADR-34 - Bridges share a value through a hidden data edge
+
+**Decision.** A value shared without a visible wire uses two core intrinsics,
+`core/bridge-out` and `core/bridge-in`, shaped like `core/value`. A Bridge In is
+bound by an ordinary data edge from its Bridge Out; the editor hides those two ports
+and draws the edge as a dashed wireless link. The channel name is `config.channel`
+on both nodes and is presentation only. The Wireless Value preset (a Set and Get
+of a run variable) is retired: a bridge is pulled on demand, holds no state and needs
+no exec flow, so a variable was the wrong tool.
+
+**Why.** Reusing a data edge keeps pull semantics, typing, inference, cycle and zone
+checks, diagnostics and the compiler unchanged; bridges lower as the value-node
+projection. A name-based binding would need a new resolution step, new diagnostics
+and its own cycle rules. Keeping the channel name in config lets a Bridge In whose
+Bridge Out was deleted stay Unbound with the name it had, to be rebound or recreated.
+
+**Alternatives.** Run variables (state and writes the user did not ask for); a
+binding by channel name resolved in the compiler (new rules for little gain).
+
+**Contracts.** 11 §8.4 (bridge nodes), 22.
+
+## ADR-35 - The host carries workspace events between flows on one held bus
+
+**Decision.** The host keeps one `WorkspaceBus` behind a lock in its shared
+workspace state. A flow whose graph dispatches or listens to workspace events holds
+that lock for its whole turn: it admits what others dispatched to it, pumps with the
+bus, and wakes the other flows when it enqueued something. Flows without workspace
+events never take the lock. Runs attach on open and on replacement; the endpoint of
+a stopped, faulted or replaced run closes with it.
+
+**Why.** The runtime contract (C12c) borrows the bus exclusively for a pump, so
+Dispatch admission is synchronous and needs no acknowledgement or callback. Each
+flow already runs on its own thread; a lock keeps that and needs no new actor or
+channel. Turns are bounded by the turn budget, so the hold is bounded too.
+
+**Alternatives.** A bus actor thread with channels (a new hop and a second owner of
+event order); one bus per pair of flows (fan-out and ordering spread across
+objects); running every flow that uses events on one thread (one slow graph would
+delay the others).
+
+**Consequences.** Flows that use workspace events take turns with each other, so a
+heavy one slows the others' event turns but never flows without events. Deliveries
+queued for a run that is replaced are dropped, as messages to a stopped run are.
+
+**Contracts.** 02 (the host), 03 (C12c host transport).

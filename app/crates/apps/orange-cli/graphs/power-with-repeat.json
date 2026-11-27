@@ -1,0 +1,208 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "91000000-0000-4000-8000-000000000001",
+  "revision": 1,
+  "package_lock": [
+    {
+      "id": "org.orange.math",
+      "version": "0.0.0",
+      "content_digest": "sha256:0a1d2c40b01100d64c99e21dc4a47e9bb2925539aa5d97b9521296b254cb0a52"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "72000000-0000-4000-8000-000000000001",
+      "name": "result",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "signatures": {
+    "sha256:3fc0dbb296db4508f841f087ac8bd80a0fb9edf0f28a250b2e109e36f9c99b23": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "a",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/i64@1"
+        },
+        {
+          "port_id": "b",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/i64@1"
+        },
+        {
+          "port_id": "product",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "computed"
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "81000000-0000-4000-8000-000000000001",
+      "definition_id": "core/repeat-begin",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "zone": "power"
+      },
+      "name": "Repeat exponent times",
+      "inputs": {
+        "count": {
+          "type": "core/i64@1",
+          "value": "4"
+        },
+        "initial": {
+          "type": "core/i64@1",
+          "value": "1"
+        }
+      },
+      "type_pins": {
+        "A": "core/i64@1"
+      }
+    },
+    {
+      "id": "81000000-0000-4000-8000-000000000002",
+      "definition_id": "org.orange.math/multiply",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "type_pins": {
+        "T": "core/i64@1"
+      },
+      "provider": {
+        "package": "org.orange.math",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:3fc0dbb296db4508f841f087ac8bd80a0fb9edf0f28a250b2e109e36f9c99b23",
+      "name": "Multiply by base",
+      "inputs": {
+        "b": {
+          "type": "core/i64@1",
+          "value": "3"
+        }
+      }
+    },
+    {
+      "id": "81000000-0000-4000-8000-000000000003",
+      "definition_id": "core/repeat-end",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "zone": "power"
+      },
+      "name": "Power result",
+      "type_pins": {
+        "A": "core/i64@1"
+      }
+    },
+    {
+      "id": "82000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-start",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 4,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "83000000-0000-4000-8000-000000000001",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "72000000-0000-4000-8000-000000000001"
+      },
+      "name": "Save result"
+    }
+  ],
+  "edges": [
+    {
+      "id": "61000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "81000000-0000-4000-8000-000000000001",
+        "port": "carried"
+      },
+      "to": {
+        "node": "81000000-0000-4000-8000-000000000002",
+        "port": "a"
+      }
+    },
+    {
+      "id": "61000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "81000000-0000-4000-8000-000000000002",
+        "port": "product"
+      },
+      "to": {
+        "node": "81000000-0000-4000-8000-000000000003",
+        "port": "next"
+      }
+    },
+    {
+      "id": "62000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "82000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "83000000-0000-4000-8000-000000000001",
+        "port": "in"
+      }
+    },
+    {
+      "id": "63000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "81000000-0000-4000-8000-000000000003",
+        "port": "result"
+      },
+      "to": {
+        "node": "83000000-0000-4000-8000-000000000001",
+        "port": "value"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "81000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "81000000-0000-4000-8000-000000000002": {
+        "x": 320,
+        "y": 0
+      },
+      "81000000-0000-4000-8000-000000000003": {
+        "x": 640,
+        "y": 0
+      },
+      "82000000-0000-4000-8000-000000000001": {
+        "y": -165,
+        "x": 640
+      },
+      "83000000-0000-4000-8000-000000000001": {
+        "y": 0,
+        "x": 975
+      }
+    }
+  }
+}

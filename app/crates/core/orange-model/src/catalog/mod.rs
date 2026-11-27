@@ -1,0 +1,37 @@
+//! Host metadata for node definitions: contracts, provider identity and the immutable
+//! registry snapshot that owns them (12 §4, §8).
+
+mod availability;
+mod call;
+mod codec;
+pub mod controls;
+pub mod definition;
+pub mod intrinsic_id;
+pub(crate) mod intrinsics;
+pub(crate) mod language;
+pub mod nominal;
+pub mod provider;
+pub mod snapshot;
+mod timer;
+mod watch;
+
+pub use call::{CallInterface, CallInterfaceError, call_interface};
+pub(crate) use call::{
+    body_rigid_params, is_function_marker, marker_contract, project_interface, rigid_params,
+};
+pub use codec::{
+    DefinitionError, DefinitionFile, DefinitionLimits, PathInput, Presentation, TextRef,
+};
+pub use definition::{
+    ContractError, Determinism, EventAccess, NodeContract, NodeDefinition, NominalAccess, Ports,
+    ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess, Volatility,
+};
+pub use language::implicit_port_names;
+pub(crate) use language::{
+    implicit_port, implicit_ports, instance_port, intrinsic, is_converter_special_form,
+    is_intrinsic,
+};
+pub use provider::{BUILT_IN_PACKAGE_VERSION, ProviderDescriptor, ProviderKey};
+pub use snapshot::{RegistryBuilder, RegistryError, RegistrySnapshot};
+pub use timer::{MissedTicks, TimerFirst, TimerSchedule};
+pub use watch::{NumericWatch, WatchCondition, WatchConfig};
