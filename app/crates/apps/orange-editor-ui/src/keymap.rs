@@ -67,6 +67,7 @@ const ACTION_GROUPS: &[(&str, &[Action])] = &[
             ("settings", "action-settings", Key::Comma, CMD),
             ("left-panel", "action-left-panel", Key::Num1, CMD),
             ("right-panel", "action-right-panel", Key::Num2, CMD),
+            ("node-help", "action-node-help", Key::F1, BARE),
         ],
     ),
 ];
@@ -369,6 +370,31 @@ impl crate::Editor {
                 .is_some_and(|edit| edit.recording)
     }
 
+    /// The reference page of the one selected node, when there is a reference to open
+    /// and it documents that node's kind.
+    pub(crate) fn node_docs_url(&self, host: &orange_host::Host) -> Option<String> {
+        let base = self.docs_url.as_deref()?;
+        let [selected] = self.canvas.selection()[..] else {
+            return None;
+        };
+        let node = self
+            .graph()?
+            .nodes
+            .iter()
+            .find(|node| node.id == selected)?;
+        let first_party =
+            node.definition.starts_with("core/") || node.definition.starts_with("org.orange.");
+        if !first_party {
+            return None;
+        }
+        let version = host
+            .nodes()
+            .filter(|info| info.definition.definition.id.as_str() == node.definition)
+            .map(|info| info.definition.definition.version)
+            .max()?;
+        Some(format!("{base}nodes/{}/{version}/", node.definition))
+    }
+
     pub(crate) fn keyboard(&mut self, ui: &egui::Ui, host: &mut orange_host::Host) {
         if self.settings_open
             || self.has_node_ergonomics_modal()
@@ -419,6 +445,11 @@ impl crate::Editor {
                 "run" => self.run_asked = true,
                 "stop" => self.stop(host),
                 "settings" => self.settings_open = true,
+                "node-help" => {
+                    if let Some(url) = self.node_docs_url(host) {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    }
+                }
                 _ => {}
             }
         }

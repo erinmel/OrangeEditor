@@ -55,3 +55,16 @@ port-queued = en cola
 
 org-orange-net-ws-send-then = En cola
 org-orange-net-ws-send-bytes-then = En cola
+
+# What each port is for.
+org-orange-net-http-request-port-method = El método HTTP, como GET o POST.
+org-orange-net-http-request-port-path = La ruta de la petición, relativa a la URL base de la conexión.
+org-orange-net-http-request-port-content = Texto que se envía como cuerpo de la petición.
+org-orange-net-http-request-port-content-type = El tipo de contenido del cuerpo de la petición.
+org-orange-net-http-request-port-headers = Cabeceras de la petición como texto, una Nombre: valor por línea.
+org-orange-net-http-request-port-header-fields = Cabeceras de la petición como mapa.
+org-orange-net-http-request-port-query = Parámetros de consulta que se añaden a la ruta.
+org-orange-net-http-request-port-status = El número de estado con el que respondió el servidor.
+org-orange-net-http-request-port-success = Si el servidor respondió con un estado 2xx.
+org-orange-net-http-request-port-response = El cuerpo de la respuesta como texto.
+org-orange-net-http-request-port-response-headers = Las cabeceras que devolvió el servidor.

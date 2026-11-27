@@ -1,0 +1,136 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "20000000-0000-4000-8000-0000000000f2",
+  "revision": 0,
+  "package_lock": [],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "f2000000-0000-4000-8000-000000000100",
+      "name": "Score",
+      "type": "core/i64@1",
+      "scope": "workspace",
+      "init": {
+        "type": "core/i64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "connections": [],
+  "signatures": {},
+  "nodes": [
+    {
+      "id": "f2000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "name": "Add a point",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "f2000000-0000-4000-8000-000000000002",
+      "definition_id": "core/update-shared",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "f2000000-0000-4000-8000-000000000100",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "1"
+        }
+      },
+      "name": "Add one to Score"
+    },
+    {
+      "id": "f2000000-0000-4000-8000-000000000003",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "name": "Reset",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 1
+      }
+    },
+    {
+      "id": "f2000000-0000-4000-8000-000000000004",
+      "definition_id": "core/set-shared",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "f2000000-0000-4000-8000-000000000100"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "0"
+        }
+      },
+      "name": "Set Score to zero"
+    }
+  ],
+  "edges": [
+    {
+      "id": "f2e00000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "f2000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "f2000000-0000-4000-8000-000000000002",
+        "port": "in"
+      }
+    },
+    {
+      "id": "f2e00000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "f2000000-0000-4000-8000-000000000003",
+        "port": "then"
+      },
+      "to": {
+        "node": "f2000000-0000-4000-8000-000000000004",
+        "port": "in"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "f2000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "f2000000-0000-4000-8000-000000000002": {
+        "x": 320,
+        "y": 0
+      },
+      "f2000000-0000-4000-8000-000000000003": {
+        "x": 0,
+        "y": 288
+      },
+      "f2000000-0000-4000-8000-000000000004": {
+        "x": 320,
+        "y": 288
+      }
+    }
+  }
+}

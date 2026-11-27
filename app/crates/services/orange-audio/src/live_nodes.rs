@@ -399,7 +399,8 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     let audio_source = live("audio-source", "Audio source", "Gives the audio stream of a device or a sound file. Wire it to an analyzer, an output or a recorder.")
         .keywords("audio in, audio input, microphone, application, system audio, virtual cable, file")
         .uses(INPUT_ADAPTER)
-        .live("stream", STREAM_TYPE);
+        .live("stream", STREAM_TYPE)
+        .port_description("stream", "The live stream from the selected audio source.");
     let audio_out = entry(
         "audio-out",
         "Audio out",
@@ -514,7 +515,9 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         "Level",
         "Measures a stream's level in dBFS as it changes.",
     )
-    .keywords("volume, loudness, meter");
+    .keywords("volume, loudness, meter")
+    .port_description("stream", "The stream to measure.")
+    .port_description("level", "The stream's level in dBFS, as it changes.");
     let transient = transient_settings(
         entry(
             "transient",

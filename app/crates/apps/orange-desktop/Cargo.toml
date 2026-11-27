@@ -37,3 +37,12 @@ workspace = true
 
 [dev-dependencies]
 orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0", features = ["ui"] }
+futures-lite.workspace = true
+png = "=0.18.1"
+
+[features]
+documentation = ["orange-editor-ui/documentation"]
+
+[[example]]
+name = "docs_node_cards"
+required-features = ["documentation"]

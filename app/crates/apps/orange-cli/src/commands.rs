@@ -243,8 +243,67 @@ pub(crate) fn packages(host: &Host) {
     }
 }
 
+/// Project a fresh card through the same authoring view the editor uses.
+fn preview_ports(
+    host: &Host,
+    document: &str,
+    definition: &str,
+    language: &str,
+) -> Option<Vec<serde_json::Value>> {
+    let mut draft = host.draft(document).ok()?;
+    let id = host.add_node(&mut draft, definition, [0.0, 0.0]).ok()?;
+    let view = host.draft_authoring_view_in(&draft, language).ok()?;
+    let node = view
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == id && node.definition == definition)?;
+    let details = view
+        .port_details
+        .get(&id)
+        .map(|ports| ports.as_ref())
+        .unwrap_or_default();
+    let failures = view.failure_routes.get(&id).copied().unwrap_or_default();
+    Some(
+        node.ports
+            .iter()
+            .map(|port| {
+                let help = details
+                    .iter()
+                    .find(|detail| detail.id == port.id && detail.input == port.input);
+                serde_json::json!({
+                    "id": port.id,
+                    "input": port.input,
+                    "execution": port.exec,
+                    "type": port.ty,
+                    "label": port.label,
+                    "default": port.default,
+                    "description": help.and_then(|detail| detail.description.as_deref()),
+                    "optional": help.is_some_and(|detail| detail.optional),
+                    "implicit_failure": failures.contains(&port.id),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Help for every port of a node kind in each editor language, keyed by port key: also
+/// for ports a fresh node does not show yet.
+fn port_help(host: &Host, definition: &str) -> serde_json::Value {
+    let languages = ["en", "es", "ja"].map(|language| {
+        let help: serde_json::Map<String, serde_json::Value> = host
+            .port_help_all_in(definition, language)
+            .into_iter()
+            .map(|(port, text)| (port, text.into()))
+            .collect();
+        (language.to_owned(), serde_json::Value::Object(help))
+    });
+    serde_json::Value::Object(languages.into_iter().collect())
+}
+
 pub(crate) fn nodes(host: &Host, json_output: bool) {
     if json_output {
+        let preview_document = orange_host::new_document().ok();
         let nodes: Vec<_> = host.nodes().map(|info| {
             let def = info.definition;
             serde_json::json!({
@@ -253,9 +312,18 @@ pub(crate) fn nodes(host: &Host, json_output: bool) {
                 "kind": def.kind,
                 "suspends": def.suspends,
                 "provider": info.provider.map(|provider| provider.package.as_str()),
-                "name": { "en": host.label_in(&info, "en"), "es": host.label_in(&info, "es") },
-                "category": { "en": host.category_in(&info, "en"), "es": host.category_in(&info, "es") },
+                "name": { "en": host.label_in(&info, "en"), "es": host.label_in(&info, "es"), "ja": host.label_in(&info, "ja") },
+                "category": { "en": host.category_in(&info, "en"), "es": host.category_in(&info, "es"), "ja": host.category_in(&info, "ja") },
+                "purpose": { "en": host.purpose_in(&info, "en"), "es": host.purpose_in(&info, "es"), "ja": host.purpose_in(&info, "ja") },
+                "aliases": {
+                    "en": host.catalogs().aliases("en", def.definition.id.as_str()),
+                    "es": host.catalogs().aliases("es", def.definition.id.as_str()),
+                    "ja": host.catalogs().aliases("ja", def.definition.id.as_str()),
+                },
                 "ports": info.declared_ports(),
+                "port_help": port_help(host, def.definition.id.as_str()),
+                "preview_ports": preview_document.as_deref().and_then(|document| preview_ports(host, document, def.definition.id.as_str(), "en")),
+                "preview_ports_es": preview_document.as_deref().and_then(|document| preview_ports(host, document, def.definition.id.as_str(), "es")),
                 "config_schema": def.config_schema,
             })
         }).collect();

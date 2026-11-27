@@ -72,7 +72,7 @@ alias-org-orange-math-less = menor que
 alias-org-orange-math-equal = igual
 alias-org-orange-audio-play = sonido, audio, altavoz, música, reproducir
 
-purpose-core-on-manual = Empieza al pulsar Ejecutar.
+purpose-core-on-manual = Inicia una activación al pulsar Disparar en este nodo cuando el grafo está en ejecución.
 purpose-core-on-start = Empieza una vez al iniciar el flujo.
 purpose-core-on-stop = Se ejecuta una vez al detener el flujo.
 purpose-core-on-timer = Empieza una y otra vez con un temporizador.
@@ -212,3 +212,17 @@ alias-core-increment-counter = aumentar contador
 purpose-core-increment-counter = Suma el paso a la variable entera elegida y entrega su nuevo valor.
 alias-core-decrement-counter = disminuir contador
 purpose-core-decrement-counter = Resta el paso de la variable entera elegida y entrega su nuevo valor.
+
+# Purposes of control and stream nodes.
+purpose-core-close-handle = Libera el recurso al que se refiere un identificador.
+purpose-core-close-stream = Cierra un flujo abierto.
+purpose-core-collect = Lee los elementos de un flujo en una lista, hasta un límite.
+purpose-core-do-once = Deja pasar el flujo la primera vez; Reiniciar lo deja pasar otra vez.
+purpose-core-fork = Inicia todas las ramas y continúa cuando terminan todas.
+purpose-core-match-result = Dirige un Result a Ok o Err, con su valor o su error.
+purpose-core-next-item = Toma el siguiente elemento de un flujo, o nada cuando termina.
+purpose-core-sequence = Ejecuta sus salidas una tras otra, en orden.
+purpose-core-tee = Divide un flujo en dos que reciben todos los elementos.
+purpose-core-try = Captura un valor o un fallo como un Result.
+purpose-core-value = Da un valor literal del tipo elegido.
+purpose-core-yield = Deja que se ejecute otro trabajo antes de que el flujo continúe.

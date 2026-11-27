@@ -859,7 +859,7 @@ shortcut-files-help = Create, open and save graphs.
 shortcut-editing-help = Undo, redo and edit the selection or clipboard.
 shortcut-canvas-help = Arrange, group, select and navigate nodes.
 shortcut-run-help = Start or stop graph execution.
-shortcut-application-help = Open settings or show and hide panels.
+shortcut-application-help = Open settings, show and hide panels, or open a node's documentation.
 wire-click-hint = Click a port, then click the other end. Escape cancels.
 signal-add-sender = Create Emitter
 signal-add-another-sender = Add another Dispatch
@@ -938,3 +938,4 @@ conversion-search-words = convert conversion convertir conversión
 
 value-side-input = in
 value-side-output = out
+action-node-help = Open the selected node's documentation

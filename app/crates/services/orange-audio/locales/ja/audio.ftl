@@ -65,3 +65,10 @@ port-seconds = 秒
 port-recorded = 録音済み
 port-command = コマンド
 port-format = 形式
+
+# What each port is for.
+org-orange-audio-audio-source-port-stream = 選んだ音声ソースのライブストリーム。
+
+# What each port is for.
+org-orange-audio-live-level-port-stream = 測定するストリーム。
+org-orange-audio-live-level-port-level = 変化するストリームのレベル (dBFS)。

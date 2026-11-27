@@ -1341,6 +1341,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "egui_glow",
+ "glow",
  "glutin",
  "glutin-winit",
  "image",
@@ -3468,9 +3469,21 @@ dependencies = [
  "orange-sdk",
  "orange-testkit",
  "orange-vault",
+ "png 0.18.1",
  "rfd",
  "serde_json",
  "sys-locale",
+]
+
+[[package]]
+name = "orange-docs-web"
+version = "0.0.0"
+dependencies = [
+ "eframe",
+ "orange-ui-controls",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

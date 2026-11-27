@@ -43,7 +43,7 @@ alias-core-on-watch = 閾値, しきい値, 立ち上がり, 立ち下がり
 
 purpose-core-coalesce = 値があればその値を使い、なければ代替値を使います。
 purpose-core-branch = 条件が真の場合と偽の場合で処理を分けます。
-purpose-core-on-manual = 実行ボタンを押すと開始します。
+purpose-core-on-manual = グラフの実行中にこのノードの「発火」を押すと処理を開始します。
 purpose-core-on-start = フローの開始時に一度実行します。
 purpose-core-on-stop = フローの停止時に一度実行します。
 purpose-core-on-timer = 指定間隔で繰り返し実行します。
@@ -143,3 +143,17 @@ alias-org-orange-text-encode-base64 = Base64 にエンコード
 alias-org-orange-text-decode-base64 = Base64 をデコード
 alias-org-orange-text-encode-hex = 16 進数にエンコード
 alias-org-orange-text-decode-hex = 16 進数をデコード
+
+# Purposes of control and stream nodes.
+purpose-core-close-handle = ハンドルが指すリソースを解放します。
+purpose-core-close-stream = 開いているストリームを閉じます。
+purpose-core-collect = ストリームの要素を上限までリストに読み込みます。
+purpose-core-do-once = 初回だけフローを通します。リセットで再び通します。
+purpose-core-fork = すべての分岐を開始し、すべて終わると続行します。
+purpose-core-match-result = Result を値またはエラーとともに Ok か Err に振り分けます。
+purpose-core-next-item = ストリームの次の要素を取ります。終わると何も返しません。
+purpose-core-sequence = 出力を順番に 1 つずつ実行します。
+purpose-core-tee = 1 つのストリームを、どちらもすべての要素を受け取る 2 つに分けます。
+purpose-core-try = 値または障害を Result として捕捉します。
+purpose-core-value = 選んだ型のリテラル値を返します。
+purpose-core-yield = フローが続く前に他の処理を実行させます。

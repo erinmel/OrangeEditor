@@ -1,0 +1,17 @@
+<h2 id="dependencies">Add the headless host</h2>
+<p>Use <code>orange-host</code> as the Rust boundary for graph authoring and execution. The project’s crates are currently workspace packages. Pin the same repository revision for each OrangeEditor dependency. Replace the example revision as a set when upgrading.</p>
+<pre><code>[dependencies]
+orange-host = { git = "https://github.com/erinmel/OrangeEditor.git", rev = "@revision@" }</code></pre>
+<p>For a local checkout, point a path dependency at <code>app/crates/platform/orange-host</code>. Add application services with <code>Host::with_services</code> when your graphs need nodes or connection adapters beyond what <code>Host::new</code> provides.</p>
+<h2 id="host-lifecycle">Attach a front end</h2>
+<ol>
+<li>Create one <code>Host</code> and keep the <code>Events</code> receiver. Query <code>host.nodes()</code> and <code>host.packages()</code> for your library and package list.</li>
+<li>Use <code>Host::check</code> to validate saved JSON. Use <code>Draft</code> and the host’s authoring methods for editable graphs and <code>GraphView</code> for presentation.</li>
+<li>Call <code>host.open</code> and keep the <code>FlowId</code>. Call <code>host.observe</code> when displaying live values and <code>host.trigger</code> to fire a manual entry.</li>
+<li>Consume <code>FlowEvent</code> updates by flow ID. Stop the flow with <code>StopMode::Graceful</code> when appropriate and close it when finished.</li>
+</ol>
+<pre><code>cargo run -p orange-host --example attach --locked</code></pre>
+<p>The <a href="@source/app/crates/platform/orange-host/examples/attach.rs">complete attach example</a> checks a graph, fires a manual entry, waits for its variable update, and closes the flow. In a GUI, drain events without blocking the UI thread.</p>
+<h2 id="application-responsibilities">Decide what the application owns</h2>
+<p>The host manages drafts, validation, executing flows, and package bindings. Your application owns the file picker, persistence locations, OS credentials and authorization policy, services you expose, and application commands. Use <a href="../egui/">the egui integration</a> for the supplied editor or draw a front end using the same host.</p>
+<p>See the <a href="@source/docs/02-architecture.md#embedding-surface">embedding contract</a> and <a href="../api/orange_host/">orange-host Rustdoc</a>.</p>

@@ -3624,6 +3624,23 @@ pub(crate) fn preview_card(ui: &mut egui::Ui, node: &NodeView, name: &str, rect:
     }
 }
 
+/// Paints the same read-only card shown in the node palette, at one point per graph unit.
+#[cfg(feature = "documentation")]
+#[doc(hidden)]
+pub fn documentation_card(ui: &mut egui::Ui, node: &NodeView, name: &str, origin: Pos2) {
+    let bounds = Rect::from_min_size(origin, node_size(node));
+    preview_card(ui, node, name, bounds, 1.0);
+}
+
+/// Projects the palette's card, including its reference for nodes that need a declaration.
+#[cfg(feature = "documentation")]
+#[doc(hidden)]
+pub fn documentation_card_view(host: &orange_host::Host, definition: &str) -> Option<NodeView> {
+    crate::palette::PreviewCache::default()
+        .card(host, None, definition)
+        .cloned()
+}
+
 /// Draws one card. Returns whether its trigger or failure routes button was pressed.
 /// `flags` are whether the card is selected, has a trigger button and shows controls
 /// for its values. Also returns where each input's control goes.

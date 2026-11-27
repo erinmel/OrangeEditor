@@ -538,6 +538,11 @@ pub struct Editor {
     /// Draw native window commands and a drag region in the toolbar. Opt in only
     /// when the embedding window disables its own decorations.
     pub window_toolbar: bool,
+    /// The address of the node reference, ending in `/`, such as
+    /// `https://erinmel.github.io/OrangeEditor/`. With one node selected, F1 opens its
+    /// page there through egui's URL opening, for core and `org.orange.*` kinds, which
+    /// that reference documents. `None`, the default, leaves F1 unbound.
+    pub docs_url: Option<String>,
     request: Option<FileRequest>,
     /// The search to add a node at the pointer, while it is open.
     quick: Option<quick_add::QuickAdd>,
@@ -1882,7 +1887,6 @@ impl Editor {
         host: &mut Host,
         layout: impl FnOnce(&mut Self, &mut egui::Ui, &mut Host),
     ) {
-        i18n::set_language(self.language());
         icons::install(ui.ctx());
         if !self.scale_applied {
             if let Some(scale) = self.preferred_scale {
@@ -1894,7 +1898,7 @@ impl Editor {
             self.scale_applied = true;
         }
         self.preferred_scale = Some(ui.ctx().zoom_factor());
-        self.canvas.update_help(host, &self.language);
+        self.prepare_text(host);
         if self.refresh_problem_text {
             let locale = self.language().to_owned();
             if let Some(document) = self.document.as_mut()
@@ -2501,6 +2505,7 @@ impl Editor {
 
     /// Draws the Inspector and Packages tabs in the supplied container.
     pub fn right_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        self.prepare_text(host);
         let mut packages = self.panels.packages && !self.panels.properties;
         let _ = orange_ui_controls::notebook_flex(
             ui,
@@ -2556,6 +2561,7 @@ impl Editor {
 
     /// Draws the node catalogue and declaration tabs in the supplied container.
     pub fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        self.prepare_text(host);
         let options = Tab::ALL.map(|(tab, label)| (tab, t(label)));
         let previous = self.tab;
         let response = orange_ui_controls::notebook_flex(
@@ -2896,8 +2902,18 @@ impl Editor {
         });
     }
 
+    /// Puts this editor's language, and the host's port and node names in it, in
+    /// effect on this thread. A panel drawn outside [`Self::ui_with_layout`] then shows
+    /// the same words; the names are looked up again only when the language or the
+    /// host's nodes change.
+    fn prepare_text(&mut self, host: &Host) {
+        i18n::set_language(self.language());
+        self.canvas.update_help(host, &self.language);
+    }
+
     /// Draws the editable canvas and handles its actions in the supplied container.
     pub fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        self.prepare_text(host);
         if self.function_body.is_some() {
             self.function_body_panel(ui, host);
             return;

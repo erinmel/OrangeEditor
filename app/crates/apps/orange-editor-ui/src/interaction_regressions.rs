@@ -980,3 +980,43 @@ fn the_log_filters_messages_and_exposes_trace_and_clear_actions() {
     );
     assert!(editor.log().next().is_none());
 }
+
+/// A canvas drawn on its own, outside `ui_with_layout`, names ports in the editor's
+/// language, including after another editor on the thread used a different one.
+#[test]
+fn canvas_panel_alone_names_ports_in_the_editor_language() {
+    let graph = include_str!("../../orange-cli/graphs/power-with-count.json");
+    let ctx = egui::Context::default();
+    icons::install(&ctx);
+    for (language, completed, body) in [
+        ("es", "terminado", "cuerpo"),
+        ("en", "Done", "body"),
+        ("ja", "完了", "本体"),
+    ] {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.set_language(language);
+        editor.open_untitled(&mut host, graph.to_owned());
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| editor.canvas_panel(ui, &mut host),
+        );
+        output.textures_delta.clear();
+        let texts: Vec<String> = text_shapes(&output.shapes)
+            .into_iter()
+            .map(|text| text.galley.job.text.clone())
+            .collect();
+        for label in [completed, body] {
+            assert!(
+                texts.iter().any(|text| text == label),
+                "{language}: {label} in {texts:?}"
+            );
+        }
+    }
+}

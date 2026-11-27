@@ -40,18 +40,11 @@
     },
     {
       "id": "10000000-0000-4000-8000-000000000002",
-      "definition_id": "core/update-variable",
+      "definition_id": "core/increment-counter",
       "definition_version": 1,
       "config_version": 1,
       "config": {
-        "variable": "20000000-0000-4000-8000-000000000001",
-        "operation": "add"
-      },
-      "inputs": {
-        "value": {
-          "type": "core/i64@1",
-          "value": "1"
-        }
+        "variable": "20000000-0000-4000-8000-000000000001"
       },
       "name": "Add one"
     },
@@ -72,18 +65,11 @@
     },
     {
       "id": "10000000-0000-4000-8000-000000000004",
-      "definition_id": "core/update-variable",
+      "definition_id": "core/decrement-counter",
       "definition_version": 1,
       "config_version": 1,
       "config": {
-        "variable": "20000000-0000-4000-8000-000000000001",
-        "operation": "sub"
-      },
-      "inputs": {
-        "value": {
-          "type": "core/i64@1",
-          "value": "1"
-        }
+        "variable": "20000000-0000-4000-8000-000000000001"
       },
       "name": "Subtract one"
     },

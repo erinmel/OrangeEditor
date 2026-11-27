@@ -11,7 +11,7 @@ const args = process.argv.slice(2);
 const outIndex = args.indexOf('--out');
 const out = outIndex >= 0 && args[outIndex + 1]
   ? path.resolve(args[outIndex + 1])
-  : path.join(root, 'app', 'crates', 'orange-guest', 'tests', 'fixtures', 'probe.wasm');
+  : path.join(root, 'app', 'crates', 'platform', 'orange-guest', 'tests', 'fixtures', 'probe.wasm');
 
 const run = (...cargoArgs) => execFileSync('cargo', cargoArgs, {cwd: sdk, stdio: 'inherit'});
 run('build', '--release', '--locked', '-p', 'orange-probe-guest', '--target', 'wasm32-unknown-unknown');

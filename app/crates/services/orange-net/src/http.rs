@@ -835,6 +835,17 @@ pub(crate) fn http_request_definition() -> String {
         .output("success", "core/bool@1")
         .output("response", "core/string@1")
         .output("response_headers", RESPONSE_HEADERS)
+        .port_description("method", "The HTTP method, such as GET or POST.")
+        .port_description("path", "The request path, relative to the connection's base URL.")
+        .port_description("content", "Text sent as the request body.")
+        .port_description("content_type", "The media type of the request body.")
+        .port_description("headers", "Request headers as text, one Name: value per line.")
+        .port_description("header_fields", "Request headers as a map.")
+        .port_description("query", "Query parameters added to the path.")
+        .port_description("status", "The status number the server answered with.")
+        .port_description("success", "Whether the server answered with a 2xx status.")
+        .port_description("response", "The response body as text.")
+        .port_description("response_headers", "The headers the server sent back.")
         .build()
 }
 

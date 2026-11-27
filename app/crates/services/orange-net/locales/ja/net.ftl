@@ -44,3 +44,16 @@ port-queued = キューに登録
 
 org-orange-net-ws-send-then = キューに登録
 org-orange-net-ws-send-bytes-then = キューに登録
+
+# What each port is for.
+org-orange-net-http-request-port-method = GET や POST などの HTTP メソッド。
+org-orange-net-http-request-port-path = 接続のベース URL からのリクエストパス。
+org-orange-net-http-request-port-content = リクエスト本文として送るテキスト。
+org-orange-net-http-request-port-content-type = リクエスト本文のメディアタイプ。
+org-orange-net-http-request-port-headers = テキストのリクエストヘッダー。1 行に 1 つの 名前: 値。
+org-orange-net-http-request-port-header-fields = マップ形式のリクエストヘッダー。
+org-orange-net-http-request-port-query = パスに追加するクエリパラメーター。
+org-orange-net-http-request-port-status = サーバーが返したステータス番号。
+org-orange-net-http-request-port-success = サーバーが 2xx ステータスで応答したかどうか。
+org-orange-net-http-request-port-response = テキストとしてのレスポンス本文。
+org-orange-net-http-request-port-response-headers = サーバーが返したヘッダー。

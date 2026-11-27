@@ -26,8 +26,10 @@ the allotted rectangle and the current foreground color, with the stock icon
 used when the painter returns `false`. To override editor text, register Fluent
 messages with `i18n::add_application_catalogs` before any editor text is read.
 Packages can supply their own node text and the host owns file dialogs through
-`Editor::take_request`. The [embedding test](../app/crates/apps/orange-editor-ui/tests/embedding.rs)
-exercises the public layout, theme, icon and text hooks.
+`Editor::take_request`. Set `Editor::docs_url` to a node reference, such as the published one, and F1 opens the selected core or `org.orange.*` node's page there through egui's URL opening (2026-11-26). The [embedding test](../app/crates/apps/orange-editor-ui/tests/embedding.rs)
+exercises the public layout, theme, icon and text hooks. The runnable
+[embedded editor](../app/crates/apps/orange-desktop/examples/embed_editor.rs)
+uses the canvas and an optional inspector inside its own app chrome.
 
 `orange-ui-controls` provides reusable egui components and depends on no graph
 or host crate in product builds. Hosts own component state and localized labels.
@@ -37,6 +39,10 @@ Material, Phosphor and Lucide assets. `native-dialogs` supplies an
 picker response directly. The desktop gallery's `eframe`, WAV and output-device
 dependencies are example-only. Meters consume host measurements and the
 frequency utilities take caller-owned filter state and caller-provided buffers.
+The documentation's browser examples use `orange-docs-web`, a development crate
+that draws the shared controls with eframe/WebGL on `wasm32-unknown-unknown`.
+Their input values are local to the demo. The editor's `orange-host`
+integration still requires the native host and its OS services.
 
 ## Layers
 

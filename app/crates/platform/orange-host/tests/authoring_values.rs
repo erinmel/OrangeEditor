@@ -269,3 +269,56 @@ fn typed_manual_samples_match_the_running_type_and_expire_on_swap() {
     host.fire_manual_literal(&request, &none).unwrap();
     host.close(flow).unwrap();
 }
+
+#[test]
+fn core_and_package_ports_read_their_help_from_the_catalogues() {
+    let definition = orange_sdk::Definition::node("example.authoring", "fetch", "Fetch")
+        .input("target_path", "core/string@1")
+        .port_description("target_path", "Where to fetch from.")
+        .build();
+    let package = ServicePackage::new("example.authoring", "1.0.0")
+        .node(&definition, Sink)
+        .unwrap();
+    let (mut host, _) = Host::with_services(HostOptions::default(), vec![package]).unwrap();
+    host.add_catalog(
+        "es",
+        "example-authoring-fetch-port-target-path = De dónde traerlo.\n",
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let branch = host
+        .add_node(&mut draft, orange_host::intrinsic::BRANCH, [0.0, 0.0])
+        .unwrap();
+    let fetch = host
+        .add_node(&mut draft, "example.authoring/fetch", [0.0, 200.0])
+        .unwrap();
+    for (language, condition, target) in [
+        (
+            "en",
+            "The Boolean that chooses the branch.",
+            "Where to fetch from.",
+        ),
+        ("es", "El booleano que elige la rama.", "De dónde traerlo."),
+        ("ja", "分岐を選ぶ真偽値。", "Where to fetch from."),
+    ] {
+        let view = host.draft_authoring_view_in(&draft, language).unwrap();
+        let help = |node, port: &str| {
+            view.port_details[&node]
+                .iter()
+                .find(|detail| detail.id == port)
+                .and_then(|detail| detail.description.clone())
+        };
+        assert_eq!(
+            help(branch, "condition").as_deref(),
+            Some(condition),
+            "{language}"
+        );
+        assert_eq!(
+            help(fetch, "target_path").as_deref(),
+            Some(target),
+            "{language}"
+        );
+    }
+    let all = host.port_help_all_in(orange_host::intrinsic::BRANCH, "en");
+    assert!(all.iter().any(|(port, _)| port == "condition"));
+}

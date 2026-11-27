@@ -46,6 +46,8 @@ const policy = {
   'orange-ui-controls': {core: false, normal: [], dev: ['orange-testkit', 'orange-audio']},
   // The editor reaches services through the host. UI tests install real bundled adapters.
   'orange-editor-ui': {core: false, normal: ['orange-host', 'orange-ui-controls'], dev: ['orange-audio', 'orange-net', 'orange-testkit']},
+  // Browser documentation examples depend only on the shared widget library.
+  'orange-docs-web': {core: false, normal: ['orange-ui-controls']},
   // Desktop application: the window, the editor interface and the built-in service packages.
   'orange-desktop': {core: false, normal: ['orange-editor-ui', 'orange-host', 'orange-sandbox', 'orange-sdk', 'orange-native', 'orange-net', 'orange-audio', 'orange-files', 'orange-vault'], dev: ['orange-testkit']},
   // Base audio service package: the only crate with an audio device library. Built on

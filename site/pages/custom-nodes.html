@@ -1,0 +1,23 @@
+<h2 id="graph-function">Make a node from a graph function</h2>
+<p>Use <strong>Make function</strong> when the logic can be expressed with nodes you already have. The editor extracts a graph-local function and replaces the selection with a call. Incoming and outgoing wires define the boundary ports. Multiple calls can reuse the same declaration with different arguments.</p>
+<ol>
+<li>Open <a href="@source/app/crates/apps/orange-cli/graphs/power-with-count.json">power-with-count.json</a>. Shift-click the cards that compute the result, leaving Calculate power, Base, Exponent, and Save result outside the selection.</li>
+<li>Choose <strong>Make function</strong> and inspect the boundary preview. The data inputs are <code>a</code> and <code>count</code> and the data output is <code>value</code>. Confirm as <strong>Compute power</strong>.</li>
+<li>Press <strong>Run</strong> and fire Calculate power. Confirm the default result is <code>81</code>. Duplicate the call to use the same function elsewhere.</li>
+</ol>
+<h2 id="wasm-node">Write a Wasm component node</h2>
+<p>Start with the <a href="@tree/sdk/guests/probe">Rust guest example</a>, the <a href="@source/sdk/wit/orange-expansion.wit">WIT world</a>, and the <a href="@source/docs/04-expansion-plugins.md#package-format-and-sdk">expansion contract</a>. Use an owned identifier such as <code>org.example.text/normalize</code> and give it versioned, concrete inputs and outputs. A small first node can take <code>core/string@1</code> and return a normalized string.</p>
+<ol>
+<li>Declare the node under <code>nodes/</code> and list its definition and provider slot in <code>manifest.json</code>. Add Fluent names under your package namespace. Ship English and Spanish text.</li>
+<li>Implement the generated guest export for your node. Match its inputs in declared order and return typed outputs in declared order. Select Pure for deterministic computations, Action for an execution step, or Async for work that needs supported host I/O. Keep granted I/O out of Pure evaluation.</li>
+<li>Build for <code>wasm32-unknown-unknown</code> with <code>wit-bindgen</code>, then wrap the module with <code>orange-componentize</code>. Set the manifest’s execution entry to the resulting component and request only the permissions used.</li>
+<li><a href="../packages/#pack-a-directory">Pack and install the package</a>. Check a graph that uses the node and run it with normal input, invalid input, and any permission denied.</li>
+</ol>
+<h2 id="test-a-component">Build and test a component</h2>
+<p>The repository’s probe implements both <code>nodes.evaluate</code> and <code>effects.execute</code>. The <a href="@source/app/crates/platform/orange-host/tests/host.rs">host integration test</a> puts the component into an archive, declares an Async node with an <code>amount</code> input and a <code>result</code> output, then verifies that the effect returns to its flow. Run the same test against a freshly built component:</p>
+<pre><code>rustup target add wasm32-unknown-unknown
+node tools/build-guest-fixtures.mjs --out probe.wasm
+ORANGE_GUEST_PROBE="$PWD/probe.wasm" cargo test -p orange-host --locked --test host an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow -- --exact</code></pre>
+<p>In PowerShell, set <code>$env:ORANGE_GUEST_PROBE = (Resolve-Path probe.wasm).Path</code> before running the Cargo test. For a simpler archive without Wasm, use the <a href="@tree/app/crates/apps/orange-cli/packages/remember">Remember fixture</a>.</p>
+<h2 id="trusted-services">Add trusted Rust services</h2>
+<p>For an application-owned Rust integration, use <code>ServicePackage</code> and <code>ServiceNode</code> from <code>orange-sdk</code> and register the package with <code>Host::with_services</code>. Implement <code>ServiceSource</code> for an owned trigger source or <code>ConnectionAdapter</code> for a connection kind. See the <a href="../sdk/">SDK reference</a> and the <a href="@source/app/crates/dev/orange-plugin-example/src/lib.rs">Shout example</a> for a definition paired with a Rust implementation.</p>

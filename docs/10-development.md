@@ -12,6 +12,9 @@
   (`.cargo/config.toml`) because synced folders such as OneDrive reject its hard links;
   set `CARGO_INCREMENTAL=1` on a local disk for faster rebuilds.
 - Linux builds need the ALSA headers (`libasound2-dev`).
+- The [documentation build](../site/README.md) uses the pinned Rustdoc Markdown
+  renderer. Live controls use the `wasm32-unknown-unknown` target and a
+  `wasm-bindgen` CLI that matches the version in `Cargo.lock`.
 
 ## Checks
 

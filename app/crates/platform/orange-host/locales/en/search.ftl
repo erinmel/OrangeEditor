@@ -87,7 +87,7 @@ purpose-org-orange-text-write-csv = Converts rows of text fields to CSV, adding 
 purpose-org-orange-text-decode-hex = Decodes uppercase or lowercase hexadecimal text into bytes.
 alias-org-orange-audio-play = sound, audio, speaker, music
 
-purpose-core-on-manual = Starts when you press Run.
+purpose-core-on-manual = Starts an activation when you press Fire on this node in a running graph.
 purpose-core-on-start = Starts once when the flow starts.
 purpose-core-on-stop = Runs once when the flow stops.
 purpose-core-on-timer = Starts again and again on a timer.
@@ -223,3 +223,17 @@ alias-org-orange-math-less = less than, fewer than
 alias-org-orange-math-equal = equals, same as
 alias-org-orange-json-from-string = Text to JSON string
 alias-org-orange-text-split = split, separate text
+
+# Purposes of control and stream nodes.
+purpose-core-close-handle = Releases the resource a handle refers to.
+purpose-core-close-stream = Closes an open stream.
+purpose-core-collect = Reads a stream's items into a list, up to a limit.
+purpose-core-do-once = Lets the flow through the first time; Reset lets it through again.
+purpose-core-fork = Starts every branch and continues when all of them finish.
+purpose-core-match-result = Routes a Result to Ok or Err, with its value or error.
+purpose-core-next-item = Takes the next item of a stream, or nothing when it ends.
+purpose-core-sequence = Runs its outputs one after another, in order.
+purpose-core-tee = Splits one stream into two that both receive every item.
+purpose-core-try = Captures a value or a fault as a Result.
+purpose-core-value = Gives a literal value of the chosen type.
+purpose-core-yield = Lets other work run before the flow continues.

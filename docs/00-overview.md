@@ -46,31 +46,31 @@ the foundation.
 | File format | Version 1, the first release; later versions upgrade it on open (12 §6.3) |
 | Releases | The release workflow and receipt checks exist. Native packaging adapters and clean-install qualification are pending. See the [desktop release contract](../tools/release/README.md). |
 
+## Guides and reference
+
+The [documentation site](https://erinmel.github.io/OrangeEditor/) covers the
+editor, custom nodes, packages, embedding, and the SDK. It generates node pages
+from `orange nodes --json`, which exports English and Spanish names, categories,
+purposes, search aliases, and static port contracts from the active registry.
+See [the site source](../site/README.md) for local builds and link checks.
+
 ## What is missing
 
 These are the gaps between the vision and the repository today, most important first.
 
-1. **Documentation for people who use it.** No getting-started guide, no tutorial and
-   no node reference. A reference could be generated from the node catalogue, which
-   already carries names and purposes in English and Spanish. Use
-   `orange nodes --json` to export bilingual names, categories and static port
-   contracts from the active registry.
-2. **A threat model.** Credentials, package grants, native plugins (not sandboxed) and
+1. **A threat model.** Credentials, package grants, native plugins (not sandboxed) and
    network access are each described, but nowhere together with what an attacker could
    do and what stops it.
-3. **Plugin walkthrough.** [04](04-expansion-plugins.md) is the package contract.
-   [02](02-architecture.md#embedding-surface) documents the supported Rust and UI
-   integration surface.
-4. **Flow-started subscriptions are deferred beyond v1.** The design for event outputs
+2. **Flow-started subscriptions are deferred beyond v1.** The design for event outputs
    on actions appears in [11 §10.4](11-graph-language.md#104-subscriptions). V1 supports
    registered triggers and typed run events through On Event, Emit and Await Event.
-5. **Audio tuning surface.** Frequency Splitter offers a live spectrum and editable
+3. **Audio tuning surface.** Frequency Splitter offers a live spectrum and editable
    bands. Transient hit markers on the chart and wireable When thresholds are still open.
-6. **Platform qualification.** Frame time, memory and latency targets are measured on
+4. **Platform qualification.** Frame time, memory and latency targets are measured on
    one Windows machine only; macOS and Linux audio, input and capture need real runs.
-7. **Wasm guest resources.** File and HTTP imports exist for async providers. General
+5. **Wasm guest resources.** File and HTTP imports exist for async providers. General
    graph resource ownership and interruptible blocking host calls are open.
-8. **Accessibility.** Keyboard use works for shortcuts and search; screen reader output
+6. **Accessibility.** Keyboard use works for shortcuts and search; screen reader output
    from the canvas has not been checked.
 
 ## Glossary

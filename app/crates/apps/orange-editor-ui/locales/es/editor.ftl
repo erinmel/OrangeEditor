@@ -856,7 +856,7 @@ shortcut-files-help = Crea, abre y guarda grafos.
 shortcut-editing-help = Deshaz o rehace acciones y edita la selección o el portapapeles.
 shortcut-canvas-help = Organiza, agrupa, selecciona y recorre nodos.
 shortcut-run-help = Inicia o detén la ejecución del grafo.
-shortcut-application-help = Abre la configuración o muestra y oculta paneles.
+shortcut-application-help = Abre la configuración, muestra y oculta paneles o abre la documentación de un nodo.
 wire-click-hint = Haz clic en un puerto y luego en el otro extremo. Escape cancela.
 signal-add-sender = Crear emisor
 signal-add-another-sender = Añadir otro Despachar
@@ -933,3 +933,4 @@ conversion-search-words = convertir conversión
 
 value-side-input = entrada
 value-side-output = salida
+action-node-help = Abrir la documentación del nodo seleccionado

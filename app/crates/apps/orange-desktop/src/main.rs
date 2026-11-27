@@ -30,6 +30,38 @@ const VAULT_SERVICE: &str = "orange";
 /// Frames drawn before a `--screenshot` is taken, so the layout has settled.
 const SETTLE_FRAMES: u32 = 12;
 
+/// Opens the web pages the editor asked for, such as a node's documentation, in the
+/// person's browser: only `https://` addresses, each handed to the platform's opener as
+/// one argument with no shell in between.
+fn open_links(ctx: &eframe::egui::Context) {
+    let urls: Vec<String> = ctx.output_mut(|output| {
+        let mut urls = Vec::new();
+        output.commands.retain(|command| match command {
+            eframe::egui::OutputCommand::OpenUrl(open) => {
+                urls.push(open.url.clone());
+                false
+            }
+            _ => true,
+        });
+        urls
+    });
+    for url in urls.into_iter().filter(|url| url.starts_with("https://")) {
+        let opener = if cfg!(windows) {
+            "explorer"
+        } else if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        if let Err(error) = std::process::Command::new(opener).arg(&url).spawn() {
+            eprintln!("could not open {url}: {error}");
+        }
+    }
+}
+
+/// The published documentation, which F1 opens at the selected node's page.
+const DOCS_URL: &str = "https://erinmel.github.io/OrangeEditor/";
+
 const USAGE: &str = "\
 usage:
   orange-editor [graph.json] [--canvas-only] [--screenshot <file.png>]
@@ -161,6 +193,7 @@ impl eframe::App for Desktop {
             }
             None => self.editor.ui(ui, &mut self.host),
         }
+        open_links(ui.ctx());
         if self.bare.is_none() && self.shot.is_none() {
             self.native.dialog(ui.ctx());
         }
@@ -595,6 +628,7 @@ fn start(
     }
     editor.file_dialogs = true;
     editor.native_plugins = screenshot.is_none();
+    editor.docs_url = Some(DOCS_URL.to_owned());
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
@@ -826,6 +860,65 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every example graph the documentation offers is valid, and its "Copy nodes"
+    /// clipboard text, built the way the site builds it, pastes into an empty graph.
+    #[test]
+    fn every_example_graph_checks_and_pastes_from_the_documentation() {
+        let services = super::built_in_services(
+            &super::keyboard::Keyboard::default(),
+            &super::logbook::LogBook::default(),
+        )
+        .unwrap();
+        let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../orange-cli/graphs");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let graph: serde_json::Value = serde_json::from_str(&text).unwrap();
+            // A graph that shows installing a package uses kinds this host lacks.
+            let known: std::collections::HashSet<_> = host
+                .nodes()
+                .map(|info| info.definition.definition.id.as_str().to_owned())
+                .collect();
+            if graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| !known.contains(node["definition_id"].as_str().unwrap_or_default()))
+            {
+                continue;
+            }
+            let errors: Vec<_> = host
+                .check(&text)
+                .unwrap()
+                .into_iter()
+                .filter(|problem| problem.severity == orange_host::Severity::Error)
+                .collect();
+            assert!(errors.is_empty(), "{}: {errors:?}", path.display());
+
+            let nodes: Vec<_> = graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|node| node["id"].clone())
+                .collect();
+            let clip = serde_json::json!({
+                "format": "orange-nodes", "version": 1, "document": graph, "nodes": nodes,
+            });
+            let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+            let pasted = host
+                .paste(&mut draft, &clip.to_string(), [0.0, 0.0])
+                .unwrap();
+            assert_eq!(pasted.len(), nodes.len(), "{}", path.display());
+            checked += 1;
+        }
+        assert!(checked >= 10, "only {checked} example graphs found");
     }
 
     #[test]
