@@ -19,7 +19,10 @@ const base = new URL(canonical(home));
 const requireNativePreviews = process.argv.includes('--require-native-previews');
 if (requireNativePreviews) {
   assert.match(home, /href="\.\/assets\/editor-theme\.css"/);
-  assert.match(await read('assets/editor-theme.css'), /:root\[data-theme="dark"\]/);
+  // The editor's colours set the light theme; dark is the site's own graphite.
+  const editorTheme = await read('assets/editor-theme.css');
+  assert.match(editorTheme, /:root\[data-theme="light"\]/);
+  assert.doesNotMatch(editorTheme, /dark/);
 }
 const pages = new Map();
 const paths = new Set();

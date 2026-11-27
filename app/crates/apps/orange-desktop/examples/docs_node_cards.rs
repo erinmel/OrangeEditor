@@ -512,14 +512,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     apply_theme(&ctx);
     icons::install(&ctx);
     fs::create_dir_all(&destination)?;
+    // The site's light theme takes the editor's light colours. Its dark theme keeps the
+    // site's own neutral graphite, so only light is written here.
     let light = css_colors(&ctx, egui::Theme::Light);
-    let dark = css_colors(&ctx, egui::Theme::Dark);
     fs::write(
         destination.join("editor-theme.css"),
         format!(
-            ":root:not([data-theme]), :root[data-theme=\"light\"] {{\n{light}}}\n\
-             :root[data-theme=\"dark\"] {{\n{dark}}}\n\
-             @media (prefers-color-scheme: dark) {{\n:root:not([data-theme]) {{\n{dark}}}\n}}\n"
+            ":root[data-theme=\"light\"] {{\n{light}}}\n\
+             @media (prefers-color-scheme: light) {{\n:root:not([data-theme]) {{\n{light}}}\n}}\n"
         ),
     )?;
     let padding = egui::Vec2::splat(12.0);

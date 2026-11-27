@@ -14,21 +14,18 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     color-scheme: dark;
-    --bg: #191614;
-    --panel: #211d19;
-    --text: #f4eae2;
-    --muted: #c3b3a6;
-    --line: #40362e;
-    --control-border: #82756b;
-    --soft: #2b241e;
-    --accent: #ffae72;
+    --bg: #15161a; --panel: #1c1d22; --text: #e3e4e8; --muted: #a3a5ae;
+    --line: #2e3038; --control-border: #5d606b; --soft: #24262c; --accent: #b4a7f5;
+    --brand: #8d7ff0; --primary-fill: #3a3463;
   }
 }
 :root[data-theme="light"] { color-scheme: light; }
+/* Dark: neutral graphite with a violet accent. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #191614; --panel: #211d19; --text: #f4eae2; --muted: #c3b3a6;
-  --line: #40362e; --control-border: #82756b; --soft: #2b241e; --accent: #ffae72;
+  --bg: #15161a; --panel: #1c1d22; --text: #e3e4e8; --muted: #a3a5ae;
+  --line: #2e3038; --control-border: #5d606b; --soft: #24262c; --accent: #b4a7f5;
+  --brand: #8d7ff0; --primary-fill: #3a3463;
 }
 /* High contrast: pure black and white, bright accent, visible borders and links. */
 :root[data-theme="contrast"] {
@@ -38,12 +35,6 @@
 }
 :root[data-theme="contrast"] a { text-decoration: underline; }
 :root[data-theme="contrast"] :focus-visible { outline: 3px solid var(--accent); }
-/* Comfort: warm, dim and low glare, with softer contrast for long reading. */
-:root[data-theme="comfort"] {
-  color-scheme: dark;
-  --bg: #23201b; --panel: #2a2620; --text: #ddd2c1; --muted: #a89c8a;
-  --line: #3d372e; --control-border: #8c7c6b; --soft: #332e26; --accent: #e0a96d; --brand: #d9935a;
-}
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); }
 a { color: var(--accent); text-underline-offset: .2em; }
@@ -122,8 +113,8 @@ table { width: 100%; border-collapse: collapse; }
   :root:not([data-theme]) .native-preview .native-light { display: none; }
   :root:not([data-theme]) .native-preview .native-dark { display: block; }
 }
-:root:is([data-theme="dark"], [data-theme="comfort"], [data-theme="contrast"]) .native-preview .native-light { display: none; }
-:root:is([data-theme="dark"], [data-theme="comfort"], [data-theme="contrast"]) .native-preview .native-dark { display: block; }
+:root:is([data-theme="dark"], [data-theme="contrast"]) .native-preview .native-light { display: none; }
+:root:is([data-theme="dark"], [data-theme="contrast"]) .native-preview .native-dark { display: block; }
 .port-diagram summary { cursor: pointer; color: var(--accent); }
 .port-diagram .node-stage { max-inline-size: 36rem; margin-top: .5rem; }
 .node-stage {

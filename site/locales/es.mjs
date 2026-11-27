@@ -32,7 +32,7 @@ export const pages = {
 export const ui = {
   contents: 'En esta página', previous: 'Anterior', next: 'Siguiente', sequence: 'Páginas relacionadas',
   skip: 'Saltar al contenido', search: 'Buscar documentación', theme: 'Tema de color',
-  themes: ['Automático', 'Claro', 'Oscuro', 'Alto contraste', 'Confort'],
+  themes: ['Automático', 'Claro', 'Oscuro', 'Alto contraste'],
   docs: 'Documentación', revision: 'Revisión del código', index: 'Índice de texto',
   close: 'Cerrar', placeholder: 'Busca páginas, nodos o identificadores.',
   language: 'Idioma', searchShort: 'Buscar', searchAll: 'Todo', searchGuides: 'Guías', searchNodes: 'Nodos',

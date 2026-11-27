@@ -1,7 +1,7 @@
 export const ui = {
   contents: 'On this page', previous: 'Previous', next: 'Next', sequence: 'Continue reading',
   skip: 'Skip to content', search: 'Search documentation', theme: 'Colour theme',
-  themes: ['Automatic', 'Light', 'Dark', 'High contrast', 'Comfort'],
+  themes: ['Automatic', 'Light', 'Dark', 'High contrast'],
   docs: 'Documentation', revision: 'Source revision', index: 'Plain-text index',
   language: 'Language', searchShort: 'Search', searchAll: 'All', searchGuides: 'Guides', searchNodes: 'Nodes',
   close: 'Close', placeholder: 'Search pages, nodes, or IDs.',

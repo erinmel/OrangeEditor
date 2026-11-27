@@ -11,6 +11,8 @@ import {icon} from './icons.mjs';
 import {loadCliUsage, renderCliReference} from './cli-reference.mjs';
 import {loadNodeExamples, renderCounterWire, renderGraphExamples, renderNodeReference} from './node-reference.mjs';
 
+// The colour themes, in the picker's order; each locale's ui.themes names them.
+const themes = ['auto', 'light', 'dark', 'contrast'];
 const root = fileURLToPath(new URL('../', import.meta.url));
 const site = join(root, 'site');
 const output = join(site, 'dist');
@@ -125,7 +127,7 @@ async function render(route, title, description, body, selected, authored = fals
   <link rel="stylesheet" href="${assets}assets/docs.css">
   ${values['node-previews'] ? '<link rel="stylesheet" href="' + assets + 'assets/editor-theme.css">' : ''}
   <link rel="icon" href="${assets}assets/favicon.svg" type="image/svg+xml">
-  <script>try { const t = localStorage.getItem('orange-docs-theme'); if (t && t !== 'auto') document.documentElement.dataset.theme = t; } catch {}</script>
+  <script>try { const t = localStorage.getItem('orange-docs-theme'); if (["light","dark","contrast"].includes(t)) document.documentElement.dataset.theme = t; } catch {}</script>
   <script type="module" src="${assets}assets/theme.mjs"></script>
   <script type="module" src="${assets}assets/search.mjs"></script>
   ${selected === 'controls' && demo ? '<script type="module" src="' + assets + 'assets/controls-demo.mjs"></script>' : ''}
@@ -148,7 +150,7 @@ async function render(route, title, description, body, selected, authored = fals
     </details>
     <label class="theme-picker" title="${ui.theme}" hidden>
       ${icon('palette')} ${icon('chevron-down')}<span class="visually-hidden">${ui.theme}</span>
-      <select id="theme-select">${['auto', 'light', 'dark', 'contrast', 'comfort'].map((value, index) =>
+      <select id="theme-select">${themes.map((value, index) =>
         '<option value="' + value + '">' + ui.themes[index] + '</option>').join('')}</select>
     </label>
     <a class="source icon-action" href="${repository}">GitHub ${icon('external-link')}</a>
