@@ -42,7 +42,7 @@ export const tutorial = {
   'counter-first-step': ['Tarjetas Increment y Add one conectadas en OrangeEditor', 'El cable de ejecución va de Increment a Add one.'],
   'counter-with-reset': ['Grafo del contador en OrangeEditor', 'Increment suma uno, Decrement resta uno y Reset vuelve a dejar Counter en cero.'],
   'json-extraction': ['Grafo de extracción de JSON en OrangeEditor', 'El disparador manual ejecuta la escritura de la variable. Los nodos JSON entregan el valor por los cables de datos.'],
-  'power-with-count': ['Grafo de potencia con un bucle en OrangeEditor', 'Contar ejecuta body cuatro veces. Cada vuelta multiplica la variable por la base.'],
+  'power-with-count': ['Grafo de potencia con un bucle en OrangeEditor', 'Contar ejecuta cuerpo cuatro veces. Cada vuelta multiplica la variable por la base.'],
   graph: 'Abre el grafo de ejemplo',
   linkedPorts: 'Consulta los puertos',
 };

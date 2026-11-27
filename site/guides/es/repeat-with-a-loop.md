@@ -32,12 +32,12 @@ multiplicando el último resultado.
 <h2 id="add-the-loop">Añade el bucle</h2>
 
 1. Coloca [**Contar**](../nodes/core/count/1/) a la derecha de **Escribir variable**.
-2. En **Propiedades**, pon [**count**](../nodes/core/count/1/#port-count) en `4`.
+2. En **Propiedades**, pon [**cantidad**](../nodes/core/count/1/#port-count) en `4`.
 3. Conecta la **Salida** de **Escribir variable** con la **Entrada** de **Contar**.
 
-**Contar** tiene dos salidas de ejecución. [**body**](../nodes/core/count/1/#port-body)
-se ejecuta en cada vuelta y [**completed**](../nodes/core/count/1/#port-completed)
-después de la última. Su salida [**index**](../nodes/core/count/1/#port-index) indica
+**Contar** tiene dos salidas de ejecución. [**cuerpo**](../nodes/core/count/1/#port-body)
+se ejecuta en cada vuelta y [**terminado**](../nodes/core/count/1/#port-completed)
+después de la última. Su salida [**índice**](../nodes/core/count/1/#port-index) indica
 qué vuelta se está ejecutando, empezando en `0`.
 
 <h2 id="multiply-on-each-pass">Multiplica en cada vuelta</h2>
@@ -49,18 +49,18 @@ escribir.
    `power` en **Propiedades**. No tiene puertos de ejecución: se lee cuando un paso
    necesita su valor.
 2. Coloca [**Multiplicar**](../nodes/org.orange.math/multiply/1/). Conecta
-   [**value**](../nodes/core/get-variable/1/#port-value) de **Leer variable** con su
+   [**valor**](../nodes/core/get-variable/1/#port-value) de **Leer variable** con su
    [**a**](../nodes/org.orange.math/multiply/1/#port-a), y pon
    [**b**](../nodes/org.orange.math/multiply/1/#port-b) en `3` en **Propiedades**.
 3. Coloca otro **Escribir variable** con `power` y conecta
-   [**product**](../nodes/org.orange.math/multiply/1/#port-product) de **Multiplicar**
-   con su **value**.
-4. Conecta **body** de **Contar** con la **Entrada** de este **Escribir variable**.
+   [**producto**](../nodes/org.orange.math/multiply/1/#port-product) de **Multiplicar**
+   con su **valor**.
+4. Conecta **cuerpo** de **Contar** con la **Entrada** de este **Escribir variable**.
 
 <!-- tutorial-graph: power-with-count -->
 
 El grafo de ejemplo guarda la base y el exponente en nodos **Entero** para cambiarlos en
-un solo lugar, y guarda la respuesta en otra variable desde **completed**.
+un solo lugar, y guarda la respuesta en otra variable desde **terminado**.
 
 <h2 id="run-it">Ejecútalo</h2>
 
@@ -73,10 +73,10 @@ variable** empieza cada activación desde 1.
 
 <h2 id="what-you-built">Qué construiste</h2>
 
-- **Un bucle es una acción con más de una salida.** **body** se ejecuta en cada vuelta y
-  **completed** una vez al final, así que los pasos posteriores esperan al bucle.
+- **Un bucle es una acción con más de una salida.** **cuerpo** se ejecuta en cada vuelta y
+  **terminado** una vez al final, así que los pasos posteriores esperan al bucle.
 - **Los datos se leen cuando se necesitan.** **Leer variable** y **Multiplicar** se
-  ejecutan en cada vuelta, cuando el **Escribir variable** de **body** pide su valor, así
+  ejecutan en cada vuelta, cuando el **Escribir variable** de **cuerpo** pide su valor, así
   que siempre ven el último `power`.
 - **Los literales llenan las entradas sin conectar.** Una entrada que fijas en
   **Propiedades** conserva su valor hasta que le conectas algo.

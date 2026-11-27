@@ -36,7 +36,7 @@ last result.
 3. Wire **Set variable**'s **Exit** to **Count**'s **Enter**.
 
 **Count** has two execution outputs. [**body**](../nodes/core/count/1/#port-body)
-runs once per pass, and [**completed**](../nodes/core/count/1/#port-completed) runs
+runs once per pass, and [**Done**](../nodes/core/count/1/#port-completed) runs
 after the last pass. Its [**index**](../nodes/core/count/1/#port-index) output says
 which pass is running, starting at `0`.
 
@@ -58,7 +58,7 @@ The step that runs on each pass reads `power`, multiplies it by 3 and writes it 
 <!-- tutorial-graph: power-with-count -->
 
 The example graph keeps the base and the exponent in **Int** nodes so you can change
-them in one place, and saves the answer in a second variable on **completed**.
+them in one place, and saves the answer in a second variable on **Done**.
 
 ## Run it
 
@@ -72,7 +72,7 @@ each activation from 1.
 ## What you built
 
 - **A loop is an action with more than one exit.** **body** runs for each pass and
-  **completed** once at the end, so the steps after the loop wait for it.
+  **Done** once at the end, so the steps after the loop wait for it.
 - **Data is pulled when needed.** **Get variable** and **Multiply** run on each pass,
   when the **Set variable** on **body** asks for its value, so they always see the
   latest `power`.
