@@ -8,9 +8,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-orange-kernel = { path = "../../core/orange-kernel", version = "=0.1.0-preview.1" }
-orange-model = { path = "../../core/orange-model", version = "=0.1.0-preview.1" }
-orange-runtime = { path = "../../core/orange-runtime", version = "=0.1.0-preview.1" }
+orange-kernel = { path = "../../core/orange-kernel", version = "=0.1.1-preview" }
+orange-model = { path = "../../core/orange-model", version = "=0.1.1-preview" }
+orange-runtime = { path = "../../core/orange-runtime", version = "=0.1.1-preview" }
 serde_json.workspace = true
 
 [lints]

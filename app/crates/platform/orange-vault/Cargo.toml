@@ -11,7 +11,7 @@ publish.workspace = true
 os-vault-tests = []
 
 [dependencies]
-orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.0-preview.1" }
+orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.1-preview" }
 # Windows Credential Manager, macOS Keychain and the Linux Secret Service. The D-Bus
 # client library is built from source (`vendored`), so no system package is needed.
 keyring.workspace = true

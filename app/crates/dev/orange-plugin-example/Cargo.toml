@@ -13,7 +13,7 @@ test = false
 doctest = false
 
 [dependencies]
-orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.0-preview.1" }
+orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.1-preview" }
 
 # `export_plugin!` exports unmangled symbols, which the workspace's `forbid(unsafe_code)`
 # does not permit; this crate denies unsafe code everywhere else.

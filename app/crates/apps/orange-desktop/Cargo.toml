@@ -18,15 +18,15 @@ serde_json.workspace = true
 rfd.workspace = true
 global-hotkey.workspace = true
 sys-locale.workspace = true
-orange-audio = { path = "../../services/orange-audio", version = "=0.1.0-preview.1" }
-orange-editor-ui = { path = "../../apps/orange-editor-ui", version = "=0.1.0-preview.1" }
-orange-files = { path = "../../services/orange-files", version = "=0.1.0-preview.1" }
-orange-host = { path = "../../platform/orange-host", version = "=0.1.0-preview.1" }
-orange-native = { path = "../../platform/orange-native", version = "=0.1.0-preview.1" }
-orange-sandbox = { path = "../../platform/orange-sandbox", version = "=0.1.0-preview.1" }
-orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.0-preview.1" }
-orange-net = { path = "../../services/orange-net", version = "=0.1.0-preview.1" }
-orange-vault = { path = "../../platform/orange-vault", version = "=0.1.0-preview.1" }
+orange-audio = { path = "../../services/orange-audio", version = "=0.1.1-preview" }
+orange-editor-ui = { path = "../../apps/orange-editor-ui", version = "=0.1.1-preview" }
+orange-files = { path = "../../services/orange-files", version = "=0.1.1-preview" }
+orange-host = { path = "../../platform/orange-host", version = "=0.1.1-preview" }
+orange-native = { path = "../../platform/orange-native", version = "=0.1.1-preview" }
+orange-sandbox = { path = "../../platform/orange-sandbox", version = "=0.1.1-preview" }
+orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.1-preview" }
+orange-net = { path = "../../services/orange-net", version = "=0.1.1-preview" }
+orange-vault = { path = "../../platform/orange-vault", version = "=0.1.1-preview" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd.workspace = true
@@ -37,7 +37,7 @@ futures-lite.workspace = true
 workspace = true
 
 [dev-dependencies]
-orange-testkit = { path = "../../dev/orange-testkit", version = "=0.1.0-preview.1", features = ["ui"] }
+orange-testkit = { path = "../../dev/orange-testkit", version = "=0.1.1-preview", features = ["ui"] }
 futures-lite.workspace = true
 png = "=0.18.1"
 
