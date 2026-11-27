@@ -166,7 +166,9 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.policy.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # The Intel macOS runner takes about 18 minutes for the suite, and saving the
+    # dependency cache afterwards can take two more.
+    timeout-minutes: 30
     env:
       # Keep file/line backtraces and debug assertions; avoid full local-variable symbols.
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
