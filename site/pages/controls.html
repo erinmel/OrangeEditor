@@ -1,26 +1,57 @@
 <h2 id="layout-and-theme">Layout and theme</h2>
 <p>Controls take an <code>egui::Ui</code> and use your current panel style or the OrangeEditor tokens installed on its context. Keep values in application state. Call <code>UiTokens::for_surface(ui, Surface::Card)</code> when supplying a token set to card controls.</p>
+<p>Call this once when you create your egui context to install OrangeEditor’s desktop style, including its text and spacing defaults.</p>
+<pre><code>orange_ui_controls::apply_desktop_style(ctx);</code></pre>
 <p>Start with the gallery to explore variations and states:</p>
 <pre><code>cargo run --locked -p orange-ui-controls --example gallery</code></pre>
-<p><a href="../api/orange_ui_controls/theme/struct.UiTokens.html">UiTokens API</a> · <a href="../egui/#customize-appearance">Customize the embedded editor</a></p>
+<p><a href="../api/orange_ui_controls/fn.apply_desktop_style.html">Desktop style API</a> · <a href="../api/orange_ui_controls/theme/struct.UiTokens.html">UiTokens API</a> · <a href="../egui/#customize-appearance">Customize the embedded editor</a></p>
 <h2 id="sliders-and-dials">Sliders and dials</h2>
 <p>Choose a continuous slider for a range, a logarithmic slider for positive values spanning several orders of magnitude, and a stepped slider when only discrete values are legal. A knob offers the same editable range in a narrow card. The return value is an <code>egui::Response</code> with <code>changed()</code>.</p>
-<pre><code>let mut level = 55.0;
-orange_ui_controls::continuous_slider(ui, Surface::Card, &amp;mut level, 0.0..=100.0);
-orange_ui_controls::knob(ui, Surface::Card, &amp;mut level, 0.0..=100.0, None, &amp;[]);</code></pre>
-<p><a href="../api/orange_ui_controls/fn.continuous_slider.html">Slider API</a> · <a href="../api/orange_ui_controls/fn.knob.html">Knob API</a> · <a href="../egui/#live-controls">Try both controls</a></p>
+<p>Store <code>level</code> as an <code>f32</code> in your app state, initialized to <code>55.0</code>. Pass the same mutable reference to both controls each frame.</p>
+<pre><code>orange_ui_controls::continuous_slider(ui, Surface::Card, level, 0.0..=100.0);
+orange_ui_controls::knob(ui, Surface::Card, level, 0.0..=100.0, None, &amp;[]);</code></pre>
+<p><a href="../api/orange_ui_controls/fn.continuous_slider.html">Slider API</a> · <a href="../api/orange_ui_controls/fn.knob.html">Knob API</a></p>
+<h3 id="live-controls">Slider, knob, and appearance demo</h3>
+<p>The level starts at 55%. Move the slider and the knob follows. Drag the knob and the slider follows. Select Light or Dark to change the appearance while keeping the same value.</p>
+<p><a href="@source/app/crates/dev/orange-docs-web/src/lib.rs">Read the Rust demo source</a></p>
+<!-- controls-demo -->
 <h2 id="buttons-and-choices">Buttons and choices</h2>
 <p>Use a button for a command, a switch for a persistent Boolean, and a segmented control for a small set of mutually exclusive options. Match on the selected value, keeping the display label independent of its stored representation.</p>
 <pre><code>let tokens = UiTokens::for_surface(ui, Surface::Card);
 let caption = ui.label("Sample mode");
 pill_segmented(ui, tokens, &amp;caption, mode, &amp;[(0, "Off"), (1, "Peak"), (2, "RMS")]);</code></pre>
 <p>Here <code>mode</code> is a mutable reference to application state. <a href="../api/orange_ui_controls/fn.pill_segmented.html">Segmented control API</a> · <a href="../api/orange_ui_controls/components/fn.switch.html">Switch API</a></p>
+<p>Selecting <strong>Peak</strong> stores <code>1</code> in <code>mode</code>. The <a href="#live-controls">live demo</a> uses the same segmented control for Light and Dark.</p>
 <h2 id="text-and-files">Text and files</h2>
 <p>Use a text field for inline labels or values and a text area for multiline input. The password field lets the user reveal the value through an explicit action. Keep persisted credentials in the host’s credential store. A path picker exposes a browse action. Enable the optional <code>native-dialogs</code> feature for the desktop picker or supply the selected path from your application.</p>
+<p>Give the field a stable ID and pass your mutable <code>String</code> as <code>graph_name</code>. The hint appears when the field is empty. Typing updates the string in your app state.</p>
+<pre><code>let id = ui.make_persistent_id("graph-name");
+orange_ui_controls::text_field(ui, Surface::Card, id, graph_name, "Graph name");</code></pre>
 <p><a href="../api/orange_ui_controls/fn.text_field.html">Text field API</a> · <a href="../api/orange_ui_controls/components/fn.password.html">Password API</a> · <a href="../api/orange_ui_controls/components/struct.PathPicker.html">PathPicker API</a></p>
 <h2 id="menus-and-dialogs">Menus and dialogs</h2>
 <p>Use the shared menu and menu row controls for actions grouped under a command. Use a modal when the user needs to confirm or cancel before continuing. Keep the underlying operation and any file chooser in your application.</p>
+<p>Show the modal while your app is waiting for a decision. Apply the rename only when the user clicks <strong>Rename</strong>, and clear the modal’s open state when they dismiss it.</p>
+<pre><code>let result = orange_ui_controls::modal(ui.ctx(), egui::Id::new("rename-graph"))
+    .show(ui.ctx(), |ui| {
+        ui.label("Apply the new graph name?");
+        let rename = ui.button("Rename").clicked();
+        if ui.button("Cancel").clicked() {
+            ui.close();
+        }
+        rename
+    });
+if result.inner {
+    apply_rename();
+}
+if result.inner || result.should_close() {
+    *rename_open = false;
+}</code></pre>
 <p><a href="../api/orange_ui_controls/components/fn.menu.html">Menu API</a> · <a href="../api/orange_ui_controls/fn.modal.html">Modal API</a></p>
 <h2 id="meters-and-charts">Meters and charts</h2>
 <p>A meter visualizes a measurement supplied by your application. Show level and peak independently. Frequency charts visualize caller-supplied bands or samples. Keep device routing and audio processing outside these widgets.</p>
-<p><a href="../api/orange_ui_controls/audio_meter/">Audio meter API</a> · <a href="../api/orange_ui_controls/visualizations/fn.frequency_chart.html">Frequency chart API</a> · <a href="../examples/#quiet-mic-gate">Meter a gated signal</a></p>
+<p>Supply normalized values between <code>0.0</code> and <code>1.0</code>. This meter fills 40% of its height and draws a separate peak marker at 70%.</p>
+<pre><code>use orange_ui_controls::visualizations::{LevelMeter, MeterColors};
+
+let bounds = egui::Rect::from_min_size(ui.next_widget_position(), egui::vec2(14.0, 72.0));
+LevelMeter::vertical(0.4, 0.7).paint(ui, Surface::Card, bounds, MeterColors::standard());</code></pre>
+<p><a href="../api/orange_ui_controls/visualizations/struct.LevelMeter.html">Level meter API</a> · <a href="../api/orange_ui_controls/audio_meter/">Audio meter API</a> · <a href="../api/orange_ui_controls/visualizations/fn.frequency_chart.html">Frequency chart API</a> · <a href="../examples/#quiet-mic-gate">Meter a gated signal</a></p>

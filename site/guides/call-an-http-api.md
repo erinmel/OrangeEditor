@@ -43,7 +43,7 @@ The request continues on one of two routes:
 - **failed**: no answer arrived, such as a refused connection or a timeout. Read
   **error** for what happened.
 
-A common shape is a **Branch** on **success** after **then**, with one action for an
+A common shape is a [**Branch**](../nodes/core/branch/1/#port-condition) on **success** after **then**, with one action for an
 accepted status and another for a rejected one, plus a separate action on **failed**.
 
 ## Retry once after a short wait

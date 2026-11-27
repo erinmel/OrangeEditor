@@ -12,6 +12,9 @@ on:
       - 'app/crates/dev/orange-docs-web/**'
       - 'app/crates/apps/orange-cli/**'
       - 'app/crates/apps/orange-desktop/examples/embed_editor.rs'
+      - 'app/crates/apps/orange-desktop/examples/docs_node_cards.rs'
+      - 'app/crates/apps/orange-desktop/Cargo.toml'
+      - 'app/crates/apps/orange-editor-ui/**'
       - 'app/crates/platform/orange-host/**'
       - 'app/crates/platform/orange-ui-controls/**'
       - '.github/workflows/pages.yml'
@@ -41,8 +44,8 @@ jobs:
         with:
           node-version: 24.18.0
           package-manager-cache: false
-      - name: Install ALSA development headers
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
+      - name: Install ALSA development headers and a headless renderer
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev libvulkan1 mesa-vulkan-drivers
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -63,13 +66,16 @@ jobs:
         run: cargo doc --no-deps --locked -p orange-host -p orange-editor-ui -p orange-ui-controls -p orange-sdk
       - name: Check the embedding example
         run: cargo check --locked -p orange-desktop --example embed_editor
+      - name: Render node cards and tutorial graphs
+        run: cargo run --locked -p orange-desktop --features documentation --example docs_node_cards -- "$RUNNER_TEMP/orange-node-cards"
       - name: Build and check documentation
         env:
           PAGES_URL: ${{ steps.pages.outputs.base_url }}
         run: |
           node site/build.mjs --base-url "${PAGES_URL:-https://erinmel.github.io/OrangeEditor/}" \
+            --node-previews "$RUNNER_TEMP/orange-node-cards" \
             --wasm-bindgen "$RUNNER_TEMP/orange-docs-tools/bin/wasm-bindgen"
-          node site/check.mjs --require-demo
+          node site/check.mjs --require-demo --require-native-previews
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0

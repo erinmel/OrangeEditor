@@ -29,5 +29,31 @@ export function searchIndex(index, input) {
     matches.push({entry, score});
   }
   matches.sort((a, b) => b.score - a.score);
-  return matches.map(({entry}) => entry);
+  if (matches.length) return matches.map(({entry}) => entry);
+
+  // Keep typo matching on short words in titles and aliases. Body text is too broad.
+  if (!words.some(word => word.length >= 4)) return [];
+  const scoreWords = key => {
+    const tokens = key.split(' ');
+    let score = 0;
+    for (const word of words) {
+      if (tokens.some(token => token.startsWith(word))) score += 2;
+      else if (word.length >= 4 && tokens.some(token => oneEdit(word, token))) score += 1;
+      else return 0;
+    }
+    return score;
+  };
+  return index.map(entry => ({entry, score: Math.max(scoreWords(entry.titleKey) * 2, scoreWords(entry.aliasKey))}))
+    .filter(match => match.score > 0).sort((a, b) => b.score - a.score).map(match => match.entry);
+}
+
+function oneEdit(word, token) {
+  if (Math.abs(word.length - token.length) > 1) return false;
+  const boundary = Math.min(word.length, token.length);
+  let at = 0;
+  while (at < boundary && word[at] === token[at]) at++;
+  if (word.length > token.length) return word.slice(at + 1) === token.slice(at);
+  if (token.length > word.length) return word.slice(at) === token.slice(at + 1);
+  return word.slice(at + 1) === token.slice(at + 1) ||
+    (word[at] === token[at + 1] && token[at] === word[at + 1] && word.slice(at + 2) === token.slice(at + 2));
 }

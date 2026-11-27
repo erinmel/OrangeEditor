@@ -3469,6 +3469,7 @@ dependencies = [
  "orange-sdk",
  "orange-testkit",
  "orange-vault",
+ "png 0.18.1",
  "rfd",
  "serde_json",
  "sys-locale",

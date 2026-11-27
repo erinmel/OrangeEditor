@@ -244,10 +244,15 @@ pub(crate) fn packages(host: &Host) {
 }
 
 /// Project a fresh card through the same authoring view the editor uses.
-fn preview_ports(host: &Host, document: &str, definition: &str) -> Option<Vec<serde_json::Value>> {
+fn preview_ports(
+    host: &Host,
+    document: &str,
+    definition: &str,
+    language: &str,
+) -> Option<Vec<serde_json::Value>> {
     let mut draft = host.draft(document).ok()?;
     let id = host.add_node(&mut draft, definition, [0.0, 0.0]).ok()?;
-    let view = host.draft_authoring_view_in(&draft, "en").ok()?;
+    let view = host.draft_authoring_view_in(&draft, language).ok()?;
     let node = view
         .graph
         .nodes
@@ -317,7 +322,8 @@ pub(crate) fn nodes(host: &Host, json_output: bool) {
                 },
                 "ports": info.declared_ports(),
                 "port_help": port_help(host, def.definition.id.as_str()),
-                "preview_ports": preview_document.as_deref().and_then(|document| preview_ports(host, document, def.definition.id.as_str())),
+                "preview_ports": preview_document.as_deref().and_then(|document| preview_ports(host, document, def.definition.id.as_str(), "en")),
+                "preview_ports_es": preview_document.as_deref().and_then(|document| preview_ports(host, document, def.definition.id.as_str(), "es")),
                 "config_schema": def.config_schema,
             })
         }).collect();

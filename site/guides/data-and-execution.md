@@ -9,10 +9,10 @@ Execution wires join an action's outcome, such as **then** or **failed**, to the
 **in** port of the next action. They are drawn as plain arrows between actions.
 
 - Work starts only at an **entry**: a trigger such as **On manual**, **On timer** or
-  **On file change**. Each time it fires, it starts an *activation*.
+  **On file change**. Each time it fires, it starts an *activation*. The [On manual card](../nodes/core/on-manual/1/) shows the ports for the simplest trigger.
 - Execution follows the wires from action to action, one step at a time.
 - An action with several outcomes continues on exactly one of them. **Branch** goes to
-  **true** or **false**; **HTTP request** goes to **then** or **failed**.
+  **true** or **false** (see [Branch ports](../nodes/core/branch/1/#ports)). [**HTTP request**](../nodes/org.orange.net/http-request/2/) goes to **then** or **failed**.
 
 Effects, the things that change the world or the graph's state, happen only where
 execution reaches. A **Set variable** that no execution wire reaches never runs.

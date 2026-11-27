@@ -16,6 +16,9 @@ serde_json.workspace = true
 [lints]
 workspace = true
 
+[features]
+documentation = []
+
 [dev-dependencies]
 orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0", features = ["ui"] }
 orange-audio = { path = "../../services/orange-audio", version = "=0.0.0" }

@@ -18,16 +18,20 @@ pub struct ControlsDemo {
 #[wasm_bindgen]
 impl ControlsDemo {
     /// Starts the controls example on the supplied canvas.
-    pub async fn start(canvas: HtmlCanvasElement) -> Result<ControlsDemo, JsValue> {
+    pub async fn start(canvas: HtmlCanvasElement, spanish: bool) -> Result<ControlsDemo, JsValue> {
         let runner = eframe::WebRunner::new();
         let started = runner
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|context| {
+                Box::new(move |context| {
                     apply_desktop_style(&context.egui_ctx);
                     context.egui_ctx.set_theme(egui::Theme::Dark);
-                    Ok(Box::new(Gallery::default()))
+                    Ok(Box::new(Gallery {
+                        theme: egui::Theme::Dark,
+                        level: 55.0,
+                        spanish,
+                    }))
                 }),
             )
             .await;
@@ -55,27 +59,24 @@ impl std::fmt::Debug for ControlsDemo {
 struct Gallery {
     theme: egui::Theme,
     level: f32,
-}
-
-impl Default for Gallery {
-    fn default() -> Self {
-        Self {
-            theme: egui::Theme::Dark,
-            level: 55.0,
-        }
-    }
+    spanish: bool,
 }
 
 impl eframe::App for Gallery {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {
-            let label = ui.label("Appearance");
+            let [appearance, light, dark, level] = if self.spanish {
+                ["Apariencia", "Claro", "Oscuro", "Nivel"]
+            } else {
+                ["Appearance", "Light", "Dark", "Level"]
+            };
+            let label = ui.label(appearance);
             if pill_segmented(
                 ui,
                 UiTokens::resolve(ui.ctx()),
                 &label,
                 &mut self.theme,
-                &[(egui::Theme::Light, "Light"), (egui::Theme::Dark, "Dark")],
+                &[(egui::Theme::Light, light), (egui::Theme::Dark, dark)],
             )
             .changed()
             {
@@ -83,7 +84,7 @@ impl eframe::App for Gallery {
             }
 
             ui.add_space(8.0);
-            ui.label(format!("Level  {:.0}%", self.level));
+            ui.label(format!("{level}  {:.0}%", self.level));
             continuous_slider(ui, Surface::Card, &mut self.level, 0.0..=100.0);
             knob(ui, Surface::Card, &mut self.level, 0.0..=100.0, None, &[]);
         });

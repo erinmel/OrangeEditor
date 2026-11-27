@@ -8,6 +8,19 @@ renderer. Node diagrams use `preview_ports` from the host's fresh authoring
 view. The configuration-specific notes and links to checked-in graphs live in
 `site/node-reference.mjs`. Edit a contract in `docs/` and update any guide affected by the change.
 
+## Translate the guides
+
+English routes stay at the site root. Spanish guides in `site/guides/es/`
+publish under `/es/` with the same route suffixes. The locale catalogues under
+`site/locales/` hold navigation labels, example text, tutorial captions, and
+node help added by the site. The page order and English guide metadata are in
+`site/pages.mjs`. Register new catalogues in `site/locales/index.mjs`. A new
+published language also needs a route, a search index, and renderer coverage.
+Use `@shared/`
+to link to generated Rustdoc and the English contracts. Match explicit heading IDs
+where the two guides discuss the same topic. Node cards and localized port
+descriptions come from the CLI catalogue.
+
 ## Build and check locally
 
 Run from the repository root with the pinned Rust toolchain and Node 24.
@@ -28,8 +41,7 @@ try search.
 
 ## Build the live controls demo
 
-The egui guide loads `orange-docs-web` when the visitor selects **Load controls
-demo**. It runs shared Rust controls through eframe and WebGL, using sample
+The controls reference loads `orange-docs-web` when the visitor selects **Try it**. It runs shared Rust controls through eframe and WebGL, using sample
 values. The page and its reference links work without loading the demo.
 
 ```sh
@@ -43,6 +55,25 @@ The CLI version must match the workspace's `wasm-bindgen` dependency. The Pages
 workflow runs this build and publishes only `site/dist/`. The checkout's ignore
 rules cover that directory and Cargo's default `target/`. Keep generated
 Rustdoc, JavaScript bindings, and Wasm out of Git.
+
+## Render editor node previews
+
+Use the desktop renderer to generate previews with its node palette geometry,
+fonts, icons, and colors in light and dark. The site also takes its light and
+dark colors from the installed editor style. Render once per source revision.
+This needs a wgpu adapter, but it runs without creating a window. Pages uses a
+software Vulkan adapter on its Linux runner.
+
+```sh
+cargo run --locked -p orange-desktop --features documentation --example docs_node_cards -- .artifacts/native-docs-cards
+node site/build.mjs --node-previews .artifacts/native-docs-cards
+node site/check.mjs --require-native-previews
+```
+
+The same exporter opens the checked-in counter and JSON extraction graphs in the
+editor and renders their canvas for the tutorial. The site keeps linked port
+diagrams and tables for keyboard navigation. A build without `--node-previews`
+displays the diagrams by default.
 
 ## Publish with GitHub Pages
 
