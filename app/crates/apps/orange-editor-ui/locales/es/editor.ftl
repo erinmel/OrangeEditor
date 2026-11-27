@@ -525,7 +525,7 @@ package-status =
         [built-in] Integrado
        *[installed] Instalado
     } · { $active ->
-        [yes] en uso
+        [yes] disponible
        *[no] apagado
     }
 search-packages-hint = Buscar paquetes
@@ -728,7 +728,7 @@ search-variables = Filtrar por nombre, tipo o ámbito
 search-connections = Filtrar por nombre o protocolo
 search-types = Filtrar por nombre o clase
 no-declaration-matches = No hay coincidencias.
-import-package = Importar paquete…
+import-package = Importar paquete
 install-package = Instalar paquete
 package-permissions = Permitir que el paquete pueda
 package-grant-log = Escribir en su registro
@@ -738,10 +738,10 @@ package-grant-http-local = Hacer solicitudes HTTP a este equipo y a la red local
 package-grant-compute = Usar más tiempo de proceso y transferencia de memoria por llamada
 package-grant-websocket = Enviar mensajes por la conexión WebSocket que indica su nodo
 package-access-changed = Se cambió lo que { $package } puede usar. Los grafos iniciados a partir de ahora usan el nuevo acceso.
-share-with-packages = Compartir con paquetes…
+share-with-packages = Compartir grafo con paquetes
 share-with-packages-hint = Guarda este grafo en un solo archivo junto con los paquetes instalados que usa.
 open-shared-graph = Abrir grafo compartido
-open-shared-graph-ellipsis = Abrir grafo compartido…
+graph-bundles = Lotes de grafos
 bundle-package-installed = Ya está instalado.
 bundle-not-carried = También se necesita, no incluido en el archivo:
 bundle-open-only = Abrir sin instalar
@@ -753,7 +753,9 @@ node-needs-package = Necesita el paquete { $package } { $version }
 node-needs-package-any = Necesita el paquete { $package }
 missing-package-hint = El nodo conserva su configuración y sus conexiones. Instala el paquete para ejecutarlo.
 install-missing-package = Instalar paquete…
-native-plugins = Complementos con acceso total…
+settings-extensions = Extensiones
+native-plugins = Complementos nativos
+manage-native-plugins = Gestionar complementos con acceso total
 native-plugins-hint = Las bibliotecas de complementos nativos se ejecutan con todos tus permisos. Elige cuáles pueden cargarse.
 package-no-permissions = Este paquete no solicita permisos adicionales.
 package-imported = Se instaló { $name }.
@@ -777,13 +779,16 @@ log-add-part = Añadir parte
 log-part = Parte { $number }
 log-remove-part = Quitar { $part }
 remove-package = Quitar paquete
-remove-package-hint = ¿Quitar { $package }? Los grafos guardados que usan esta versión la necesitan para ejecutarse de nuevo. Los grafos activos conservan su versión.
+remove-package-hint = ¿Quitar { $package }? Los grafos guardados que usan esta versión la necesitan para ejecutarse de nuevo.
 package-removed = Se quitó { $package }.
 package-remove-failed = No se pudo quitar el paquete. { $error }
 package-enabled = Activado
-package-enabled-hint = Desactivado, sus nodos no se pueden añadir y los grafos que los usan no se abren. Los grafos activos lo conservan. Sus archivos y permisos se mantienen.
+package-disabled = Desactivado
+package-used-by-graph = En uso por un grafo
+package-enabled-hint = Al desactivar este paquete, se ocultan sus nodos y los grafos que los usan no pueden ejecutarse. Se conservan sus archivos y permisos.
+package-in-use = Detén las ejecuciones que usan este paquete y cierra el grafo o quita sus nodos del paquete antes de desactivarlo o desinstalarlo.
 package-turned-on = Se activó { $package }.
-package-turned-off = Se desactivó { $package }. Los grafos activos lo siguen usando.
+package-turned-off = Se desactivó { $package }.
 package-switch-failed = No se pudo activar ni desactivar el paquete. { $error }
 rename-node = Cambiar nombre del nodo
 rename-node-double-click = Haz doble clic para cambiar el nombre

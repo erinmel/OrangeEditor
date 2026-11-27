@@ -393,8 +393,6 @@ pub use orange_host::MAX_UNDO;
 pub struct Panels {
     /// The node kinds, on the left.
     pub nodes: bool,
-    /// The packages, on the right.
-    pub packages: bool,
     /// Problems and the log, at the bottom.
     pub log: bool,
     /// The values of the selected node, on the right.
@@ -406,7 +404,6 @@ impl Default for Panels {
         Self {
             nodes: true,
             properties: true,
-            packages: false,
             log: false,
         }
     }
@@ -494,8 +491,7 @@ pub struct Editor {
     pending_package: Option<package_import::PackageImport>,
     pending_bundle: Option<bundle::BundleImport>,
     pending_package_removal: Option<orange_host::PackageKey>,
-    packages_tab: bool,
-    /// What the Packages tab is filtered by.
+    /// The package filter in Settings.
     package_search: String,
     /// A wire let go between two kinds of value, waiting for its conversion.
     conversion_choice: Option<ConversionChoice>,
@@ -1928,7 +1924,7 @@ impl Editor {
         if self.window_toolbar {
             resize_borders(ui.ctx());
         }
-        let _ = self.settings_window(ui.ctx());
+        let _ = self.settings_window(ui.ctx(), host);
         self.package_import_dialog(ui.ctx(), host);
         self.bundle_import_dialog(ui.ctx(), host);
         self.package_removal_dialog(ui.ctx(), host);
@@ -1966,7 +1962,7 @@ impl Editor {
                 .min_size(240.0)
                 .show(ui, |ui| self.nodes_panel(ui, host));
         }
-        if self.panels.properties || self.panels.packages {
+        if self.panels.properties {
             egui::Panel::right("orange-inspector")
                 .resizable(true)
                 .default_size(280.0)
@@ -2358,15 +2354,10 @@ impl Editor {
     }
 
     fn toggle_right_panel(&mut self) {
-        if self.panels.properties || self.panels.packages {
+        if self.panels.properties {
             self.renaming_node = None;
-            self.packages_tab = self.panels.packages && !self.panels.properties;
-            self.panels.properties = false;
-            self.panels.packages = false;
-        } else {
-            self.panels.properties = !self.packages_tab;
-            self.panels.packages = self.packages_tab;
         }
+        self.panels.properties = !self.panels.properties;
     }
 
     fn workspace_diagnostics(&mut self, ui: &mut egui::Ui, centered: bool) {
@@ -2413,7 +2404,7 @@ impl Editor {
     }
 
     fn workspace_right(&mut self, ui: &mut egui::Ui) {
-        let open = self.panels.properties || self.panels.packages;
+        let open = self.panels.properties;
         if icons::dock_toggle(
             ui,
             open,
@@ -2503,27 +2494,11 @@ impl Editor {
         }
     }
 
-    /// Draws the Inspector and Packages tabs in the supplied container.
+    /// Draws the Inspector in the supplied container.
     pub fn right_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         self.prepare_text(host);
-        let mut packages = self.panels.packages && !self.panels.properties;
-        let _ = orange_ui_controls::notebook_flex(
-            ui,
-            Surface::Panel,
-            orange_ui_controls::NotebookOrientation::Horizontal,
-            orange_ui_controls::NotebookPadding::Compact,
-            &mut packages,
-            &[(false, t("properties")), (true, t("packages"))],
-        );
-        ui.separator();
-        self.panels.properties = !packages;
-        self.panels.packages = packages;
-        if packages {
-            self.renaming_node = None;
-            self.packages_panel(ui, host);
-        } else {
-            self.properties_panel(ui, host);
-        }
+        ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+        self.properties_panel(ui, host);
     }
 
     /// The language of the editor and its node search, from the editor's catalogues.
@@ -2562,6 +2537,7 @@ impl Editor {
     /// Draws the node catalogue and declaration tabs in the supplied container.
     pub fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         self.prepare_text(host);
+        ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
         let options = Tab::ALL.map(|(tab, label)| (tab, t(label)));
         let previous = self.tab;
         let response = orange_ui_controls::notebook_flex(
@@ -2723,66 +2699,55 @@ impl Editor {
 
     /// The packages this host has, found by name, ID or description: each a framed row
     /// with its name and version, what it adds, and whether it is in use.
-    fn packages_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        if self.file_dialogs
-            && controls::button(
-                ui,
-                Surface::Panel,
-                controls::Action::Secondary,
-                true,
-                egui::Button::new((icons::text(icons::ADD), t("import-package"))),
-            )
-            .clicked()
-        {
-            self.ask(FileRequest::ImportPackage);
-        }
+    fn graph_bundle_menu(&mut self, ui: &mut egui::Ui, host: &Host) {
         if self.file_dialogs {
-            ui.horizontal_wrapped(|ui| {
-                if controls::button(
-                    ui,
-                    Surface::Panel,
-                    controls::Action::Secondary,
-                    self.document.is_some(),
-                    egui::Button::new(t("share-with-packages")),
-                )
-                .on_hover_text(t("share-with-packages-hint"))
-                .clicked()
-                {
-                    self.share_with_packages(host);
-                }
-                if controls::button(
-                    ui,
-                    Surface::Panel,
-                    controls::Action::Secondary,
-                    true,
-                    egui::Button::new((icons::text(icons::OPEN), t("open-shared-graph-ellipsis"))),
-                )
-                .clicked()
-                {
+            ui.menu_button((icons::text(icons::SHARE), t("graph-bundles")), |ui| {
+                if ui.button(t("open-shared-graph")).clicked() {
                     self.ask(FileRequest::ImportBundle);
+                    ui.close();
                 }
-                if self.native_plugins
-                    && controls::button(
-                        ui,
-                        Surface::Panel,
-                        controls::Action::Secondary,
-                        true,
-                        egui::Button::new((icons::text(icons::WARNING), t("native-plugins"))),
+                if ui
+                    .add_enabled(
+                        self.document.is_some(),
+                        egui::Button::new(t("share-with-packages")),
                     )
-                    .on_hover_text(t("native-plugins-hint"))
+                    .on_hover_text(t("share-with-packages-hint"))
                     .clicked()
                 {
-                    self.ask(FileRequest::NativePlugins);
+                    self.share_with_packages(host);
+                    ui.close();
                 }
             });
         }
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        let _ = controls::search(
-            ui,
-            "package-search",
-            &mut self.package_search,
-            t("search-packages-hint"),
-        );
+    }
+
+    fn package_manager(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        let header = |ui: &mut egui::Ui| {
+            if self.file_dialogs
+                && controls::button(
+                    ui,
+                    Surface::Dialog,
+                    controls::Action::Secondary,
+                    true,
+                    egui::Button::new((icons::text(icons::IMPORT_PACKAGE), t("import-package"))),
+                )
+                .clicked()
+            {
+                self.ask(FileRequest::ImportPackage);
+                ui.ctx().request_repaint();
+            }
+            let _ = controls::search(
+                ui,
+                "package-search",
+                &mut self.package_search,
+                t("search-packages-hint"),
+            );
+        };
+        if ui.available_width() >= 320.0 {
+            ui.horizontal(header);
+        } else {
+            ui.vertical(header);
+        }
         ui.add_space(4.0);
         let wanted = orange_host::SearchQuery::new(&self.package_search);
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -2792,7 +2757,7 @@ impl Editor {
             for package in host.packages() {
                 let name = package.name().unwrap_or(package.id);
                 let about = package.description().unwrap_or_default();
-                if !wanted.matches([name, package.id, about]) {
+                if !wanted.matches([name, package.id, about, package.version]) {
                     continue;
                 }
                 shown += 1;
@@ -2844,27 +2809,77 @@ impl Editor {
                                 ("active", if package.active { "yes" } else { "no" }.into()),
                             ],
                         ));
-                        // Core packages and those the application leaves out stay as
-                        // they are; the others turn off and on at once.
-                        if package.switchable {
-                            let mut on = package.enabled;
-                            if orange_ui_controls::toggle(
-                                ui,
-                                Surface::Panel,
-                                &mut on,
-                                t("package-enabled"),
-                            )
-                            .on_hover_text(t("package-enabled-hint"))
-                            .changed()
-                            {
-                                switch = Some((package.id.to_owned(), name.to_owned(), on));
+                        let key = package
+                            .id
+                            .parse()
+                            .ok()
+                            .zip(package.version.parse().ok())
+                            .map(|(id, version)| orange_host::PackageKey { id, version });
+                        let switch_locked = package.switchable
+                            && package.enabled
+                            && self.package_in_use(host, package.id, None);
+                        let removal_locked = package.kind == PackageKind::Installed
+                            && self.package_in_use(host, package.id, Some(package.version));
+                        ui.horizontal(|ui| {
+                            if package.switchable {
+                                let mut on = package.enabled;
+                                let label = t(if on {
+                                    "package-enabled"
+                                } else {
+                                    "package-disabled"
+                                });
+                                if ui
+                                    .add_enabled_ui(!switch_locked, |ui| {
+                                        orange_ui_controls::checkbox(
+                                            ui,
+                                            Surface::Panel,
+                                            orange_ui_controls::CheckStyle::Toggle,
+                                            &mut on,
+                                            label,
+                                        )
+                                    })
+                                    .inner
+                                    .on_hover_text(t("package-enabled-hint"))
+                                    .on_disabled_hover_text(t("package-in-use"))
+                                    .changed()
+                                {
+                                    switch = Some((package.id.to_owned(), name.to_owned(), on));
+                                }
                             }
+                            if package.kind == PackageKind::Installed
+                                && let Some(key) = &key
+                            {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if controls::button(
+                                            ui,
+                                            Surface::Panel,
+                                            controls::Action::Destructive,
+                                            !removal_locked,
+                                            egui::Button::new((
+                                                icons::text(icons::DELETE),
+                                                t("remove-package"),
+                                            ))
+                                            .truncate(),
+                                        )
+                                        .on_hover_text(t("remove-package"))
+                                        .on_disabled_hover_text(t("package-in-use"))
+                                        .clicked()
+                                        {
+                                            self.pending_package_removal = Some(key.clone());
+                                        }
+                                    },
+                                );
+                            }
+                        });
+                        if switch_locked || removal_locked {
+                            ui.weak(t("package-used-by-graph"))
+                                .on_hover_text(t("package-in-use"));
                         }
                         // What the package may reach: unticking a box revokes it for
                         // graphs started from now on.
-                        if let (Ok(id), Ok(version)) = (package.id.parse(), package.version.parse())
-                        {
-                            let key = orange_host::PackageKey { id, version };
+                        if let Some(key) = key {
                             if let (Some(requested), Some(access)) =
                                 (host.requested_grants(&key), host.access(&key))
                                 && requested != orange_host::Grants::default()
@@ -2881,30 +2896,12 @@ impl Editor {
                                 }
                             }
                         }
-                        if matches!(package.kind, PackageKind::Installed)
-                            && let (Ok(id), Ok(version)) =
-                                (package.id.parse(), package.version.parse())
-                            && controls::button(
-                                ui,
-                                Surface::Panel,
-                                controls::Action::Destructive,
-                                true,
-                                egui::Button::new((
-                                    icons::text(icons::DELETE),
-                                    t("remove-package"),
-                                )),
-                            )
-                            .clicked()
-                        {
-                            self.pending_package_removal =
-                                Some(orange_host::PackageKey { id, version });
-                        }
                     });
             }
             if let Some((id, name, on)) = switch {
                 self.switch_package(host, &id, &name, on);
             }
-            if let Some((key, access)) = access_change.take() {
+            if let Some((key, access)) = access_change {
                 match host.set_access(&key, access) {
                     Ok(()) => {
                         self.previews.invalidate();
@@ -2995,7 +2992,6 @@ impl Editor {
                 .any(|node| node.id == selected && node.ports.is_empty())
         {
             self.panels.properties = true;
-            self.panels.packages = false;
         }
         if done.rename_node.is_some() {
             self.renaming_node = None;
@@ -3811,14 +3807,12 @@ mod tests {
         editor.panels = Panels {
             nodes: false,
             properties: false,
-            packages: false,
             log: false,
         };
         assert!(draw(&mut editor, &mut host) > 0);
         let alone = editor.canvas().size();
         editor.panels = Panels {
             nodes: true,
-            packages: false,
             log: true,
             properties: true,
         };
@@ -3828,7 +3822,6 @@ mod tests {
         editor.panels = Panels {
             nodes: false,
             properties: false,
-            packages: false,
             log: false,
         };
         assert!(draw(&mut editor, &mut host) > 0);

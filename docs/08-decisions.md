@@ -169,8 +169,9 @@ replaced by a restart. Off mirrors removal for new work: an installed version le
 the registry through `PackageStore::remove` and is installed again from its kept
 archive, with its files and grants, when turned on; a native service package's
 provider is withdrawn and published again through two store operations reserved for
-providers that belong to no package record. Running flows keep what they were
-compiled with. The base and clock nodes are core and cannot be turned off by the
+providers that belong to no package record. A running or paused graph blocks
+disabling any package it uses and removing the versions it uses. The base and
+clock nodes are core and cannot be turned off by the
 user; an application may still leave them out at start. Rejected: an off flag
 checked at document open, which would leave the registry offering nodes that cannot
 be used, and unregistering a native package's definitions, which would make turning

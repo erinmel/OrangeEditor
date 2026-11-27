@@ -460,6 +460,7 @@ impl Desktop {
             return;
         }
         if request == FileRequest::NativePlugins {
+            self.native.sort();
             self.native.open = true;
             return;
         }

@@ -14,9 +14,31 @@ pub(super) struct PackageImport {
 }
 
 impl Editor {
+    fn draft_uses_package(&self, id: &str, version: Option<&str>) -> bool {
+        self.document.as_ref().is_some_and(|document| {
+            document
+                .draft
+                .document()
+                .bodies()
+                .flat_map(|body| body.nodes.values())
+                .filter_map(|node| node.provider.as_ref())
+                .any(|provider| {
+                    provider.package == id && version.is_none_or(|v| provider.version == v)
+                })
+        })
+    }
+
+    pub(super) fn package_in_use(&self, host: &Host, id: &str, version: Option<&str>) -> bool {
+        host.package_in_use(id, version) || self.draft_uses_package(id, version)
+    }
+
     /// Turns package `id` (shown as `name`) off or on in the running host. New
-    /// documents follow at once; running graphs keep the version they started with.
+    /// documents follow at once. The host refuses to turn off packages in use.
     pub(super) fn switch_package(&mut self, host: &mut Host, id: &str, name: &str, on: bool) {
+        if !on && self.package_in_use(host, id, None) {
+            self.say_at(NoteLevel::Error, t("package-in-use").to_owned());
+            return;
+        }
         match host.set_enabled(id, on) {
             Ok(()) => {
                 self.previews.invalidate();
@@ -44,6 +66,7 @@ impl Editor {
         let Some(key) = &self.pending_package_removal else {
             return;
         };
+        let in_use = self.package_in_use(host, key.id.as_str(), Some(key.version.as_str()));
         let modal = orange_ui_controls::modal(ctx, egui::Id::unique("orange-remove-package")).show(
             ctx,
             |ui| {
@@ -53,16 +76,20 @@ impl Editor {
                     "remove-package-hint",
                     &[("package", key.to_string().into())],
                 ));
+                if in_use {
+                    ui.label(t("package-in-use"));
+                }
                 controls::dialog_actions(
                     ui,
                     Action::Destructive,
-                    true,
+                    !in_use,
                     egui::Button::new((icons::text(icons::DELETE), t("remove-package"))),
                 )
             },
         );
         let (cancel, remove) = &modal.inner;
-        if remove.clicked()
+        if !in_use
+            && remove.clicked()
             && let Some(key) = self.pending_package_removal.take()
         {
             match host.uninstall(&key) {
@@ -220,6 +247,79 @@ mod tests {
     }
 
     #[test]
+    fn package_manager_keeps_import_and_search_inline_and_filters_by_id() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        host.install(&remember_archive(), Grants::default())
+            .unwrap();
+        let mut editor = Editor::new();
+        editor.file_dialogs = true;
+        editor.package_search = "org.example.tools".to_owned();
+        let ctx = egui::Context::default();
+        icons::install(&ctx);
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(480.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ui| editor.package_manager(ui, &mut host),
+        );
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some((text.galley.text().to_owned(), text.pos)),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        let import = labels
+            .iter()
+            .find(|(label, _)| label == t("import-package"))
+            .unwrap()
+            .1;
+        let matches: Vec<_> = labels
+            .iter()
+            .filter(|(label, _)| label == "org.example.tools")
+            .collect();
+        assert_eq!(
+            matches.len(),
+            2,
+            "the query and its matching package are both visible"
+        );
+        let search = matches[0].1;
+        assert!(search.x > import.x && (search.y - import.y).abs() < 6.0);
+        assert!(!labels.iter().any(|(label, _)| label == "org.orange.base"));
+    }
+
+    #[test]
+    fn a_stopped_open_graph_protects_its_package_nodes() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let key = host
+            .install(&remember_archive(), Grants::default())
+            .unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(
+            &mut host,
+            include_str!("../../orange-cli/graphs/remember-on-trigger.json").to_owned(),
+        );
+        let id = key.id.as_str();
+        let version = key.version.as_str();
+        assert!(!host.package_in_use(id, None));
+        assert!(editor.package_in_use(&host, id, Some(version)));
+        editor.switch_package(&mut host, id, id, false);
+        assert!(
+            host.packages()
+                .any(|package| package.id == id && package.enabled)
+        );
+
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        assert!(!editor.package_in_use(&host, id, Some(version)));
+    }
+
+    #[test]
     fn the_packages_panel_turns_an_installed_package_off_and_on_while_a_flow_runs() {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let _ = host
@@ -227,7 +327,7 @@ mod tests {
             .unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        editor.add_node(&mut host, "core/on-manual").unwrap();
+        editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
         editor.run(&mut host);
         let flow = editor.document.as_ref().unwrap().flow.as_ref().unwrap().0;
         let placeable = |host: &Host| {
@@ -240,24 +340,35 @@ mod tests {
         assert_eq!(switches(&host), 1);
 
         let ctx = egui::Context::default();
-        for on in [false, true] {
+        let using_package = host
+            .open(include_str!(
+                "../../orange-cli/graphs/remember-on-trigger.json"
+            ))
+            .unwrap();
+        for (blocked, on) in [(true, true), (false, false), (false, true)] {
+            let label = t(if blocked || !on {
+                "package-enabled"
+            } else {
+                "package-disabled"
+            });
             let mut frame = |events| {
                 ctx.run_ui(
                     egui::RawInput {
                         events,
                         ..Default::default()
                     },
-                    |ui| editor.packages_panel(ui, &mut host),
+                    |ui| editor.package_manager(ui, &mut host),
                 )
             };
             let mut toggle = None;
+            let mut remove = None;
             for _ in 0..3 {
                 let output = frame(Vec::new());
                 let found: Vec<_> = output
                     .shapes
                     .iter()
                     .filter_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) if text.galley.text() == t("package-enabled") => {
+                        egui::Shape::Text(text) if text.galley.text() == label => {
                             Some(text.pos + text.galley.size() * 0.5)
                         }
                         _ => None,
@@ -265,12 +376,31 @@ mod tests {
                     .collect();
                 assert!(found.len() <= 1, "one switch is shown");
                 toggle = found.first().copied().or(toggle);
+                remove = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == t("remove-package") => {
+                            Some(text.pos + text.galley.size() * 0.5)
+                        }
+                        _ => None,
+                    })
+                    .or(remove);
                 output.drop_without_applying_deltas();
             }
             let pos = toggle.expect("package switch");
+            let remove = remove.expect("package removal button");
+            assert!(remove.x > pos.x && (remove.y - pos.y).abs() < 2.0);
             orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
                 frame(events).drop_without_applying_deltas();
             });
+            if blocked {
+                orange_testkit::ui::click(remove, egui::PointerButton::Primary, |events| {
+                    frame(events).drop_without_applying_deltas()
+                });
+                assert!(editor.pending_package_removal.is_none());
+                host.close(using_package).unwrap();
+            }
             let tools = host
                 .packages()
                 .find(|package| package.id == "org.example.tools")

@@ -19,6 +19,7 @@ desktop-package-too-large = アーカイブがパッケージのサイズ上限�
 desktop-bundle-filter = 共有 OrangeEditor グラフ
 desktop-bundle-error = 共有グラフを開けませんでした
 desktop-native-title = フルアクセスプラグイン
+desktop-native-empty = ネイティブプラグインのライブラリが見つかりません。
 desktop-native-risk = ネイティブプラグインは OrangeEditor 内でユーザーと同じ権限で動作します。ファイルの読み書き、ネットワークやデバイスへのアクセスができ、アプリが停止することもあります。信頼できる配布元のプラグインだけを、ご自身の責任で追加してください。
 desktop-native-vault = プラグインはユーザーと同じ権限で OS の資格情報ストアを読み取れるため、OrangeEditor の資格情報保護は適用されません。グラフや書き出し、共有ファイルに秘密情報が含まれることはありません。
 desktop-native-folder = プラグインライブラリは { $folder } に配置します。

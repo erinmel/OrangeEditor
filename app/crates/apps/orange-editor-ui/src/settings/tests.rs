@@ -159,6 +159,7 @@ fn settings_rows_align_controls_and_stack_when_the_column_would_not_fit() {
 #[test]
 fn done_fills_the_sidebar_footer_or_the_compact_footer() {
     for width in [380.0, 960.0] {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.settings_open = true;
         editor.settings_tab = Section::Display;
@@ -175,7 +176,7 @@ fn done_fills_the_sidebar_footer_or_the_compact_footer() {
                     ..Default::default()
                 },
                 |ui| {
-                    window = editor.settings_window(ui.ctx()).unwrap();
+                    window = editor.settings_window(ui.ctx(), &mut host).unwrap();
                 },
             );
             let shapes = std::mem::take(&mut output.shapes);
@@ -275,6 +276,7 @@ fn appearance_switches_and_persists_including_system() {
 
 #[test]
 fn one_search_filters_keyboard_shortcuts_on_a_compact_window() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.settings_open = true;
     editor.settings_tab = Section::Shortcuts;
@@ -288,7 +290,7 @@ fn one_search_filters_keyboard_shortcuts_on_a_compact_window() {
             ..Default::default()
         },
         |ui| {
-            editor.settings_window(ui.ctx()).unwrap();
+            editor.settings_window(ui.ctx(), &mut host).unwrap();
         },
     )
     .drop_without_applying_deltas();
@@ -303,7 +305,7 @@ fn one_search_filters_keyboard_shortcuts_on_a_compact_window() {
                 ..Default::default()
             },
             |ui| {
-                let rect = editor.settings_window(ui.ctx()).unwrap();
+                let rect = editor.settings_window(ui.ctx(), &mut host).unwrap();
                 assert!(rect.width() < screen.width());
             },
         );
@@ -396,6 +398,7 @@ fn interface_scale_changes_only_after_selecting_a_dropdown_option() {
 
 #[test]
 fn changing_settings_sections_preserves_window_width() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.settings_open = true;
     let context = egui::Context::default();
@@ -406,6 +409,7 @@ fn changing_settings_sections_preserves_window_width() {
         Section::Search,
         Section::Shortcuts,
         Section::Display,
+        Section::Extensions,
         Section::Search,
     ] {
         editor.settings_tab = section;
@@ -419,7 +423,7 @@ fn changing_settings_sections_preserves_window_width() {
                     ..Default::default()
                 },
                 |ui| {
-                    let rect = editor.settings_window(ui.ctx()).unwrap();
+                    let rect = editor.settings_window(ui.ctx(), &mut host).unwrap();
                     widths.push(rect.width());
                 },
             );
@@ -440,6 +444,7 @@ fn changing_settings_sections_preserves_window_width() {
 #[test]
 fn shortcut_columns_stay_aligned_and_the_binding_opens_the_editor() {
     for [width, height] in [[1200.0, 800.0], [490.0, 470.0]] {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.settings_open = true;
         editor.settings_tab = Section::Shortcuts;
@@ -458,7 +463,7 @@ fn shortcut_columns_stay_aligned_and_the_binding_opens_the_editor() {
                     ..Default::default()
                 },
                 |ui| {
-                    let _ = editor.settings_window(ui.ctx());
+                    let _ = editor.settings_window(ui.ctx(), &mut host);
                 },
             );
             let shapes = std::mem::take(&mut output.shapes);
@@ -507,6 +512,7 @@ fn shortcut_columns_stay_aligned_and_the_binding_opens_the_editor() {
 
 #[test]
 fn settings_title_uses_strong_text_and_general_exposes_the_preview_preference() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.settings_open = true;
     let ctx = egui::Context::default();
@@ -517,7 +523,7 @@ fn settings_title_uses_strong_text_and_general_exposes_the_preview_preference() 
     let mut seen_preview = false;
     for _ in 0..3 {
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            editor.settings_window(ui.ctx()).unwrap();
+            editor.settings_window(ui.ctx(), &mut host).unwrap();
         });
         for shape in &output.shapes {
             if let egui::Shape::Text(text) = &shape.shape {

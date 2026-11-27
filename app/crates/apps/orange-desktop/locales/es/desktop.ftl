@@ -23,6 +23,7 @@ desktop-package-too-large = El archivo excede el límite de tamaño del paquete.
 desktop-bundle-filter = Grafo compartido de OrangeEditor
 desktop-bundle-error = No se pudo abrir el grafo compartido
 desktop-native-title = Complementos con acceso total
+desktop-native-empty = No se encontraron bibliotecas de complementos nativos.
 desktop-native-risk = Un complemento nativo se ejecuta dentro de OrangeEditor con todos tus permisos. Puede leer y cambiar tus archivos, usar la red y tus dispositivos, y cerrar el programa. Instala uno solo si confías en su origen; lo haces bajo tu propio riesgo.
 desktop-native-vault = También puede leer el almacén de credenciales del sistema operativo como tú, así que la protección de credenciales de OrangeEditor no se aplica a él. Los grafos, las exportaciones y los archivos compartidos nunca contienen secretos.
 desktop-native-folder = Las bibliotecas de complementos van en { $folder }.

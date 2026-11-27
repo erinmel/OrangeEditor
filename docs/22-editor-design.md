@@ -700,22 +700,24 @@ the shared-control and editor tests before adopting the change more broadly.
   messages and Log message use this treatment. Clicking the canvas area enters
   editing without resizing the card. Enter adds a line, Ctrl/Cmd+Enter or clicking
   away commits, and Escape discards the canvas edit.
-* **Packages** lists installed and built-in providers with search. Import package
+* **Settings → Extensions → Packages** lists installed and built-in providers with search. Import package
   opens the desktop archive picker, then shows the requested capabilities for
   individual approval. Installing makes the package available to the node tree in
   the same session and keeps active flows pinned to their providers (04).
   Installed versions have a Remove package command with confirmation. Built-in
-  providers stay in the list. Removing a version preserves running flows and the
-  saved provider bindings of graphs that use it. The host refuses removal while
-  another installed package depends on that version. Installed and native service
-  packages also have an On switch that turns them off and on at once
-  (`Host::set_enabled`, 04): off, their nodes leave the node tree and graphs that use
-  them do not open, while running flows keep them. The base and clock nodes are
-  core and have no switch.
+  providers stay in the list. Removing a version preserves saved provider bindings.
+  Removal is blocked while a running or paused graph uses that version, or another
+  installed package depends on it. Installed and native service packages have an
+  On/Off switch (`Host::set_enabled`, 04). A running or paused graph blocks turning
+  off any package whose nodes it uses. Once off, its nodes leave the node tree and
+  graphs that use them cannot run. The base and clock nodes are core and have no switch.
+  The editor also protects the current open graph while it is stopped. Remove its
+  package nodes or close the graph to make those actions available.
 * **Access per package.** An installed package that asks for grants shows them as
   boxes in its row; unticking one revokes it for graphs started afterwards
   (`Host::set_access`, 04). Nothing is ticked for the person at import.
-* **Share with packages** saves the open graph with the stored archives of the
+* The **Graph bundles** menu under **Settings → Extensions** groups opening and sharing. **Share graph with packages**
+  saves the open graph with the stored archives of the
   packages it is locked to as one `.orangebundle` file (`Host::export`); packages
   without a stored archive are named in the Log. **Open shared graph** lists what the
   file carries, marks what is installed, asks for each missing package's grants and
@@ -725,7 +727,8 @@ the shared-control and editor tests before adopting the change more broadly.
   come from the saved signature, its title tooltip and Properties name the package and
   version, and Properties offers Install package. The node runs once the package is
   installed.
-* **Full-access plugins** (desktop only) lists native plugin libraries waiting for a
+* **Settings → Extensions** includes package management and opens the full-access plugin manager (desktop only).
+  It lists native plugin libraries waiting for a
   decision and the ones allowed, with the risk in plain words, and opens at start
   when a new or changed library waits.
 

@@ -24,16 +24,23 @@ pub(crate) enum Section {
     Search,
     Display,
     Shortcuts,
+    Extensions,
 }
 
 impl Section {
-    const ALL: [Self; 3] = [Self::Search, Self::Display, Self::Shortcuts];
+    const ALL: [Self; 4] = [
+        Self::Search,
+        Self::Display,
+        Self::Shortcuts,
+        Self::Extensions,
+    ];
 
     fn title_key(self) -> &'static str {
         match self {
             Self::Search => "search-heading",
             Self::Display => "display-heading",
             Self::Shortcuts => "shortcuts-heading",
+            Self::Extensions => "settings-extensions",
         }
     }
 
@@ -74,13 +81,26 @@ impl Section {
                 "wireless-opacity",
             ],
             Self::Shortcuts => &["shortcuts-section-words", "restore-default-shortcuts"],
+            Self::Extensions => &[
+                "packages",
+                "import-package",
+                "native-plugins",
+                "native-plugins-hint",
+                "graph-bundles",
+                "open-shared-graph",
+                "share-with-packages",
+            ],
         });
         i18n::message_relevance(query, &labels, &[])
     }
 }
 
 impl Editor {
-    pub(crate) fn settings_window(&mut self, ctx: &egui::Context) -> Option<egui::Rect> {
+    pub(crate) fn settings_window(
+        &mut self,
+        ctx: &egui::Context,
+        host: &mut Host,
+    ) -> Option<egui::Rect> {
         let mut open = self.settings_open;
         if !open {
             return None;
@@ -106,7 +126,7 @@ impl Editor {
             .show(ctx, |ui| {
                 let size = ui.available_size().clamp(min_size, max_size);
                 let (content, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                self.settings_content(ui, ctx, content)
+                self.settings_content(ui, ctx, content, host)
             });
         self.settings_open = open
             && !shown
@@ -123,6 +143,7 @@ impl Editor {
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         content: egui::Rect,
+        host: &mut Host,
     ) -> bool {
         let palette = orange_ui_controls::Theme::of(ui);
         let footer_height = CONTROL_HEIGHT + SPACE_MEDIUM * 2.0;
@@ -238,6 +259,33 @@ impl Editor {
                 page.add_space(SPACE_MEDIUM);
             }
             match self.settings_tab {
+                Section::Extensions => {
+                    page.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+                    self.graph_bundle_menu(&mut page, host);
+                    if self.native_plugins
+                        && controls::button(
+                            &mut page,
+                            Surface::Dialog,
+                            Action::Secondary,
+                            true,
+                            egui::Button::new((
+                                icons::text(icons::FULL_ACCESS),
+                                t("manage-native-plugins"),
+                            )),
+                        )
+                        .clicked()
+                    {
+                        self.ask(FileRequest::NativePlugins);
+                        ctx.request_repaint();
+                        return true;
+                    }
+                    if self.native_plugins {
+                        page.weak(t("native-plugins-hint"));
+                        page.separator();
+                    }
+                    page.strong(t("packages"));
+                    self.package_manager(&mut page, host);
+                }
                 Section::Shortcuts => self.keybindings_ui(
                     &mut page,
                     if self.settings_tab.relevance(&prepared).is_some() {
@@ -318,7 +366,7 @@ impl Editor {
         .changed()
     }
 
-    fn settings_navigation(&mut self, nav: &mut egui::Ui, matches: [bool; 3], compact: bool) {
+    fn settings_navigation(&mut self, nav: &mut egui::Ui, matches: [bool; 4], compact: bool) {
         if !matches.iter().any(|&found| found) {
             return;
         }
@@ -341,6 +389,7 @@ impl Editor {
                         Section::Search => icons::SEARCH,
                         Section::Display => icons::DISPLAY,
                         Section::Shortcuts => icons::KEYBOARD,
+                        Section::Extensions => icons::PACKAGES,
                     };
                     if orange_ui_controls::navigation::sidebar_row(
                         nav,

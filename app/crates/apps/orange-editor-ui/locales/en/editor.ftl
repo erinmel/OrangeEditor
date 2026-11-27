@@ -526,7 +526,7 @@ package-status =
         [built-in] Built in
        *[installed] Installed
     } · { $active ->
-        [yes] in use
+        [yes] available
        *[no] off
     }
 search-packages-hint = Search packages
@@ -731,7 +731,7 @@ search-variables = Filter by name, type, or scope
 search-connections = Filter by name or protocol
 search-types = Filter by name or kind
 no-declaration-matches = No matches.
-import-package = Import package…
+import-package = Import package
 install-package = Install package
 package-permissions = Allow this package to use
 package-grant-log = Write to its log
@@ -741,10 +741,10 @@ package-grant-http-local = Make HTTP requests to this computer and the local net
 package-grant-compute = Use more processing time and memory transfer per call
 package-grant-websocket = Send messages on the WebSocket connection its node names
 package-access-changed = Changed what { $package } may use. Graphs started from now on use the new access.
-share-with-packages = Share with packages…
+share-with-packages = Share graph with packages
 share-with-packages-hint = Save this graph in one file together with the installed packages it uses.
 open-shared-graph = Open shared graph
-open-shared-graph-ellipsis = Open shared graph…
+graph-bundles = Graph bundles
 bundle-package-installed = Already installed.
 bundle-not-carried = Also needed, not included in the file:
 bundle-open-only = Open without installing
@@ -756,7 +756,9 @@ node-needs-package = Needs package { $package } { $version }
 node-needs-package-any = Needs package { $package }
 missing-package-hint = The node keeps its settings and wires. Install the package to run it.
 install-missing-package = Install package…
-native-plugins = Full-access plugins…
+settings-extensions = Extensions
+native-plugins = Native plugins
+manage-native-plugins = Manage full-access plugins
 native-plugins-hint = Native plugin libraries run with all of your rights. Choose which ones may load.
 package-no-permissions = This package requests no additional permissions.
 package-imported = Installed { $name }.
@@ -780,13 +782,16 @@ connection-use-count = { $count ->
     }
 log-level = Log level
 remove-package = Remove package
-remove-package-hint = Remove { $package }? Saved graphs that use this version will need it to run again. Running graphs keep their current version.
+remove-package-hint = Remove { $package }? Saved graphs that use this version will need it to run again.
 package-removed = Removed { $package }.
 package-remove-failed = Package removal failed. { $error }
 package-enabled = On
-package-enabled-hint = Turned off, its nodes cannot be added and graphs that use them do not open. Running graphs keep it. Its files and permissions are kept.
+package-disabled = Off
+package-used-by-graph = Used by a graph
+package-enabled-hint = Turning this package off hides its nodes and prevents graphs that use them from running. Its files and permissions are kept.
+package-in-use = Stop any runs using this package and close the graph or remove its package nodes before turning it off or uninstalling it.
 package-turned-on = Turned on { $package }.
-package-turned-off = Turned off { $package }. Running graphs keep using it.
+package-turned-off = Turned off { $package }.
 package-switch-failed = The package could not be turned off or on. { $error }
 rename-node = Rename node
 rename-node-double-click = Double-click to rename

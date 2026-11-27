@@ -368,17 +368,11 @@ fn a_package_node_made_as_a_graph_runs_like_any_other_node() {
 
     let text = remember_document(&host);
     let flow = host.open(&text).unwrap();
-    host.uninstall(&key).unwrap();
-    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
-    assert!(
-        host.search_nodes("remember", "en")
-            .iter()
-            .all(|node| node.definition != REMEMBER)
-    );
     host.trigger(flow, node(1), None).unwrap();
     until("the graph node's result", || {
         read_total(&host, flow) == Some(Value::I64(5))
     });
+    host.close(flow).unwrap();
 }
 
 /// A document whose manual entry runs the `remember` node of [`graph_package`] with 5
@@ -745,7 +739,7 @@ fn state_of(host: &Host, id: &str) -> (bool, bool, bool) {
 }
 
 #[test]
-fn an_installed_package_turned_off_leaves_new_documents_but_not_running_flows() {
+fn an_installed_package_can_be_switched_off_once_no_active_graph_uses_it() {
     let directory = package_dir("switch-installed");
     let start = || {
         let options = HostOptions {
@@ -765,6 +759,22 @@ fn an_installed_package_turned_off_leaves_new_documents_but_not_running_flows() 
         .unwrap();
     let text = remember_document(&host);
     let flow = host.open(&text).unwrap();
+    let other = host.open(&text).unwrap();
+    host.close(flow).unwrap();
+    host.pause(other).unwrap();
+    assert!(matches!(
+        host.set_enabled(TOOLS, false),
+        Err(HostError::Switch(_))
+    ));
+    assert!(matches!(host.uninstall(&key), Err(HostError::Uninstall(_))));
+    assert_eq!(state_of(&host, TOOLS), (true, true, true));
+
+    // A live edit can release the package without stopping the graph.
+    let mut draft = host.draft(&text).unwrap();
+    assert!(host.remove_nodes(&mut draft, &[node(3), node(4)]).unwrap());
+    assert!(host.update(other, &draft.text().unwrap()).unwrap().changed);
+    assert!(host.info(other).is_some());
+    assert!(!host.package_in_use(TOOLS, None));
 
     host.set_enabled(TOOLS, false).unwrap();
     assert_eq!(state_of(&host, TOOLS), (false, false, true));
@@ -778,12 +788,6 @@ fn an_installed_package_turned_off_leaves_new_documents_but_not_running_flows() 
     let listed = installed(&host).next().unwrap();
     assert_eq!(listed.manifest.unwrap().key(), &key);
     assert_eq!(host.access(&key), Some(&access));
-    // The running flow keeps the provider it was compiled with.
-    host.trigger(flow, node(1), None).unwrap();
-    until("the graph node's result", || {
-        read_total(&host, flow) == Some(Value::I64(5))
-    });
-
     host.set_enabled(TOOLS, true).unwrap();
     assert_eq!(state_of(&host, TOOLS), (true, true, true));
     let again = host.open(&text).unwrap();
@@ -791,6 +795,7 @@ fn an_installed_package_turned_off_leaves_new_documents_but_not_running_flows() 
     until("the graph node's result again", || {
         read_total(&host, again) == Some(Value::I64(5))
     });
+    host.close(again).unwrap();
 
     // The choice is saved with the package directory.
     host.set_enabled(TOOLS, false).unwrap();
@@ -857,17 +862,21 @@ fn a_native_package_turns_off_and_on_in_the_running_host() {
     let text = draft.text().unwrap();
     let flow = host.open(&text).unwrap();
 
+    assert!(matches!(
+        host.set_enabled(NATIVE, false),
+        Err(HostError::Switch(_))
+    ));
+    host.trigger(flow, trigger, None).unwrap();
+    host.close(flow).unwrap();
     host.set_enabled(NATIVE, false).unwrap();
     assert_eq!(state_of(&host, NATIVE), (false, false, true));
     assert!(!placeable(&host));
     assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
-    host.trigger(flow, trigger, None).unwrap();
-    host.close(flow).unwrap();
-
     host.set_enabled(NATIVE, true).unwrap();
     assert_eq!(state_of(&host, NATIVE), (true, true, true));
     assert!(placeable(&host));
-    assert!(host.open(&text).is_ok());
+    let flow = host.open(&text).unwrap();
+    host.close(flow).unwrap();
 
     // Turned off, it stays off in the next host, and turns on there too.
     host.set_enabled(NATIVE, false).unwrap();

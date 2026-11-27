@@ -193,6 +193,7 @@ impl NativePlugins {
         let mut approve = None;
         let mut revoke = None;
         let _ = egui::Window::new(t("desktop-native-title"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -204,6 +205,21 @@ impl NativePlugins {
                     "desktop-native-folder",
                     &[("folder", self.directory.display().to_string().into())],
                 ));
+                if self.pending.is_empty() && self.approved.is_empty() {
+                    ui.separator();
+                    ui.label(t("desktop-native-empty"));
+                }
+                for file in self.approved.keys().filter(|file| {
+                    !self.loaded.iter().any(|(loaded, ..)| loaded == *file)
+                        && !self.failed.iter().any(|(failed, _)| failed == *file)
+                }) {
+                    ui.horizontal(|ui| {
+                        ui.label(file);
+                        if ui.button(t("desktop-native-revoke")).clicked() {
+                            revoke = Some(file.clone());
+                        }
+                    });
+                }
                 for library in &self.pending {
                     ui.separator();
                     ui.strong(&library.file);

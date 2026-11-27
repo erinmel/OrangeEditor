@@ -461,7 +461,7 @@ impl crate::Editor {
               "scroll_pans":self.canvas.scroll_pans,"language":self.language,
               "scale":self.preferred_scale.unwrap_or(1.0),"tab":self.preferred_tab.key(),
               "panels":{"nodes":self.panels.nodes,"properties":self.panels.properties,
-                        "packages":self.panels.packages,"log":self.panels.log},
+                        "log":self.panels.log},
               "appearance":self.preferred_theme.map(egui::ThemePreference::name),
               "node_search_previews":self.node_search_previews,
               "wireless_opacity":self.canvas.wireless_opacity})
@@ -509,10 +509,9 @@ impl crate::Editor {
                 .get("properties")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(self.panels.properties);
-            self.panels.packages = panels
-                .get("packages")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(self.panels.packages);
+            // Old profiles could have only the Packages tab visible on the right.
+            self.panels.properties |=
+                panels.get("packages").and_then(serde_json::Value::as_bool) == Some(true);
             self.panels.log = panels
                 .get("log")
                 .and_then(serde_json::Value::as_bool)

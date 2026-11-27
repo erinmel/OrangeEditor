@@ -246,8 +246,8 @@ impl Host {
 
     /// Turns package `id` off or on in this host: a native service package or an
     /// installed package. Turned off, its nodes can no longer be placed and a document
-    /// that uses them does not open; flows already running keep the providers they were
-    /// compiled with. An installed package keeps its files and grants, and turning it on
+    /// that uses them does not open. Disabling is refused while any running or paused
+    /// flow uses the package. An installed package keeps its files and grants, and turning it on
     /// installs it again from its archive. A package another installed package depends
     /// on cannot be turned off.
     ///
@@ -263,6 +263,9 @@ impl Host {
         }
         if self.options.disabled_packages.contains(id) {
             return refused("is left out by the application");
+        }
+        if !enabled && self.package_in_use(id, None) {
+            return refused("is used by an active graph");
         }
         if let Some(at) = self.built_in.iter().position(|package| package.id == id) {
             self.switch_native(at, enabled)?;
@@ -443,12 +446,30 @@ impl Host {
         built_in.chain(installed).chain(inactive)
     }
 
+    /// Whether a running or paused graph uses the package's nodes. Pass a version to
+    /// check only that version, or `None` to check all versions.
+    pub fn package_in_use(&self, id: &str, version: Option<&str>) -> bool {
+        self.flows.values().any(|flow| {
+            flow.thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
+                && flow.packages.iter().any(|(package, used_version)| {
+                    package == id && version.is_none_or(|version| used_version == version)
+                })
+        })
+    }
+
     /// Removes an installed package. Its nodes can no longer be placed, and a document
-    /// that uses them no longer opens; flows already running keep the code they
-    /// started with. A package another installed package depends on is refused. With
+    /// that uses them no longer opens. Removal is refused if a running or paused flow
+    /// or another installed package uses that version. With
     /// [`HostOptions::package_dir`] it is also removed from the directory, so it stays
     /// removed when the host next starts. A package that is turned off is removed too.
     pub fn uninstall(&mut self, key: &PackageKey) -> Result<(), HostError> {
+        if self.package_in_use(key.id.as_str(), Some(key.version.as_str())) {
+            return Err(HostError::Uninstall(format!(
+                "`{key}` is used by an active graph"
+            )));
+        }
         let left_out = self.inactive.iter().position(|inactive| {
             inactive.id == key.id.as_str() && inactive.version == key.version.as_str()
         });
@@ -689,7 +710,7 @@ impl Host {
         let mut scratch = graphs::scratch(&empty, bodies)
             .ok_or_else(|| refused("could not build a validation document".into()))?;
         let input_bytes = scratch.to_string().len();
-        graphs::link(&mut scratch, known, input_bytes).map_err(refused)?;
+        let _ = graphs::link(&mut scratch, known, input_bytes).map_err(refused)?;
         let document =
             from_json(&scratch.to_string()).map_err(|error| refused(error.to_string()))?;
         let analysis = analyzed(&document, registry);

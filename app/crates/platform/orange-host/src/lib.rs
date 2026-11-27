@@ -467,6 +467,7 @@ fn semantic(json: &str) -> Result<String, HostError> {
 /// A document ready to run.
 struct Prepared {
     document: GraphDocument,
+    packages: graphs::PackageVersions,
     registry: Arc<RegistrySnapshot>,
     plan: Arc<orange_compiler::ControlPlan>,
     opened: Opened,
@@ -555,6 +556,7 @@ impl std::fmt::Debug for SharedConnection {
 
 struct Flow {
     info: FlowInfo,
+    packages: graphs::PackageVersions,
     manual_types: BTreeMap<NodeId, TypeExpr>,
     manual_registry: Arc<RegistrySnapshot>,
     manual_generation: Arc<()>,
@@ -1405,22 +1407,30 @@ impl Host {
     /// Decodes a saved document and links the graph-implemented package nodes it uses.
     fn linked(&self, json: &str) -> Result<GraphDocument, HostError> {
         self.link_document(Self::decode_document(json)?)
+            .map(|(document, _)| document)
     }
 
     fn decode_document(json: &str) -> Result<GraphDocument, HostError> {
         from_json(json).map_err(|error| HostError::Document(error.to_string()))
     }
 
-    fn link_document(&self, mut linked: GraphDocument) -> Result<GraphDocument, HostError> {
+    fn link_document(
+        &self,
+        mut linked: GraphDocument,
+    ) -> Result<(GraphDocument, graphs::PackageVersions), HostError> {
         let document = |error: &dyn std::fmt::Display| HostError::Document(error.to_string());
-        if !self.graphs.is_empty() {
+        let packages = if self.graphs.is_empty() {
+            graphs::PackageVersions::new()
+        } else {
             let admitted = to_json(&linked).map_err(|error| document(&error))?;
             let mut saved = serde_json::from_str(&admitted).map_err(|error| document(&error))?;
-            graphs::link(&mut saved, &self.graphs, admitted.len()).map_err(HostError::Document)?;
+            let packages = graphs::link(&mut saved, &self.graphs, admitted.len())
+                .map_err(HostError::Document)?;
             linked = Self::decode_document(&saved.to_string())?;
-        }
+            packages
+        };
         let _ = self.replace_definitions(&mut linked)?;
-        Ok(linked)
+        Ok((linked, packages))
     }
 
     /// Rebuilds the nodes of `document` whose definitions a package replaced and this

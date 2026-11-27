@@ -22,6 +22,7 @@ pub const GRAPH_NODE_FORMAT: &str = "orange.graph-node";
 /// and definition version.
 pub(crate) type GraphKey = (String, String, String, u64);
 pub(crate) type Graphs = BTreeMap<GraphKey, Arc<GraphNode>>;
+pub(crate) type PackageVersions = BTreeSet<(String, String)>;
 
 /// One decoded `graphs/<name>.json`.
 #[derive(Debug)]
@@ -151,7 +152,7 @@ impl GraphNode {
     }
 }
 
-fn graph_of(node: &Json, graphs: &Graphs) -> Option<Arc<GraphNode>> {
+fn graph_of(node: &Json, graphs: &Graphs) -> Option<(GraphKey, Arc<GraphNode>)> {
     let provider = node.get("provider")?;
     if provider["id"] != GRAPH_PROVIDER {
         return None;
@@ -162,7 +163,8 @@ fn graph_of(node: &Json, graphs: &Graphs) -> Option<Arc<GraphNode>> {
         node["definition_id"].as_str()?.to_owned(),
         node["definition_version"].as_u64()?,
     );
-    graphs.get(&key).cloned()
+    let graph = graphs.get(&key)?.clone();
+    Some((key, graph))
 }
 
 /// The stable ID for a graph-local ID and its package, use site or connection.
@@ -275,6 +277,7 @@ fn fragment_for(
 struct LinkBudget {
     bytes: usize,
     functions: BTreeSet<String>,
+    packages: PackageVersions,
 }
 
 impl LinkBudget {
@@ -295,7 +298,8 @@ fn retarget_all(
     budget: &mut LinkBudget,
 ) -> Result<(), String> {
     for node in nodes.and_then(Json::as_array_mut).into_iter().flatten() {
-        if let Some(graph) = graph_of(node, graphs) {
+        if let Some(((package, version, ..), graph)) = graph_of(node, graphs) {
+            let _ = budget.packages.insert((package, version));
             let connection = node["config"]["connection"].as_str().map(str::to_owned);
             if let Some(trigger) = &graph.trigger {
                 // An entry exists at the root only; elsewhere the node stays as it is
@@ -379,13 +383,18 @@ fn add_support(document: &mut Map<String, Json>, graph: &GraphNode) {
 /// Links every graph-implemented node of a saved document, including those inside the
 /// functions it pulls in. A node whose graph is not installed is left as it is, and
 /// validation then reports its provider as unavailable.
-pub(crate) fn link(document: &mut Json, graphs: &Graphs, input_bytes: usize) -> Result<(), String> {
+pub(crate) fn link(
+    document: &mut Json,
+    graphs: &Graphs,
+    input_bytes: usize,
+) -> Result<PackageVersions, String> {
     let Some(root) = document.as_object_mut() else {
-        return Ok(());
+        return Ok(PackageVersions::new());
     };
     let mut budget = LinkBudget {
         bytes: (crate::MAX_DOCUMENT_BYTES as usize).saturating_sub(input_bytes),
         functions: BTreeSet::new(),
+        packages: PackageVersions::new(),
     };
     // Ordinary calls sharing a body add it once, and every new fragment is charged
     // before cloning its JSON. Bound the number of repeated full body traversals too.
@@ -403,7 +412,7 @@ pub(crate) fn link(document: &mut Json, graphs: &Graphs, input_bytes: usize) -> 
             )?;
         }
         if used.is_empty() {
-            return Ok(());
+            return Ok(budget.packages);
         }
         for (graph, linked) in used {
             match linked {

@@ -248,8 +248,9 @@ start. Graphs, exports and bundles still never hold secrets.
 Enabling and disabling (2026-11-12; `orange-host`): a package can be switched off by
 ID and on again without removing it, and the switch is saved beside the stored
 archives (`disabled.json`). Since 2026-11-26 `Host::set_enabled` applies to the
-running host the way uninstalling does (ADR-07): new documents cannot place or open
-the package's nodes, and running flows keep the providers they were compiled with.
+running host the way uninstalling does (ADR-07). Disabling is refused while a
+running or paused graph uses nodes from any version of the package. Once disabled,
+the package's nodes cannot be placed or used in a new run.
 An installed package keeps its archive, files and grants; it leaves the registry as
 a removal does and is installed again from its archive when turned on. A native
 service package keeps its definitions as passive metadata, and its provider and
@@ -282,7 +283,8 @@ the announced one. A feed is not signed: its authority is the `https://` origin 
 installed package named, and packages are installed at the user's own risk. The
 `orange` command has `packages`, `remove <id> <version>` and `updates [--apply]`.
 `Host::uninstall` removes a version from the registry and from the package directory;
-it is refused while another installed package depends on it.
+it is refused while a running or paused graph uses nodes from that exact version,
+or while another installed package depends on it.
 
 Session start (2026-11-11): the host calls `Session::start` on every connection of a
 flow once all of that flow's triggers are attached, at opening and after a live edit;
@@ -461,7 +463,7 @@ Hot addition immediately publishes new contributions. **Hot replacement of runni
 
 Update sequence: stage new immutable version → dependency/API/authority validation → request only new grants → instantiate → atomic registry publication → optional explicit graph migration/rebind → old generation drains. State migration occurs only at a declared stopped/checkpoint boundary with schema/handle validation; arbitrary continuation stacks, raw pointers, sockets and audio callbacks do not migrate. New authority cannot be silently inherited from old grants.
 
-Disable/removal hides package from new bindings and records a tombstone, then offers **drain**, **cancel affected runs**, or **leave pinned until they stop**. App stays open. Revocation is immediate policy enforcement: cancel prohibited I/O, revoke handles, drop pending callbacks, and fault affected activations even if old code remains pinned. Generation checks reject stale handles/messages. Delete files only after instance/task/session/UI/resource barriers report zero references. Trusted worker kill may be necessary after deadline; host-owned leases still clean up. Statically linked bundled machine code cannot physically unload; disabling its registrations is logical removal, communicated as such.
+The host refuses disable/removal while a running or paused graph uses the affected package nodes. Once allowed, disable/removal hides the affected providers from new bindings and the app stays open. Revocation is immediate policy enforcement: cancel prohibited I/O, revoke handles, drop pending callbacks, and fault affected activations even if old code remains pinned. Generation checks reject stale handles/messages. Delete files only after instance/task/session/UI/resource barriers report zero references. Trusted worker kill may be necessary after deadline; host-owned leases still clean up. Statically linked bundled machine code cannot physically unload; disabling its registrations is logical removal, communicated as such.
 
 Rollback restores previous registry generation/default selections, reinstates old package availability and preserves old graph locks. It cannot undo already committed file/network effects or restore revoked credentials. Failed installer/migration leaves the previous registry usable. Crash journal records staged/committed generation and pending cleanup; restart selects the last fully committed generation and reports recoverable stale files, never executes a half-staged worker.
 

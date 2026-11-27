@@ -293,7 +293,6 @@ impl Editor {
         self.renaming_node = Some(NodeRename::new(node, name));
         self.canvas.select(Some(node));
         self.panels.properties = true;
-        self.panels.packages = false;
         true
     }
 

@@ -364,7 +364,6 @@ impl Editor {
             (Command::Properties, MenuTarget::Node(node)) => {
                 self.canvas.select(Some(*node));
                 self.panels.properties = true;
-                self.panels.packages = false;
                 true
             }
             (Command::Rename, MenuTarget::Node(node)) => self.begin_node_rename(*node),
@@ -853,9 +852,8 @@ mod tests {
             Command::Properties | Command::Rename
         ) || !entry.shortcut.is_empty()));
         editor.panels.properties = false;
-        editor.panels.packages = true;
         assert!(editor.run_command(&mut host, Command::Properties));
-        assert!(editor.panels.properties && !editor.panels.packages);
+        assert!(editor.panels.properties);
         assert_eq!(editor.canvas.selected(), Some(id(2)));
         let wire = ((id(1), "then".to_owned()), (id(2), "in".to_owned()));
         editor.open_menu(MenuTarget::Wire(wire), [0.0, 0.0], egui::Pos2::ZERO);

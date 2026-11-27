@@ -32,6 +32,9 @@ pub const NODES: char = '\u{f716}'; // left_panel_open
 pub(crate) const NODE: char = '\u{e87b}'; // extension
 pub const PROPERTIES: char = '\u{e429}'; // tune
 pub const PACKAGES: char = '\u{f569}'; // package_2
+pub(crate) const IMPORT_PACKAGE: char = '\u{e168}'; // move_to_inbox
+pub(crate) const SHARE: char = '\u{e80d}'; // share
+pub(crate) const FULL_ACCESS: char = '\u{ef3d}'; // admin_panel_settings
 pub const LOG: char = '\u{eb8e}'; // terminal
 pub const SNAP: char = '\u{f016}'; // grid_4x4
 pub const GRID: char = '\u{e9b0}'; // grid_view
@@ -95,6 +98,9 @@ pub const ALL: &[char] = &[
     NODE,
     PROPERTIES,
     PACKAGES,
+    IMPORT_PACKAGE,
+    SHARE,
+    FULL_ACCESS,
     LOG,
     FIT,
     SNAP,

@@ -45,8 +45,6 @@ fn panel_and_group_shortcuts_work_from_the_editor() {
     let first = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     let second = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     editor.canvas.select_many(&[first, second]);
-    editor.panels.properties = false;
-    editor.panels.packages = true;
     let ctx = egui::Context::default();
     let mut press = |editor: &mut Editor, action| {
         let binding = original(action).unwrap();
@@ -77,9 +75,9 @@ fn panel_and_group_shortcuts_work_from_the_editor() {
     press(&mut editor, "left-panel");
     assert!(editor.panels.nodes);
     press(&mut editor, "right-panel");
-    assert!(!editor.panels.properties && !editor.panels.packages);
+    assert!(!editor.panels.properties);
     press(&mut editor, "right-panel");
-    assert!(!editor.panels.properties && editor.panels.packages);
+    assert!(editor.panels.properties);
     press(&mut editor, "snap");
     assert!(!editor.canvas.snap);
     press(&mut editor, "ungroup");
@@ -192,12 +190,13 @@ fn inline_shortcut_edit_preserves_row_spacing() {
 
 #[test]
 fn recording_a_conflict_only_reassigns_after_explicit_confirmation() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.settings_open = true;
     editor.settings_tab = crate::settings::Section::Shortcuts;
     editor.begin_shortcut_edit("duplicate", original("duplicate"));
     let context = egui::Context::default();
-    let frame = |editor: &mut Editor, events| {
+    let mut frame = |editor: &mut Editor, events| {
         let mut output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -208,7 +207,7 @@ fn recording_a_conflict_only_reassigns_after_explicit_confirmation() {
                 ..Default::default()
             },
             |ui| {
-                let _ = editor.settings_window(ui.ctx());
+                let _ = editor.settings_window(ui.ctx(), &mut host);
             },
         );
         let shapes = std::mem::take(&mut output.shapes);
@@ -304,7 +303,6 @@ fn panel_visibility_round_trips_and_old_preferences_keep_defaults() {
     let mut editor = Editor::new();
     editor.panels.nodes = false;
     editor.panels.properties = false;
-    editor.panels.packages = true;
     editor.panels.log = true;
     let saved = editor.preferences();
 
@@ -312,14 +310,16 @@ fn panel_visibility_round_trips_and_old_preferences_keep_defaults() {
     restored.restore_preferences(&saved);
     assert!(!restored.panels.nodes);
     assert!(!restored.panels.properties);
-    assert!(restored.panels.packages);
     assert!(restored.panels.log);
 
     let mut old = Editor::new();
     old.restore_preferences(&serde_json::json!({"version": 1}));
     assert!(old.panels.nodes);
     assert!(old.panels.properties);
-    assert!(!old.panels.packages);
+    old.restore_preferences(
+        &serde_json::json!({"version": 1, "panels": {"properties": false, "packages": true}}),
+    );
+    assert!(old.panels.properties);
     assert!(!old.panels.log);
 }
 

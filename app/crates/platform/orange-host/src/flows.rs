@@ -70,7 +70,14 @@ impl Host {
         semantic: String,
         previous: Option<&Opened>,
     ) -> Result<Prepared, HostError> {
-        let document = self.link_document(document)?;
+        let (document, mut packages) = self.link_document(document)?;
+        packages.extend(
+            document
+                .bodies()
+                .flat_map(|body| body.nodes.values())
+                .filter_map(|node| node.provider.as_ref())
+                .map(|provider| (provider.package.clone(), provider.version.clone())),
+        );
         let registry = self.registry_for(&document);
         let analysis = analyzed(&document, &registry);
         if !analysis.is_ready_for_lowering(&document, &registry) {
@@ -235,6 +242,7 @@ impl Host {
         Ok(Prepared {
             semantic,
             document,
+            packages,
             registry,
             plan,
             opened,
@@ -471,6 +479,7 @@ impl Host {
             .insert(id, thread.thread().clone());
         let flow = Flow {
             info,
+            packages: prepared.packages,
             manual_types,
             manual_registry: Arc::clone(&prepared.registry),
             manual_generation: Arc::new(()),
@@ -585,6 +594,7 @@ impl Host {
         current.sources = swapped.sources;
         current.opened = prepared.opened;
         current.semantic = prepared.semantic;
+        current.packages = prepared.packages;
         current.feeds = swapped.feeds;
         Ok(Updated {
             changed: true,
