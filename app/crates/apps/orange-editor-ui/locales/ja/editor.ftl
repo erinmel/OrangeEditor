@@ -96,6 +96,11 @@ action-left-panel = 左パネルの表示切り替え
 action-right-panel = 右パネルの表示切り替え
 
 graph = グラフ
+graph-info = グラフ情報
+dock-left = 左へ移動
+dock-right = 右へ移動
+dock-bottom-left = 左下へ移動
+dock-bottom-right = 右下へ移動
 new-graph = 新しいグラフ
 open-graph = グラフを開く
 save = 保存

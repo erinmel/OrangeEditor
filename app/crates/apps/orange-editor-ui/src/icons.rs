@@ -57,6 +57,7 @@ pub const LEFT_CLOSE: char = '\u{f717}'; // left_panel_close
 pub const RIGHT_OPEN: char = '\u{f704}'; // right_panel_open
 pub const RIGHT_CLOSE: char = '\u{f705}'; // right_panel_close
 pub const FLOW: char = '\u{e5c8}'; // arrow_forward
+pub(crate) const INFO: char = '\u{e88e}'; // info
 pub const ERROR: char = '\u{f8b6}'; // error
 pub const WARNING: char = '\u{f083}'; // warning
 pub const MATH: char = '\u{ea5f}'; // calculate
@@ -126,6 +127,7 @@ pub const ALL: &[char] = &[
     RIGHT_OPEN,
     RIGHT_CLOSE,
     FLOW,
+    INFO,
     ERROR,
     WARNING,
     SEARCH,
@@ -164,6 +166,32 @@ fn command_painter_id() -> egui::Id {
 
 pub(crate) fn centered(icon: char) -> egui::Atom<'static> {
     shared::slot(move |ui, rect, color| paint_command(ui, rect, icon, color))
+}
+
+pub(crate) fn dock_tab(ui: &mut egui::Ui, icon: char, active: bool) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::splat(26.0), egui::Sense::click_and_drag());
+    let visuals = ui.visuals();
+    if active || response.hovered() || response.has_focus() {
+        let fill = if active {
+            visuals.selection.bg_fill
+        } else {
+            visuals.widgets.hovered.bg_fill
+        };
+        ui.painter().rect_filled(rect, 4, fill);
+    }
+    let ink = if active {
+        visuals.strong_text_color()
+    } else {
+        visuals.text_color()
+    };
+    paint_command(
+        ui,
+        egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(18.0)),
+        icon,
+        ink,
+    );
+    response
 }
 
 fn paint_command(ui: &egui::Ui, rect: egui::Rect, icon: char, color: egui::Color32) {
@@ -238,22 +266,6 @@ fn tooltip(label: &str, shortcut: &str) -> String {
     } else {
         format!("{label} ({shortcut})")
     }
-}
-
-pub(crate) fn dock_toggle(
-    ui: &mut egui::Ui,
-    open: bool,
-    side: egui::Align,
-    label: &str,
-    shortcut: &str,
-) -> egui::Response {
-    let icon = match (side, open) {
-        (egui::Align::Min, false) => NODES,
-        (egui::Align::Min, true) => LEFT_CLOSE,
-        (_, false) => RIGHT_OPEN,
-        (_, true) => RIGHT_CLOSE,
-    };
-    toggle_button(ui, icon, open, label, shortcut)
 }
 
 pub(crate) fn toggle_button(

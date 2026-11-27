@@ -1078,7 +1078,7 @@ mod tests {
         // Escape closes it; a right-click on empty canvas opens the canvas menu.
         let _ = frame(&mut editor, &mut host, vec![key(egui::Key::Escape)]);
         assert!(!editor.is_menu_open());
-        for events in right_click(egui::pos2(1200.0, 760.0)) {
+        for events in right_click(egui::pos2(1200.0, 680.0)) {
             let _ = frame(&mut editor, &mut host, events);
         }
         assert_eq!(target(&editor), Some(MenuTarget::Canvas));

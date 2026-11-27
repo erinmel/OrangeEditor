@@ -6,7 +6,26 @@ exists. It draws on node editors people already know (Blender's node editors, Un
 Blueprints, Houdini, ComfyUI, Warudo) and on the owner's review of the current editor.
 It changes no graph semantics; where a change needs one (11), it is called out.
 
+## Workspace docks
+
+Icon tabs live on the left and right rails. Top icons open side panels, and
+icons at the foot of each rail open the corresponding half of the bottom tray.
+Drag a tab to another area or onto another tab to place it before
+that tab. The tab's context menu offers the same four destinations for moving
+between areas. The side panels and bottom tray are resizable, and the two
+bottom areas appear side by side when both are open. The editor remembers tab
+placement, order, visibility, and panel sizes in application preferences.
+
+Nodes starts on the left, Properties and Packages on the right, Graph Info at
+the bottom left, and Problems and Log at the bottom right. Nodes and Properties
+start open. The Packages tab and Settings → Extensions use the same package
+manager and graph bundle commands.
+
 ## Finding nodes and connecting distant sections
+
+The node panel has Nodes, Variables, Types, and Connections tabs. In Nodes,
+Conversions expands into groups by source type. The Nodes search includes
+converters and opens matching branches for keyboard navigation.
 
 The picker groups built-in nodes by task, including Triggers & signals, Control
 flow, Loops, Variables, JSON, Files and Network. Sections within those groups

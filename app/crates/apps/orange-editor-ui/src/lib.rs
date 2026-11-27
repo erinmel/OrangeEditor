@@ -28,6 +28,7 @@ mod card_sources;
 pub mod controls;
 mod declarations;
 mod diagnostics;
+mod dock;
 #[cfg(test)]
 mod edit_timing;
 mod function_body;
@@ -285,19 +286,17 @@ struct ConversionChoice {
 pub(crate) enum Tab {
     #[default]
     Nodes,
-    Conversions,
     Variables,
     Connections,
     Types,
 }
 
 impl Tab {
-    const ALL: [(Self, &str); 5] = [
+    const ALL: [(Self, &str); 4] = [
         (Self::Nodes, "nodes"),
-        (Self::Conversions, "conversions"),
         (Self::Variables, "variables"),
-        (Self::Connections, "connections"),
         (Self::Types, "types"),
+        (Self::Connections, "connections"),
     ];
 
     /// The name preferences keep the tab by.
@@ -309,6 +308,9 @@ impl Tab {
     }
 
     fn from_key(key: &str) -> Option<Self> {
+        if key == "conversions" {
+            return Some(Self::Nodes);
+        }
         Self::ALL
             .iter()
             .find(|(_, known)| *known == key)
@@ -473,6 +475,7 @@ pub struct Editor {
     search: String,
     palette_highlighted: usize,
     log_events: bool,
+    dock: dock::Dock,
     /// Whether successful steps and live values are written to the Log as they happen;
     /// off, the Log has the run's lifecycle, warnings, faults and the graph's own
     /// messages, and nothing is formatted for the rest.
@@ -1948,27 +1951,7 @@ impl Editor {
         }
         self.toolbar(ui, host);
         self.workspace_bar(ui);
-        if self.panels.log {
-            egui::Panel::bottom("orange-log")
-                .resizable(true)
-                .default_size(170.0)
-                .min_size(90.0)
-                .show(ui, |ui| self.log_panel(ui));
-        }
-        if self.panels.nodes {
-            egui::Panel::left("orange-nodes")
-                .resizable(true)
-                .default_size(280.0)
-                .min_size(240.0)
-                .show(ui, |ui| self.nodes_panel(ui, host));
-        }
-        if self.panels.properties {
-            egui::Panel::right("orange-inspector")
-                .resizable(true)
-                .default_size(280.0)
-                .min_size(240.0)
-                .show(ui, |ui| self.right_panel(ui, host));
-        }
+        self.dock_layout(ui, host);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| self.canvas_panel(ui, host));
@@ -2311,42 +2294,8 @@ impl Editor {
     pub fn workspace_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("orange-workspace-bar").show(ui, |ui| {
             ui.spacing_mut().interact_size.y = 28.0;
-            if ui.available_width() >= 780.0 {
-                let height = ui.spacing().interact_size.y;
-                ui.columns(3, |columns| {
-                    columns[0].horizontal(|ui| self.workspace_left(ui));
-                    columns[1].horizontal(|ui| self.workspace_diagnostics(ui, true));
-                    let size = egui::vec2(columns[2].available_width(), height);
-                    columns[2].allocate_ui_with_layout(
-                        size,
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| self.workspace_right(ui),
-                    );
-                });
-            } else {
-                ui.horizontal_wrapped(|ui| {
-                    self.workspace_left(ui);
-                    ui.separator();
-                    self.workspace_diagnostics(ui, false);
-                    ui.separator();
-                    self.workspace_right(ui);
-                });
-            }
+            ui.horizontal_wrapped(|ui| self.workspace_right(ui));
         });
-    }
-
-    fn workspace_left(&mut self, ui: &mut egui::Ui) {
-        if icons::dock_toggle(
-            ui,
-            self.panels.nodes,
-            egui::Align::Min,
-            t("left-panel-hint"),
-            &self.canvas.keys.label("left-panel"),
-        )
-        .clicked()
-        {
-            self.toggle_left_panel();
-        }
     }
 
     fn toggle_left_panel(&mut self) {
@@ -2360,62 +2309,7 @@ impl Editor {
         self.panels.properties = !self.panels.properties;
     }
 
-    fn workspace_diagnostics(&mut self, ui: &mut egui::Ui, centered: bool) {
-        let count = self.document.as_ref().map_or(0, |document| {
-            document
-                .problem_locations
-                .iter()
-                .filter(|problem| problem.level != ProblemLevel::Draft)
-                .count()
-        });
-        let problems = if count == 0 {
-            t("problems").to_owned()
-        } else {
-            tf("problems-count", &[("count", count.into())])
-        };
-        let tabs = [(false, problems.as_str()), (true, t("log"))];
-        if centered {
-            let font = egui::TextStyle::Button.resolve(ui.style());
-            let width = tabs
-                .iter()
-                .map(|(_, label)| {
-                    let text_width = ui
-                        .painter()
-                        .layout_no_wrap(
-                            (*label).to_owned(),
-                            font.clone(),
-                            ui.visuals().text_color(),
-                        )
-                        .size()
-                        .x;
-                    text_width + 2.0 * ui.spacing().button_padding.x
-                })
-                .sum::<f32>()
-                + ui.spacing().item_spacing.x;
-            ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
-        }
-        for (events, label) in tabs {
-            let active = self.panels.log && self.log_events == events;
-            if ui.selectable_label(active, label).clicked() {
-                self.panels.log = !active;
-                self.log_events = events;
-            }
-        }
-    }
-
     fn workspace_right(&mut self, ui: &mut egui::Ui) {
-        let open = self.panels.properties;
-        if icons::dock_toggle(
-            ui,
-            open,
-            egui::Align::Max,
-            t("right-panel-hint"),
-            &self.canvas.keys.label("right-panel"),
-        )
-        .clicked()
-        {
-            self.toggle_right_panel();
-        }
         if self.document.is_some() {
             ui.menu_button(format!("{:.0}%", self.canvas.zoom() * 100.0), |ui| {
                 let label = ui.label(t("canvas-zoom"));
@@ -2554,7 +2448,7 @@ impl Editor {
         }
         ui.separator();
         match self.tab {
-            Tab::Nodes | Tab::Conversions => {}
+            Tab::Nodes => {}
             Tab::Variables => {
                 self.variables_tab(ui, host);
                 return;
@@ -2586,13 +2480,7 @@ impl Editor {
         if up || down {
             ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
-        let conversions = self.tab == Tab::Conversions;
-        let hint = if conversions {
-            "search-conversions"
-        } else {
-            "search-hint"
-        };
-        let field = controls::search(ui, search_salt, &mut self.search, t(hint));
+        let field = controls::search(ui, search_salt, &mut self.search, t("search-hint"));
         if field.changed() {
             self.palette_highlighted = 0;
         }
@@ -2607,15 +2495,21 @@ impl Editor {
                 };
                 let channels = self.dispatch_channels();
                 let results = self.palette.get(host, &self.search, language, &channels);
-                let found = results.groups.iter().filter(|(_, items)| {
-                    items.first().is_some_and(|first| {
-                        first.id.starts_with(palette::CONVERSION) == conversions
-                    })
-                });
-                let found_count = found.clone().map(|(_, items)| items.len()).sum::<usize>();
-                if found_count == 0 && conversions {
-                    ui.weak(t("no-conversion-matches"));
-                } else if found_count == 0 && searching {
+                // The catalogue appends converter groups after ordinary node categories.
+                let (nodes, conversions) =
+                    results
+                        .groups
+                        .split_at(results.groups.partition_point(|(_, items)| {
+                            items
+                                .first()
+                                .is_none_or(|item| !item.id.starts_with(palette::CONVERSION))
+                        }));
+                let found_count = results
+                    .groups
+                    .iter()
+                    .map(|(_, items)| items.len())
+                    .sum::<usize>();
+                if found_count == 0 && searching {
                     ui.weak(t("no-node-matches"));
                 }
                 let last = found_count.saturating_sub(1);
@@ -2627,62 +2521,83 @@ impl Editor {
                     self.palette_highlighted = self.palette_highlighted.saturating_sub(1);
                 }
                 let mut index = 0;
-                for (category, items) in found {
-                    let Some(first) = items.first() else {
-                        continue;
+                let mut draw_groups =
+                    |ui: &mut egui::Ui, groups: &[(String, Vec<palette::PaletteItem>)]| {
+                        for (category, items) in groups {
+                            let Some(first) = items.first() else {
+                                continue;
+                            };
+                            let (heading, help) =
+                                palette::category_heading(category, &first.id, language);
+                            orange_ui_controls::tree_section(
+                                ui,
+                                Surface::Panel,
+                                egui::CollapsingHeader::new(heading)
+                                    .id_salt((category.as_str(), searching))
+                                    .open(searching.then_some(true)),
+                                |ui| {
+                                    let mut section = None;
+                                    for item in items {
+                                        let next = palette::catalog_section(&item.id);
+                                        if !searching
+                                            && section != next
+                                            && let Some((title, description)) = next
+                                            && t(title) != category
+                                        {
+                                            ui.weak(t(title)).on_hover_text(t(description));
+                                        }
+                                        section = next;
+                                        let active = searching
+                                            && field.has_focus()
+                                            && index == self.palette_highlighted;
+                                        index += 1;
+                                        let draft =
+                                            self.document.as_ref().map(|document| &document.draft);
+                                        let card = self
+                                            .node_search_previews
+                                            .then(|| self.previews.card(host, None, &item.id))
+                                            .flatten();
+                                        let row = palette::result_row(
+                                            ui,
+                                            &item.label,
+                                            &item.purpose,
+                                            None,
+                                            active,
+                                            card,
+                                            Some(&item.id),
+                                        );
+                                        if row.drag_started() {
+                                            let card =
+                                                self.previews.card(host, draft, &item.id).cloned();
+                                            row.dnd_set_drag_payload(palette::PaletteDrag {
+                                                item: item.clone(),
+                                                card,
+                                            });
+                                        }
+                                        if active && (up || down) {
+                                            row.scroll_to_me(None);
+                                        }
+                                        if row.clicked() || (active && enter) {
+                                            add = Some(item.id.clone());
+                                        }
+                                    }
+                                },
+                            )
+                            .header_response
+                            .on_hover_text(t(help));
+                        }
                     };
-                    let (heading, help) = palette::category_heading(category, &first.id, language);
+                draw_groups(ui, nodes);
+                if let Some(first) = conversions.first().and_then(|(_, items)| items.first()) {
+                    let (heading, help) =
+                        palette::category_heading(t("conversions"), &first.id, language);
                     orange_ui_controls::tree_section(
                         ui,
                         Surface::Panel,
                         egui::CollapsingHeader::new(heading)
-                            .id_salt((category.as_str(), searching))
-                            .default_open(searching),
-                        |ui| {
-                            let mut section = None;
-                            for item in items {
-                                let next = palette::catalog_section(&item.id);
-                                if !searching
-                                    && section != next
-                                    && let Some((title, description)) = next
-                                    && t(title) != category
-                                {
-                                    ui.weak(t(title)).on_hover_text(t(description));
-                                }
-                                section = next;
-                                let active = searching
-                                    && field.has_focus()
-                                    && index == self.palette_highlighted;
-                                index += 1;
-                                let draft = self.document.as_ref().map(|document| &document.draft);
-                                let card = self
-                                    .node_search_previews
-                                    .then(|| self.previews.card(host, None, &item.id))
-                                    .flatten();
-                                let row = palette::result_row(
-                                    ui,
-                                    &item.label,
-                                    &item.purpose,
-                                    None,
-                                    active,
-                                    card,
-                                    Some(&item.id),
-                                );
-                                if row.drag_started() {
-                                    let card = self.previews.card(host, draft, &item.id).cloned();
-                                    row.dnd_set_drag_payload(palette::PaletteDrag {
-                                        item: item.clone(),
-                                        card,
-                                    });
-                                }
-                                if active && (up || down) {
-                                    row.scroll_to_me(None);
-                                }
-                                if row.clicked() || (active && enter) {
-                                    add = Some(item.id.clone());
-                                }
-                            }
-                        },
+                            .id_salt(("node-conversions", searching))
+                            .open(searching.then_some(true)),
+                        |ui| draw_groups(ui, conversions),
                     )
                     .header_response
                     .on_hover_text(t(help));
@@ -5014,22 +4929,35 @@ mod palette_keyboard_tests {
     #[test]
     fn sidebar_search_adds_the_highlighted_result_by_keyboard() {
         let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
-        for (tab, search) in [(Tab::Nodes, "trigger"), (Tab::Conversions, "text")] {
+        for (saved_tab, search) in [("nodes", "trigger"), ("conversions", "text")] {
             let mut editor = Editor::new();
-            editor.restore_preferences(&serde_json::json!({"version": 1, "tab": tab.key()}));
+            editor.restore_preferences(&serde_json::json!({"version": 1, "tab": saved_tab}));
             editor.open_untitled(&mut host, orange_host::new_document().unwrap());
             editor.search = search.into();
-            assert_eq!(editor.tab, tab);
-            let expected = palette(&host, search)
+            assert_eq!(editor.tab, Tab::Nodes);
+            let results: Vec<_> = palette(&host, search)
                 .into_iter()
                 .flat_map(|(_, items)| items)
-                .filter(|item| {
-                    item.id.starts_with(palette::CONVERSION) == (tab == Tab::Conversions)
-                })
-                .nth(1)
-                .unwrap();
+                .collect();
+            let target = if saved_tab == "conversions" {
+                results
+                    .iter()
+                    .position(|item| item.id.starts_with(palette::CONVERSION))
+                    .unwrap()
+            } else {
+                1
+            };
+            let expected = &results[target];
             let context = egui::Context::default();
-            for key in [None, Some(egui::Key::ArrowDown), Some(egui::Key::Enter)] {
+            let mut keys = vec![None];
+            if target > 0 {
+                keys.push(Some(egui::Key::ArrowDown));
+            }
+            keys.push(Some(egui::Key::Enter));
+            for key in keys {
+                if key == Some(egui::Key::ArrowDown) {
+                    editor.palette_highlighted = target - 1;
+                }
                 let events = key
                     .into_iter()
                     .map(|key| egui::Event::Key {
@@ -5059,7 +4987,7 @@ mod palette_keyboard_tests {
             let graph = editor.graph().unwrap();
             assert_eq!(graph.nodes.len(), 1);
             let node = &graph.nodes[0];
-            if tab == Tab::Conversions {
+            if expected.id.starts_with(palette::CONVERSION) {
                 assert_eq!(node.definition, intrinsic::CONVERT);
                 assert_eq!(
                     palette::converter_card_title(node, "en").unwrap(),

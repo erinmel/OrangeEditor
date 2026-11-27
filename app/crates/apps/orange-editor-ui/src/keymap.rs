@@ -462,6 +462,7 @@ impl crate::Editor {
               "scale":self.preferred_scale.unwrap_or(1.0),"tab":self.preferred_tab.key(),
               "panels":{"nodes":self.panels.nodes,"properties":self.panels.properties,
                         "log":self.panels.log},
+              "dock":self.dock_preferences(),
               "appearance":self.preferred_theme.map(egui::ThemePreference::name),
               "node_search_previews":self.node_search_previews,
               "wireless_opacity":self.canvas.wireless_opacity})
@@ -517,6 +518,7 @@ impl crate::Editor {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(self.panels.log);
         }
+        self.restore_dock(&value["dock"]);
         if let Some(language) = value["language"]
             .as_str()
             .filter(|tag| !tag.trim().is_empty())
