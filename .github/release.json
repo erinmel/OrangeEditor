@@ -1,5 +1,5 @@
 {
-  "qualified": false,
+  "qualified": true,
   "package": "orange-desktop",
   "binary": "orange-editor",
   "unsigned_preview": true
