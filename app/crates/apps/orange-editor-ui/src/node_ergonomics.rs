@@ -231,12 +231,23 @@ mod operation_caption_tests {
     #[test]
     fn renamed_variable_writes_show_their_operation() {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        // The counter example, with its counter cards written as Update variable.
+        let mut counter: serde_json::Value = serde_json::from_str(include_str!(
+            "../../orange-cli/graphs/counter-with-reset.json"
+        ))
+        .unwrap();
+        for node in counter["nodes"].as_array_mut().unwrap() {
+            let operation = match node["definition_id"].as_str() {
+                Some(intrinsic::INCREMENT_COUNTER) => "add",
+                Some(intrinsic::DECREMENT_COUNTER) => "sub",
+                _ => continue,
+            };
+            node["definition_id"] = intrinsic::UPDATE_VARIABLE.into();
+            node["config"]["operation"] = operation.into();
+            node["inputs"] = serde_json::json!({"value": {"type": "core/i64@1", "value": "1"}});
+        }
         let mut editor = Editor::new();
-        editor.open(
-            &mut host,
-            "counter.json",
-            include_str!("../../orange-cli/graphs/counter-with-reset.json").to_owned(),
-        );
+        editor.open(&mut host, "counter.json", counter.to_string());
         let graph = editor.graph().unwrap();
         let captions: Vec<String> = graph
             .nodes
