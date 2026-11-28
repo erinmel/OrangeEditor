@@ -1,5 +1,5 @@
 //! Edits the shared body behind a local function call.
-use crate::canvas::{Canvas, CanvasResponse};
+use crate::canvas::{Canvas, CanvasCommentState, CanvasResponse};
 use crate::i18n::{t, tf};
 use crate::{Editor, properties};
 use orange_host::intrinsic;
@@ -211,7 +211,11 @@ impl Editor {
                     &[],
                     false,
                     Some(&stored),
-                    &[],
+                    CanvasCommentState {
+                        items: &[],
+                        editing: None,
+                        focus: false,
+                    },
                 )
             })
             .inner;

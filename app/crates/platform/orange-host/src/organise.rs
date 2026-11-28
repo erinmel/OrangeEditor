@@ -89,7 +89,21 @@ fn group_command(id: &str, group: Option<&Group>) -> DocCommand {
 pub struct CanvasComment {
     pub id: String,
     pub at: [f32; 2],
+    pub size: [f32; 2],
     pub text: String,
+}
+
+impl CanvasComment {
+    pub const DEFAULT_SIZE: [f32; 2] = [244.0, 116.0];
+    pub const MIN_SIZE: [f32; 2] = [120.0, 72.0];
+    pub const MAX_SIZE: [f32; 2] = [2000.0, 1200.0];
+}
+
+fn valid_comment_size(size: [f32; 2]) -> bool {
+    size.iter()
+        .zip(CanvasComment::MIN_SIZE)
+        .zip(CanvasComment::MAX_SIZE)
+        .all(|((&value, min), max)| value.is_finite() && (min..=max).contains(&value))
 }
 
 fn comment_command(id: &str, value: Option<Json>) -> DocCommand {
@@ -115,24 +129,41 @@ impl Draft {
                 }
                 #[expect(clippy::cast_possible_truncation, reason = "canvas positions use f32")]
                 let at = [at[0].as_f64()? as f32, at[1].as_f64()? as f32];
-                at.iter()
-                    .all(|value| value.is_finite())
-                    .then_some(CanvasComment {
-                        id: id.clone(),
-                        at,
-                        text: saved["text"].as_str()?.to_owned(),
-                    })
+                if !at.iter().all(|value| value.is_finite()) {
+                    return None;
+                }
+                let size = match saved.get("size") {
+                    None => CanvasComment::DEFAULT_SIZE,
+                    Some(size) => {
+                        let size = size.as_array()?;
+                        if size.len() != 2 {
+                            return None;
+                        }
+                        #[expect(clippy::cast_possible_truncation, reason = "canvas sizes use f32")]
+                        let size = [size[0].as_f64()? as f32, size[1].as_f64()? as f32];
+                        if !valid_comment_size(size) {
+                            return None;
+                        }
+                        size
+                    }
+                };
+                Some(CanvasComment {
+                    id: id.clone(),
+                    at,
+                    size,
+                    text: saved["text"].as_str()?.to_owned(),
+                })
             })
     }
 
     /// Creates an annotation in one undoable layout edit.
     pub fn add_comment(&mut self, at: [f32; 2], text: &str) -> Result<String, HostError> {
         let id = self.fresh_id("comment");
-        self.write_comment(&id, at, text)?;
+        self.write_comment(&id, at, CanvasComment::DEFAULT_SIZE, text)?;
         Ok(id)
     }
 
-    /// Updates the text and position of an existing annotation.
+    /// Updates the text, position and size of an existing annotation.
     pub fn update_comment(&mut self, comment: &CanvasComment) -> Result<bool, HostError> {
         if self
             .document()
@@ -143,16 +174,25 @@ impl Draft {
         {
             return Ok(false);
         }
-        self.write_comment(&comment.id, comment.at, &comment.text)
+        self.write_comment(&comment.id, comment.at, comment.size, &comment.text)
     }
 
-    fn write_comment(&mut self, id: &str, at: [f32; 2], text: &str) -> Result<bool, HostError> {
+    fn write_comment(
+        &mut self,
+        id: &str,
+        at: [f32; 2],
+        size: [f32; 2],
+        text: &str,
+    ) -> Result<bool, HostError> {
         if !at.iter().all(|value| value.is_finite()) {
             return Err(HostError::Document("invalid comment position".into()));
         }
+        if !valid_comment_size(size) {
+            return Err(HostError::Document("invalid comment size".into()));
+        }
         self.layout(vec![comment_command(
             id,
-            Some(json!({"at": at, "text": text})),
+            Some(json!({"at": at, "size": size, "text": text})),
         )])
     }
 

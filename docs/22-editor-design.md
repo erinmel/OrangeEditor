@@ -19,9 +19,12 @@ placement, order, visibility, and panel sizes in application preferences.
 Nodes, Variables, Types, and Connections start on the left, Properties starts on the
 right, Graph Info starts at the bottom left, and Problems and Log start at the bottom
 right. Right-click an icon to hide it, then right-click free space on a rail to add
-it back in that position. The Add icon menu shows each tool’s glyph and name. Docks use padded surfaces and gutters to separate adjacent
-panels. Resize edges become visible on hover or while dragging. Scrollbars expand
-within a reserved gutter.
+it back in that position. The Add icon menu shows each tool’s glyph and name.
+Context menus on an icon or empty rail can add fixed or flexible spacers and
+separators; drag these items to reorder them. Flexible spacers share available
+rail height. Docks use padded surfaces and gutters to separate adjacent panels.
+Resize edges become visible on hover or while dragging. Scrollbars expand within a
+reserved gutter.
 
 The Settings sidebar groups General display, Panels, Toolbar, and Canvas under
 Display and canvas. Search narrows the tree to matching pages. General display
@@ -29,11 +32,11 @@ sets separate corner radii for docks, windows, menus, and controls. Panels
 controls icon names and status items. Optional CPU and network readings are
 system-wide and sampled by the desktop.
 
-The toolbar menu quickly shows or hides commands. In Customize toolbar, drag a
-command to reorder it or move it between the left, center, and right groups. The
-drag preview shows the command’s icon and name, and the insertion line follows
-the target row.
-Optional flexible spacers share the room left after laying out the commands.
+The toolbar menu quickly shows or hides commands and adds fixed or flexible
+spacers and separators. In Customize toolbar, drag a command or spacing item to
+reorder it or move it between the left, center, and right groups. The drag preview
+shows the command’s icon and name, and the insertion line follows the target row.
+Flexible spacers share the room left after laying out the commands.
 Keyboard shortcuts has its own action and key search, collapsible groups, and
 a confirmation before restoring defaults. Manage packages and graph bundles in
 Settings → Extensions → Packages. Native library approvals are on the Native
@@ -183,6 +186,7 @@ combination in the selected language.
 | Run feedback | The reported execution route glows along the whole wire and fades in 160 ms. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
 | Empty | A graph with no nodes shows, at the centre of the canvas, how to begin: Tab or right-click to add a node, or drag one from the Nodes panel. |
 | Groups | Frames are drawn under cards and move by their title bars, including when collapsed. Snapping moves every member by the same offset and anchors the frame at its upper-left corner. Clicking a collapsed frame selects it for Ungroup. |
+| Comments | Canvas comments are portless editor annotations, not graph nodes. Click their body to edit plain text in place; the text area scrolls when needed. Drag the lower-right grip to resize, and drag the card to move it. Text commits on focus loss or Command/Ctrl+Enter; Escape discards the current edit. |
 
 Click either connector, then click the opposite endpoint to wire without dragging.\nPress Escape, click the starting port again, or click the background to cancel.\n\n## 3. Cards
 

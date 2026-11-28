@@ -1,5 +1,6 @@
 //! Main toolbar actions and persistent customization.
 use super::*;
+use crate::bar_spacing::Spacing;
 
 const GROUP_GAP: f32 = 4.0;
 
@@ -23,10 +24,16 @@ enum Action {
     Spacer,
     SpacerTwo,
     SpacerThree,
+    Fixed,
+    FixedTwo,
+    FixedThree,
+    Divider,
+    DividerTwo,
+    DividerThree,
 }
 
 impl Action {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 24] = [
         Self::New,
         Self::Open,
         Self::Save,
@@ -45,6 +52,12 @@ impl Action {
         Self::Spacer,
         Self::SpacerTwo,
         Self::SpacerThree,
+        Self::Fixed,
+        Self::FixedTwo,
+        Self::FixedThree,
+        Self::Divider,
+        Self::DividerTwo,
+        Self::DividerThree,
     ];
 
     fn details(self) -> (&'static str, char, &'static str, &'static str) {
@@ -67,6 +80,12 @@ impl Action {
             Self::Spacer => ("toolbar-flex-spacer", icons::DRAG, "", "spacer"),
             Self::SpacerTwo => ("flex-spacer-2", icons::DRAG, "", "spacer"),
             Self::SpacerThree => ("flex-spacer-3", icons::DRAG, "", "spacer"),
+            Self::Fixed => ("fixed-layout", icons::FIT, "", "spacer"),
+            Self::FixedTwo => ("fixedtwo-layout", icons::FIT, "", "spacer"),
+            Self::FixedThree => ("fixedthree-layout", icons::FIT, "", "spacer"),
+            Self::Divider => ("divider-layout", icons::MINIMIZE, "", "spacer"),
+            Self::DividerTwo => ("dividertwo-layout", icons::MINIMIZE, "", "spacer"),
+            Self::DividerThree => ("dividerthree-layout", icons::MINIMIZE, "", "spacer"),
         }
     }
 
@@ -74,10 +93,17 @@ impl Action {
         dialogs || !matches!(self, Self::New | Self::Open | Self::SaveAs)
     }
 
-    const SPACERS: [Self; 3] = [Self::Spacer, Self::SpacerTwo, Self::SpacerThree];
+    fn spacing(self) -> Option<Spacing> {
+        match self {
+            Self::Spacer | Self::SpacerTwo | Self::SpacerThree => Some(Spacing::Flexible),
+            Self::Fixed | Self::FixedTwo | Self::FixedThree => Some(Spacing::Fixed),
+            Self::Divider | Self::DividerTwo | Self::DividerThree => Some(Spacing::Divider),
+            _ => None,
+        }
+    }
 
-    fn spacer(self) -> bool {
-        Self::SPACERS.contains(&self)
+    fn title(self) -> &'static str {
+        t(self.spacing().map_or(self.details().0, Spacing::key))
     }
 
     fn default_group(self) -> usize {
@@ -97,7 +123,10 @@ impl Default for Toolbar {
     fn default() -> Self {
         Self {
             order: Action::ALL.to_vec(),
-            hidden: Action::SPACERS.to_vec(),
+            hidden: Action::ALL
+                .into_iter()
+                .filter(|action| action.spacing().is_some())
+                .collect(),
             center: Vec::new(),
             right: vec![Action::Check, Action::Run],
         }
@@ -160,14 +189,16 @@ impl Toolbar {
         let mut previous = None;
         let mut width = 0.0;
         for &action in actions {
+            if let Some(kind) = action.spacing() {
+                width += kind.extent(0.0) + button - icons::BUTTON_WIDTH;
+                continue;
+            }
             let category = action.details().3;
             if previous.is_some_and(|group| group != category) {
                 width += GROUP_GAP;
             }
             previous = Some(category);
-            if !action.spacer() {
-                width += button;
-            }
+            width += button;
         }
         width
     }
@@ -212,7 +243,10 @@ impl Toolbar {
             for action in hidden.iter().filter_map(read) {
                 self.set_visible(action, false);
             }
-            for spacer in Action::SPACERS {
+            for spacer in Action::ALL
+                .into_iter()
+                .filter(|action| action.spacing().is_some())
+            {
                 if value["groups"][spacer.details().0].is_null() {
                     self.set_visible(spacer, false);
                 }
@@ -221,7 +255,8 @@ impl Toolbar {
             for action in Action::ALL {
                 self.set_visible(
                     action,
-                    !action.spacer() && legacy[action.details().3].as_bool().unwrap_or(true),
+                    action.spacing().is_none()
+                        && legacy[action.details().3].as_bool().unwrap_or(true),
                 );
             }
         }
@@ -235,7 +270,7 @@ impl Editor {
     ) -> Option<orange_host::SearchRank> {
         Action::ALL
             .into_iter()
-            .filter(|action| action.supported(self.file_dialogs) && !action.spacer())
+            .filter(|action| action.supported(self.file_dialogs) && action.spacing().is_none())
             .filter_map(|action| i18n::message_relevance(query, &[action.details().0], &[]))
             .min()
     }
@@ -248,6 +283,14 @@ impl Editor {
                 self.settings_search.clear();
                 ui.close();
             }
+            ui.menu_button(t("toolbar-add-spacing"), |ui| {
+                for (group, label) in ["toolbar-left", "toolbar-center", "toolbar-right"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    ui.menu_button(t(label), |ui| self.toolbar_spacing_menu(ui, group));
+                }
+            });
             ui.add_space(4.0);
         }
         if full {
@@ -257,8 +300,14 @@ impl Editor {
                 .into_iter()
                 .enumerate()
             {
-                let mut actions = self.toolbar_options.actions(group, self.file_dialogs, true);
-                actions.retain(|action| !action.spacer() || self.toolbar_options.visible(*action));
+                let actions: Vec<_> = self
+                    .toolbar_options
+                    .actions(group, self.file_dialogs, true)
+                    .into_iter()
+                    .filter(|action| {
+                        action.spacing().is_none() || self.toolbar_options.visible(*action)
+                    })
+                    .collect();
                 let frame = egui::Frame::new()
                     .fill(ui.visuals().faint_bg_color)
                     .corner_radius(self.corners.docks)
@@ -267,28 +316,13 @@ impl Editor {
                         ui.set_min_width(ui.available_width());
                         ui.horizontal(|ui| {
                             ui.strong(t(label));
-                            let unused = Action::SPACERS
-                                .into_iter()
-                                .find(|action| !self.toolbar_options.visible(*action));
-                            if ui
-                                .add_enabled(
-                                    unused.is_some(),
-                                    egui::Button::new(t("toolbar-add-spacer")),
-                                )
-                                .clicked()
-                                && let Some(action) = unused
-                            {
-                                self.toolbar_options.place(action, group, None);
-                                self.toolbar_options.set_visible(action, true);
-                            }
+                            ui.menu_button(t("toolbar-add-spacing"), |ui| {
+                                self.toolbar_spacing_menu(ui, group)
+                            });
                         });
                         for &action in &actions {
                             let (label, icon, _, _) = action.details();
-                            let title = t(if action.spacer() {
-                                "toolbar-flex-spacer"
-                            } else {
-                                label
-                            });
+                            let title = action.title();
                             let mut visible = self.toolbar_options.visible(action);
                             let rect = ui
                                 .push_id(label, |ui| {
@@ -360,13 +394,30 @@ impl Editor {
                 .order
                 .clone()
                 .into_iter()
-                .filter(|action| action.supported(self.file_dialogs) && !action.spacer())
+                .filter(|action| action.supported(self.file_dialogs) && action.spacing().is_none())
             {
                 let (label, _, _, _) = action.details();
                 let mut visible = self.toolbar_options.visible(action);
                 if ui.checkbox(&mut visible, t(label)).changed() {
                     self.toolbar_options.set_visible(action, visible);
                 }
+            }
+        }
+    }
+
+    fn toolbar_spacing_menu(&mut self, ui: &mut egui::Ui, group: usize) {
+        for kind in Spacing::ALL {
+            let unused = Action::ALL.into_iter().find(|action| {
+                action.spacing() == Some(kind) && !self.toolbar_options.visible(*action)
+            });
+            if ui
+                .add_enabled(unused.is_some(), egui::Button::new(t(kind.add_key())))
+                .clicked()
+                && let Some(action) = unused
+            {
+                self.toolbar_options.place(action, group, None);
+                self.toolbar_options.set_visible(action, true);
+                ui.close();
             }
         }
     }
@@ -386,7 +437,17 @@ impl Editor {
                         .checked_add_signed(offset)
                         .and_then(|target| actions.get(target));
                     if ui
-                        .add_enabled(other.is_some(), egui::Button::new(t(label)))
+                        .add_enabled(
+                            other.is_some(),
+                            egui::Button::new((
+                                icons::centered(if offset < 0 {
+                                    icons::MOVE_UP
+                                } else {
+                                    icons::MOVE_DOWN
+                                }),
+                                t(label),
+                            )),
+                        )
                         .clicked()
                         && let Some(other) = other
                     {
@@ -400,7 +461,7 @@ impl Editor {
                     }
                 }
             }
-            ui.add_space(4.0);
+            ui.separator();
             for (target, label) in ["toolbar-left", "toolbar-center", "toolbar-right"]
                 .into_iter()
                 .enumerate()
@@ -410,6 +471,13 @@ impl Editor {
                     .clicked()
                 {
                     self.toolbar_options.place(action, target, None);
+                    ui.close();
+                }
+            }
+            if action.spacing().is_some() {
+                ui.separator();
+                if ui.button(t("bar-remove-spacing")).clicked() {
+                    self.toolbar_options.set_visible(action, false);
                     ui.close();
                 }
             }
@@ -486,12 +554,8 @@ impl Editor {
         pointer: egui::Pos2,
         pickup: f32,
     ) {
-        let (label, icon, _, _) = action.details();
-        let label = t(if action.spacer() {
-            "toolbar-flex-spacer"
-        } else {
-            label
-        });
+        let (_, icon, _, _) = action.details();
+        let label = action.title();
         let bounds = ui.ctx().content_rect().shrink(4.0);
         let painter = ui
             .ctx()
@@ -565,7 +629,7 @@ impl Editor {
         let spacers = groups.each_ref().map(|actions| {
             actions
                 .iter()
-                .filter(|action| action.spacer())
+                .filter(|action| action.spacing() == Some(Spacing::Flexible))
                 .map(|_| 1.0)
                 .sum::<f32>()
         });
@@ -590,7 +654,7 @@ impl Editor {
                 if distance > gap {
                     ui.add_space(distance - gap);
                 }
-                editor.toolbar_edit_commands(ui, host, open, actions, (spacer - gap).max(0.0));
+                editor.toolbar_edit_commands(ui, host, open, actions, spacer);
             }
         };
         if measured > available {
@@ -685,16 +749,20 @@ impl Editor {
             None
         };
         for &action in actions {
+            if let Some(kind) = action.spacing() {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(kind.extent(spacer), ui.spacing().interact_size.y),
+                    egui::Sense::hover(),
+                );
+                kind.paint(ui, rect, true);
+                continue;
+            }
             let (label, icon, key, category) = action.details();
             if previous.is_some_and(|group| group != category) {
                 ui.add_space(GROUP_GAP);
             }
             previous = Some(category);
             match action {
-                Action::Spacer | Action::SpacerTwo | Action::SpacerThree => {
-                    ui.add_space(spacer);
-                    continue;
-                }
                 Action::Run => {
                     self.toolbar_run(ui, host, open);
                     continue;
@@ -773,7 +841,13 @@ impl Editor {
                     | Action::Run
                     | Action::Spacer
                     | Action::SpacerTwo
-                    | Action::SpacerThree => {}
+                    | Action::SpacerThree
+                    | Action::Fixed
+                    | Action::FixedTwo
+                    | Action::FixedThree
+                    | Action::Divider
+                    | Action::DividerTwo
+                    | Action::DividerThree => {}
                 }
             }
         }

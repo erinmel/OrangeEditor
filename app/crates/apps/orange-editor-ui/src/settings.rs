@@ -165,7 +165,14 @@ impl Section {
                 "tree-arrows",
                 "tree-background",
             ],
-            Self::Toolbar => &["customize-toolbar", "toolbar-reset", "toolbar-flex-spacer"],
+            Self::Toolbar => &[
+                "customize-toolbar",
+                "toolbar-reset",
+                "toolbar-flex-spacer",
+                "toolbar-fixed-spacer",
+                "toolbar-divider",
+                "toolbar-add-spacing",
+            ],
             Self::Canvas => &[
                 "wheel-pans",
                 "snap-grid",

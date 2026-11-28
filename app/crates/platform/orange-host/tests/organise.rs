@@ -1,6 +1,6 @@
 //! Organising a draft: groups of nodes kept in the document's layout, and selected nodes
 //! made into a graph function used through one call node, each as edits that undo.
-use orange_host::{Draft, Host, HostOptions, NodeId, Value};
+use orange_host::{CanvasComment, Draft, Host, HostOptions, NodeId, Value};
 use orange_testkit::{id, until};
 use serde_json::{Value as Json, json};
 
@@ -164,6 +164,32 @@ fn a_group_is_kept_in_the_layout_changed_and_taken_away_in_steps_that_undo() {
     assert!(draft.undo());
     assert_eq!(draft.groups()[0].nodes, [a, b]);
     assert!(draft.group(&[], "Nothing").is_err());
+}
+
+#[test]
+fn old_comments_get_default_size_and_resized_comments_round_trip() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let id = draft.add_comment([12.0, 48.0], "A note").unwrap();
+    let mut document = saved(&draft);
+    document["editor"]["comments"][&id]
+        .as_object_mut()
+        .unwrap()
+        .remove("size");
+
+    let mut reopened = host.draft(&document.to_string()).unwrap();
+    let mut comment = reopened.comments().next().unwrap();
+    assert_eq!(comment.size, CanvasComment::DEFAULT_SIZE);
+    comment.size = [320.0, 180.0];
+    assert!(reopened.update_comment(&comment).unwrap());
+    assert_eq!(
+        saved(&reopened)["editor"]["comments"][&id]["size"],
+        json!([320.0, 180.0])
+    );
+    assert_eq!(reopened.comments().next().unwrap().size, comment.size);
+
+    comment.size = [f32::INFINITY, 180.0];
+    assert!(reopened.update_comment(&comment).is_err());
 }
 
 #[test]

@@ -386,6 +386,13 @@ pub struct ActivationPolicy {
 }
 ```
 
+`editor.comments` is a map keyed by stable comment ID. Each value stores `at: [x, y]`
+in canvas graph units, `text`, and optional `size: [width, height]` in graph units.
+Missing `size` reads as `[244, 116]` for documents saved before resizable comments.
+Writers persist size; accepted dimensions are finite and bounded to
+`[120, 72]`–`[2000, 1200]`. Comments are editor-only layout: they add no graph node,
+port, or execution behavior.
+
 `SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Host-owned language intrinsics are identified by the host's intrinsic definitions and use their `format_version` and config to derive signatures, so they do not store snapshots, provider bindings or package locks. A `core/` namespace alone does not make an ordinary definition intrinsic or compile-ready without a provider binding and exact package lock.
 
 Validation resolves definitions and providers from immutable host-supplied registry metadata; it never executes package code. A non-intrinsic node requires its stored signature snapshot, exact provider binding and matching package lock. If the package or exact provider metadata is unavailable, the node remains unresolved and cannot be reported as successfully resolved. Its stored snapshot still supplies ports for edge checks, including orphan-edge reporting, while checks that require unavailable current definition metadata are incomplete.

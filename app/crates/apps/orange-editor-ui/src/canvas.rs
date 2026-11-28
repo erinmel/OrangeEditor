@@ -683,6 +683,12 @@ pub(crate) fn type_color(ty: Option<&str>) -> Color32 {
     }
 }
 
+pub(crate) struct CanvasCommentState<'a> {
+    pub items: &'a [orange_host::CanvasComment],
+    pub editing: Option<&'a mut orange_host::CanvasComment>,
+    pub focus: bool,
+}
+
 impl Canvas {
     fn mark_level(&self, node: NodeId, mark: &Mark) -> ProblemLevel {
         if mark.error {
@@ -1643,7 +1649,18 @@ impl Canvas {
         graph: &GraphView,
         triggers: &[NodeId],
     ) -> CanvasResponse {
-        self.show_with_path_controls(ui, graph, triggers, false, None, &[])
+        self.show_with_path_controls(
+            ui,
+            graph,
+            triggers,
+            false,
+            None,
+            CanvasCommentState {
+                items: &[],
+                editing: None,
+                focus: false,
+            },
+        )
     }
 
     pub(crate) fn cancel_node_rename(&mut self) {
@@ -1657,7 +1674,7 @@ impl Canvas {
         triggers: &[NodeId],
         file_dialogs: bool,
         stored_text: Option<&StoredText<'_>>,
-        comments: &[orange_host::CanvasComment],
+        comments: CanvasCommentState<'_>,
     ) -> CanvasResponse {
         crate::icons::install(ui.ctx());
         let mut done = CanvasResponse::default();
@@ -1721,8 +1738,8 @@ impl Canvas {
             let bounds = self
                 .bounds(graph)
                 .into_iter()
-                .chain(comments.iter().map(|comment| {
-                    Rect::from_min_size(Pos2::from(comment.at), crate::comments::SIZE)
+                .chain(comments.items.iter().map(|comment| {
+                    Rect::from_min_size(Pos2::from(comment.at), Vec2::from(comment.size))
                 }))
                 .reduce(Rect::union);
             if let Some(bounds) = bounds {
@@ -3307,13 +3324,22 @@ impl Canvas {
                 );
             }
         }
-        for comment in comments {
+        let mut editing_comment = comments.editing;
+        for comment in comments.items {
             let rect = Rect::from_min_size(
                 area.min + (Pos2::from(comment.at) - self.origin) * self.zoom,
-                crate::comments::SIZE * self.zoom,
+                Vec2::from(comment.size) * self.zoom,
             );
             if rect.intersects(area)
-                && let Some(action) = crate::comments::card(ui, &painter, comment, rect, self.zoom)
+                && let Some(action) = crate::comments::card(
+                    ui,
+                    &painter,
+                    comment,
+                    rect,
+                    self.zoom,
+                    editing_comment.as_deref_mut(),
+                    comments.focus,
+                )
             {
                 done.comment = Some(action);
             }

@@ -22,6 +22,7 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod bar_spacing;
 pub mod bundle;
 pub mod canvas;
 mod card_sources;
@@ -55,7 +56,7 @@ pub use properties::{COMMON_TYPES, port_label, set_at};
 pub use quick_add::QuickChoice;
 
 use crate::controls::{Dropdown as _, Surface};
-use canvas::Canvas;
+use canvas::{Canvas, CanvasCommentState};
 use i18n::{t, tf};
 use orange_host::intrinsic;
 use orange_host::preset;
@@ -1999,7 +2000,6 @@ impl Editor {
         self.value_dialog(ui.ctx(), host);
         self.for_each_mode_dialog(ui.ctx(), host);
         self.build_map_rows_dialog(ui.ctx(), host);
-        self.comment_window(ui.ctx());
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
         }
@@ -2799,13 +2799,18 @@ impl Editor {
         let stored_text =
             |node, port: &str| properties::stored_input_text(host, &document.draft, node, port);
         let comments: Vec<_> = document.draft.comments().collect();
+        let comment_focus = std::mem::take(&mut self.comment_focus);
         let done = self.canvas.show_with_path_controls(
             ui,
             &document.graph,
             triggers,
             self.file_dialogs,
             Some(&stored_text),
-            &comments,
+            CanvasCommentState {
+                items: &comments,
+                editing: self.comment_edit.as_mut(),
+                focus: comment_focus,
+            },
         );
         if let Some(target) = self.canvas.pending_inbound_givers() {
             let matches = host.output_givers(&document.draft, &document.graph, target);

@@ -180,7 +180,18 @@ impl Session {
         let (canvas, graph, corner) = (&mut self.canvas, &self.graph, &mut self.corner);
         let output = self.context.run_ui(input, |ui| {
             *corner = ui.available_rect_before_wrap().min;
-            response = canvas.show_with_path_controls(ui, graph, &[], false, request_input, &[]);
+            response = canvas.show_with_path_controls(
+                ui,
+                graph,
+                &[],
+                false,
+                request_input,
+                CanvasCommentState {
+                    items: &[],
+                    editing: None,
+                    focus: false,
+                },
+            );
         });
         (response, output)
     }

@@ -1,5 +1,6 @@
 //! Workspace tool placement, independent of the graph document.
 use super::*;
+use crate::bar_spacing::Spacing;
 use serde_json::{Value as Json, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +72,30 @@ impl Tool {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DockItem {
+    Tool(Tool),
+    Spacing { kind: Spacing, id: u32 },
+}
+
+impl DockItem {
+    fn preference(self) -> Json {
+        match self {
+            Self::Tool(tool) => json!(tool.key()),
+            Self::Spacing { kind, id } => json!({"spacing": kind.key(), "id": id}),
+        }
+    }
+
+    fn read(value: &Json) -> Option<Self> {
+        if let Some(tool) = Tool::read(value) {
+            return Some(Self::Tool(tool));
+        }
+        let kind = value["spacing"].as_str().and_then(Spacing::read)?;
+        let id = u32::try_from(value["id"].as_u64()?).ok()?;
+        Some(Self::Spacing { kind, id })
+    }
+}
+
 const AREA_LABELS: [&str; 4] = [
     "dock-left",
     "dock-right",
@@ -99,35 +124,41 @@ pub(super) fn workspace_scroll() -> egui::style::ScrollStyle {
 
 #[derive(Clone, Debug)]
 pub(super) struct Dock {
-    tools: [Vec<Tool>; 4],
+    items: [Vec<DockItem>; 4],
     active: [Option<Tool>; 4],
     sizes: [f32; 3],
     hidden: Vec<Tool>,
     pub(super) names: bool,
     tab: Tab,
+    next_spacing_id: u32,
 }
 
 impl Default for Dock {
     fn default() -> Self {
         Self {
-            tools: [
-                Tool::CATALOGUE.to_vec(),
-                vec![Tool::Properties],
-                vec![Tool::GraphInfo],
-                vec![Tool::Problems, Tool::Log],
+            items: [
+                Tool::CATALOGUE.into_iter().map(DockItem::Tool).collect(),
+                vec![DockItem::Tool(Tool::Properties)],
+                vec![DockItem::Tool(Tool::GraphInfo)],
+                vec![DockItem::Tool(Tool::Problems), DockItem::Tool(Tool::Log)],
             ],
             active: [Some(Tool::Nodes), Some(Tool::Properties), None, None],
             sizes: [280.0, 280.0, 170.0],
             hidden: Vec::new(),
             names: false,
             tab: Tab::Nodes,
+            next_spacing_id: 0,
         }
     }
 }
 
 impl Dock {
     fn area(&self, tool: Tool) -> Option<usize> {
-        self.tools.iter().position(|tools| tools.contains(&tool))
+        self.item_area(DockItem::Tool(tool))
+    }
+
+    fn item_area(&self, item: DockItem) -> Option<usize> {
+        self.items.iter().position(|items| items.contains(&item))
     }
 
     fn visible(&self, tool: Tool) -> bool {
@@ -154,29 +185,69 @@ impl Dock {
     }
 
     fn move_tool(&mut self, tool: Tool, destination: usize, before: Option<Tool>) {
-        if before == Some(tool) {
+        self.move_item(
+            DockItem::Tool(tool),
+            destination,
+            before.map(DockItem::Tool),
+        );
+    }
+
+    fn move_item(&mut self, item: DockItem, destination: usize, before: Option<DockItem>) {
+        if before == Some(item) || destination >= self.items.len() {
             return;
         }
-        let Some(source) = self.area(tool) else {
+        let Some(source) = self.item_area(item) else {
             return;
         };
-        self.show(tool, false);
-        self.tools[source].retain(|item| *item != tool);
-        let tools = &mut self.tools[destination];
+        if let DockItem::Tool(tool) = item {
+            self.show(tool, false);
+        }
+        self.items[source].retain(|current| *current != item);
+        let Some(items) = self.items.get_mut(destination) else {
+            return;
+        };
         let index = before
-            .and_then(|target| tools.iter().position(|item| *item == target))
-            .unwrap_or(tools.len());
-        tools.insert(index, tool);
-        self.hidden.retain(|hidden| *hidden != tool);
-        self.active[destination] = Some(tool);
+            .and_then(|target| items.iter().position(|current| *current == target))
+            .unwrap_or(items.len());
+        items.insert(index, item);
+        if let DockItem::Tool(tool) = item {
+            self.hidden.retain(|hidden| *hidden != tool);
+            self.active[destination] = Some(tool);
+        }
+    }
+
+    fn add_spacing(&mut self, kind: Spacing, area: usize) -> bool {
+        let Some(next_id) = self.next_spacing_id.checked_add(1) else {
+            return false;
+        };
+        let Some(items) = self.items.get_mut(area) else {
+            return false;
+        };
+        items.push(DockItem::Spacing {
+            kind,
+            id: self.next_spacing_id,
+        });
+        self.next_spacing_id = next_id;
+        true
+    }
+
+    fn remove_spacing(&mut self, item: DockItem) {
+        if matches!(item, DockItem::Spacing { .. }) {
+            for items in &mut self.items {
+                items.retain(|current| *current != item);
+            }
+        }
     }
 
     pub(super) fn preferences(&self) -> Json {
-        let tools = self
-            .tools
-            .each_ref()
-            .map(|tools| tools.iter().map(|tool| tool.key()).collect::<Vec<_>>());
-        json!({"tools": tools, "active": self.active.map(|tool| tool.map(Tool::key)), "sizes": self.sizes, "names": self.names, "hidden": self.hidden.iter().map(|tool| tool.key()).collect::<Vec<_>>() })
+        let items = self.items.each_ref().map(|items| {
+            items
+                .iter()
+                .copied()
+                .map(DockItem::preference)
+                .collect::<Vec<_>>()
+        });
+        json!({"tools": items, "active": self.active.map(|tool| tool.map(Tool::key)), "sizes": self.sizes, "names": self.names, "hidden": self.hidden.iter().map(|tool| tool.key()).collect::<Vec<_>>() })
     }
 
     pub(super) fn restore(&mut self, value: &Json) {
@@ -185,23 +256,28 @@ impl Dock {
         };
         let defaults = Self::default();
         let mut seen = Vec::new();
-        self.tools = std::array::from_fn(|area| {
+        let mut next_spacing_id = 0;
+        self.items = std::array::from_fn(|area| {
             groups[area]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(Tool::read)
-                .filter(|tool| {
-                    if seen.contains(tool) {
+                .filter_map(DockItem::read)
+                .filter(|item| {
+                    if seen.contains(item) {
                         return false;
                     }
-                    seen.push(*tool);
+                    if let DockItem::Spacing { id, .. } = item {
+                        next_spacing_id = next_spacing_id.max(id.saturating_add(1));
+                    }
+                    seen.push(*item);
                     true
                 })
                 .collect()
         });
-        for (area, tools) in defaults.tools.iter().enumerate() {
-            self.tools[area].extend(tools.iter().copied().filter(|tool| !seen.contains(tool)));
+        self.next_spacing_id = next_spacing_id;
+        for (area, items) in defaults.items.iter().enumerate() {
+            self.items[area].extend(items.iter().copied().filter(|item| !seen.contains(item)));
         }
         self.names = value["names"].as_bool().unwrap_or(false);
         self.hidden = value["hidden"]
@@ -211,8 +287,9 @@ impl Dock {
             .filter_map(Tool::read)
             .collect();
         self.active = std::array::from_fn(|area| {
-            Tool::read(&value["active"][area])
-                .filter(|tool| self.tools[area].contains(tool) && !self.hidden.contains(tool))
+            Tool::read(&value["active"][area]).filter(|tool| {
+                self.items[area].contains(&DockItem::Tool(*tool)) && !self.hidden.contains(tool)
+            })
         });
         for (index, size) in self.sizes.iter_mut().enumerate() {
             *size = value["sizes"][index]
@@ -481,16 +558,66 @@ impl Editor {
         }
     }
 
-    fn dock_tabs(&mut self, ui: &mut egui::Ui, area: usize, slots: &mut Vec<(Tool, egui::Rect)>) {
-        let mut tools = self.dock.tools[area].clone();
+    fn dock_tabs(
+        &mut self,
+        ui: &mut egui::Ui,
+        area: usize,
+        slots: &mut Vec<(DockItem, egui::Rect)>,
+    ) {
+        let mut items = self.dock.items[area]
+            .iter()
+            .copied()
+            .filter(|item| match item {
+                DockItem::Tool(tool) => !self.dock.hidden.contains(tool),
+                DockItem::Spacing { .. } => true,
+            })
+            .collect::<Vec<_>>();
         if area >= 2 {
-            tools.reverse();
+            items.reverse();
         }
-        for tool in tools
-            .into_iter()
-            .filter(|tool| !self.dock.hidden.contains(tool))
-            .collect::<Vec<_>>()
-        {
+        let flexible_count = items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    DockItem::Spacing {
+                        kind: Spacing::Flexible,
+                        ..
+                    }
+                )
+            })
+            .count();
+        let fixed_height = items
+            .iter()
+            .map(|item| match item {
+                DockItem::Tool(_) => 26.0,
+                DockItem::Spacing { kind, .. } => kind.extent(0.0),
+            })
+            .sum::<f32>()
+            + ui.spacing().item_spacing.y * items.len().saturating_sub(1) as f32;
+        let flexible = ((ui.available_height() - fixed_height).max(0.0)
+            / flexible_count.max(1) as f32)
+            .max(0.0);
+        for item in items {
+            if let DockItem::Spacing { kind, .. } = item {
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), kind.extent(flexible)),
+                    egui::Sense::click_and_drag(),
+                );
+                kind.paint(ui, rect, false);
+                slots.push((item, rect));
+                response.dnd_set_drag_payload(item);
+                response.context_menu(|ui| {
+                    if ui.button(t("bar-remove-spacing")).clicked() {
+                        self.dock.remove_spacing(item);
+                        ui.close();
+                    }
+                });
+                continue;
+            }
+            let DockItem::Tool(tool) = item else {
+                continue;
+            };
             let active = self.dock.active[area] == Some(tool);
             let label = match tool {
                 Tool::Nodes => format!(
@@ -519,8 +646,8 @@ impl Editor {
                 egui::WidgetInfo::selected(egui::Role::Button, true, active, t(tool.key()))
             });
             let response = response.on_hover_text(label);
-            slots.push((tool, response.rect));
-            response.dnd_set_drag_payload(tool);
+            slots.push((item, response.rect));
+            response.dnd_set_drag_payload(item);
             if response.clicked() {
                 self.dock.show(tool, !active);
                 if !active {
@@ -539,6 +666,7 @@ impl Editor {
                 }
                 ui.checkbox(&mut self.dock.names, t("dock-show-names"));
                 self.dock_add_menu(ui, area);
+                self.dock_add_spacing_menu(ui, area);
                 ui.add_space(4.0);
                 for (destination, label) in AREA_LABELS.into_iter().enumerate() {
                     if ui
@@ -557,6 +685,7 @@ impl Editor {
                 .context_menu(|ui| {
                     ui.checkbox(&mut self.dock.names, t("dock-show-names"));
                     self.dock_add_menu(ui, area);
+                    self.dock_add_spacing_menu(ui, area);
                 });
         }
     }
@@ -578,14 +707,25 @@ impl Editor {
         });
     }
 
+    fn dock_add_spacing_menu(&mut self, ui: &mut egui::Ui, area: usize) {
+        ui.menu_button(t("toolbar-add-spacing"), |ui| {
+            for kind in Spacing::ALL {
+                if ui.button(t(kind.add_key())).clicked() {
+                    self.dock.add_spacing(kind, area);
+                    ui.close();
+                }
+            }
+        });
+    }
+
     fn dock_drop(
         &mut self,
         ui: &egui::Ui,
         targets: [egui::Rect; 4],
         rails: [egui::Rect; 4],
-        slots: &[(Tool, egui::Rect)],
+        slots: &[(DockItem, egui::Rect)],
     ) {
-        let Some(tool) = egui::DragAndDrop::payload::<Tool>(ui.ctx()) else {
+        let Some(item) = egui::DragAndDrop::payload::<DockItem>(ui.ctx()) else {
             return;
         };
         let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) else {
@@ -601,7 +741,7 @@ impl Editor {
         };
         let before = slots
             .iter()
-            .find(|(item, rect)| self.dock.area(*item) == Some(area) && rect.contains(pointer))
+            .find(|(slot, rect)| self.dock.item_area(*slot) == Some(area) && rect.contains(pointer))
             .map(|(item, _)| *item);
         ui.ctx()
             .layer_painter(egui::LayerId::new(
@@ -615,8 +755,12 @@ impl Editor {
                 egui::StrokeKind::Inside,
             );
         if ui.input(|input| input.pointer.primary_released()) {
-            let _ = egui::DragAndDrop::take_payload::<Tool>(ui.ctx());
-            self.move_dock_tool(*tool, area, before);
+            let _ = egui::DragAndDrop::take_payload::<DockItem>(ui.ctx());
+            self.dock.move_item(*item, area, before);
+            if let DockItem::Tool(tool) = *item {
+                self.remember_catalogue_tool(tool);
+                self.sync_panels_from_dock();
+            }
             ui.ctx().request_repaint();
         }
     }
@@ -765,7 +909,9 @@ mod tests {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 500.0));
         let at = egui::pos2(screen.right() - RAIL / 2.0, screen.bottom() - 108.0);
         let menu = t("dock-add-icon");
+        let spacing_menu = t("toolbar-add-spacing");
         let mut menu_shown = false;
+        let mut spacing_menu_shown = false;
         for events in [
             vec![],
             vec![egui::Event::PointerMoved(at)],
@@ -793,10 +939,16 @@ mod tests {
                     editor.dock_layout(ui, &mut host);
                 },
             );
-            menu_shown |= output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == menu));
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    menu_shown |= text.galley.text() == menu;
+                    spacing_menu_shown |= text.galley.text() == spacing_menu;
+                }
+            }
             output.drop_without_applying_deltas();
         }
         assert!(menu_shown);
+        assert!(spacing_menu_shown);
     }
 
     #[test]
@@ -908,7 +1060,7 @@ mod tests {
     #[test]
     fn hidden_tools_stay_hidden_until_added_to_a_rail() {
         let mut dock = Dock::default();
-        assert_eq!(dock.tools[0], Tool::CATALOGUE);
+        assert_eq!(dock.items[0], Tool::CATALOGUE.map(DockItem::Tool));
         dock.hide(Tool::Nodes);
         dock.names = true;
         let mut restored = Dock::default();
@@ -927,7 +1079,13 @@ mod tests {
     fn tabs_can_be_reordered_and_fit_into_each_area() {
         let mut dock = Dock::default();
         dock.move_tool(Tool::Connections, 1, Some(Tool::Properties));
-        assert_eq!(dock.tools[1], [Tool::Connections, Tool::Properties]);
+        assert_eq!(
+            dock.items[1],
+            [
+                DockItem::Tool(Tool::Connections),
+                DockItem::Tool(Tool::Properties)
+            ]
+        );
         for area in [0, 2, 3, 1] {
             dock.move_tool(Tool::Connections, area, None);
             assert_eq!(dock.area(Tool::Connections), Some(area));
@@ -935,7 +1093,29 @@ mod tests {
         }
         let mut restored = Dock::default();
         restored.restore(&dock.preferences());
-        assert_eq!(restored.tools, dock.tools);
+        assert_eq!(restored.items, dock.items);
         assert_eq!(restored.active, dock.active);
+    }
+
+    #[test]
+    fn spacing_items_can_be_reordered_removed_and_restored() {
+        let mut dock = Dock::default();
+        assert!(dock.add_spacing(Spacing::Flexible, 0));
+        assert!(dock.add_spacing(Spacing::Fixed, 0));
+        assert!(dock.add_spacing(Spacing::Divider, 0));
+        let flexible = dock.items[0][Tool::CATALOGUE.len()];
+        dock.move_item(flexible, 2, Some(DockItem::Tool(Tool::GraphInfo)));
+        assert_eq!(dock.item_area(flexible), Some(2));
+
+        let mut restored = Dock::default();
+        restored.restore(&dock.preferences());
+        assert_eq!(restored.items, dock.items);
+        assert!(restored.add_spacing(Spacing::Flexible, 3));
+        let next = *restored.items[3].last().unwrap();
+        assert_ne!(next, flexible);
+
+        restored.remove_spacing(flexible);
+        assert_eq!(restored.item_area(flexible), None);
+        assert_eq!(restored.item_area(DockItem::Tool(Tool::GraphInfo)), Some(2));
     }
 }
