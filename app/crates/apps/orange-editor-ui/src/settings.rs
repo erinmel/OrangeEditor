@@ -88,51 +88,36 @@ pub(crate) enum Section {
     #[default]
     Search,
     Display,
-    Shortcuts,
-    Extensions,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) enum DisplayPage {
-    #[default]
-    Appearance,
-    Workspace,
+    Panels,
     Toolbar,
     Canvas,
-}
-
-impl DisplayPage {
-    const ALL: [Self; 4] = [
-        Self::Appearance,
-        Self::Workspace,
-        Self::Toolbar,
-        Self::Canvas,
-    ];
-
-    fn title(self) -> &'static str {
-        t(match self {
-            Self::Appearance => "appearance",
-            Self::Workspace => "settings-panels",
-            Self::Toolbar => "toolbar-visibility",
-            Self::Canvas => "settings-canvas",
-        })
-    }
+    Shortcuts,
+    Extensions,
+    Plugins,
 }
 
 impl Section {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 8] = [
         Self::Search,
         Self::Display,
+        Self::Panels,
+        Self::Toolbar,
+        Self::Canvas,
         Self::Shortcuts,
         Self::Extensions,
+        Self::Plugins,
     ];
 
     fn title_key(self) -> &'static str {
         match self {
             Self::Search => "search-heading",
-            Self::Display => "display-heading",
+            Self::Display => "general-display",
+            Self::Panels => "settings-panels",
+            Self::Toolbar => "toolbar-visibility",
+            Self::Canvas => "settings-canvas",
             Self::Shortcuts => "shortcuts-heading",
-            Self::Extensions => "settings-extensions",
+            Self::Extensions => "packages",
+            Self::Plugins => "native-plugins",
         }
     }
 
@@ -155,14 +140,33 @@ impl Section {
                 "settings-language-help",
             ],
             Self::Display => &[
+                "display-heading",
                 "display-section-words",
                 "interface-scale",
                 "appearance",
                 "appearance-system",
                 "appearance-light",
                 "appearance-dark",
+                "corner-radius",
+                "radius-docks",
+                "radius-windows",
+                "radius-menus",
+                "radius-controls",
+            ],
+            Self::Panels => &[
+                "dock-show-names",
                 "show-left-panel",
                 "show-right-panel",
+                "status-visibility",
+                "status-cpu",
+                "status-network",
+                "tree-appearance",
+                "tree-guides",
+                "tree-arrows",
+                "tree-background",
+            ],
+            Self::Toolbar => &["customize-toolbar", "toolbar-reset", "toolbar-flex-spacer"],
+            Self::Canvas => &[
                 "wheel-pans",
                 "snap-grid",
                 "grid-type",
@@ -171,21 +175,17 @@ impl Section {
                 "grid-hidden",
                 "grid-spacing",
                 "wireless-opacity",
-                "corner-radius",
-                "radius-docks",
-                "radius-windows",
-                "radius-menus",
-                "radius-controls",
-                "toolbar-visibility",
-                "status-visibility",
-                "tree-appearance",
+            ],
+            Self::Plugins => &[
+                "settings-extensions",
+                "native-plugins-hint",
+                "manage-native-plugins",
             ],
             Self::Shortcuts => &["shortcuts-section-words", "restore-default-shortcuts"],
             Self::Extensions => &[
                 "packages",
                 "import-package",
-                "native-plugins",
-                "native-plugins-hint",
+                "settings-extensions",
                 "graph-bundles",
                 "open-shared-graph",
                 "share-with-packages",
@@ -196,10 +196,27 @@ impl Section {
 }
 
 impl Editor {
+    /// Opens the native plugin management page for hosts that supply it.
+    pub fn open_native_plugin_settings(&mut self) {
+        self.settings_open = true;
+        self.settings_tab = Section::Plugins;
+        self.settings_search.clear();
+    }
+
+    #[cfg(test)]
     pub(crate) fn settings_window(
         &mut self,
         ctx: &egui::Context,
         host: &mut Host,
+    ) -> Option<egui::Rect> {
+        self.settings_window_with_plugins(ctx, host, &mut |_| {})
+    }
+
+    pub(crate) fn settings_window_with_plugins(
+        &mut self,
+        ctx: &egui::Context,
+        host: &mut Host,
+        plugins: &mut dyn FnMut(&mut egui::Ui),
     ) -> Option<egui::Rect> {
         let mut open = self.settings_open;
         if !open {
@@ -226,7 +243,7 @@ impl Editor {
             .show(ctx, |ui| {
                 let size = ui.available_size().clamp(min_size, max_size);
                 let (content, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                self.settings_content(ui, ctx, content, host)
+                self.settings_content(ui, ctx, content, host, plugins)
             });
         self.settings_open = open
             && !shown
@@ -234,6 +251,7 @@ impl Editor {
                 .is_some_and(|window| window.inner == Some(true));
         if !self.settings_open {
             self.shortcut_edit = None;
+            self.shortcut_reset_open = false;
         }
         shown.map(|window| window.response.rect)
     }
@@ -244,6 +262,7 @@ impl Editor {
         ctx: &egui::Context,
         content: egui::Rect,
         host: &mut Host,
+        plugins: &mut dyn FnMut(&mut egui::Ui),
     ) -> bool {
         let palette = orange_ui_controls::Theme::of(ui);
         let footer_height = CONTROL_HEIGHT + SPACE_MEDIUM * 2.0;
@@ -282,14 +301,16 @@ impl Editor {
         let query = self.settings_search.trim().to_owned();
         let prepared = orange_host::SearchQuery::new(&query);
         let ranks = Section::ALL.map(|section| {
-            let rank = section.relevance(&prepared);
-            if section == Section::Shortcuts {
-                rank.into_iter()
-                    .chain(self.shortcut_search_rank(&query))
-                    .min()
-            } else {
-                rank
+            if section == Section::Plugins && !self.native_plugins {
+                return None;
             }
+            let rank = section.relevance(&prepared);
+            let page_rank = match section {
+                Section::Shortcuts => self.shortcut_search_rank(&query),
+                Section::Toolbar => self.toolbar_search_rank(&prepared),
+                _ => None,
+            };
+            rank.into_iter().chain(page_rank).min()
         });
         let current = Section::ALL
             .iter()
@@ -322,7 +343,7 @@ impl Editor {
             )
         };
         let mut nav = settings_pane(ui, "settings-navigation", navigation);
-        self.settings_navigation(&mut nav, matches, compact);
+        self.settings_navigation(&mut nav, matches, compact, !query.is_empty());
         if previous != self.settings_tab || !matches.iter().any(|&found| found) {
             self.shortcut_edit = None;
         }
@@ -358,29 +379,12 @@ impl Editor {
             match self.settings_tab {
                 Section::Extensions => {
                     self.graph_bundle_menu(&mut page, host);
-                    if self.native_plugins
-                        && controls::button(
-                            &mut page,
-                            Surface::Dialog,
-                            Action::Secondary,
-                            true,
-                            egui::Button::new((
-                                icons::text(icons::FULL_ACCESS),
-                                t("manage-native-plugins"),
-                            )),
-                        )
-                        .clicked()
-                    {
-                        self.ask(FileRequest::NativePlugins);
-                        ctx.request_repaint();
-                        return true;
-                    }
-                    if self.native_plugins {
-                        page.weak(t("native-plugins-hint"));
-                        page.add_space(SPACE_SMALL);
-                    }
-                    page.strong(t("packages"));
                     self.package_manager(&mut page, host);
+                }
+                Section::Plugins => {
+                    egui::ScrollArea::vertical()
+                        .id_salt("native-plugins")
+                        .show(&mut page, plugins);
                 }
                 Section::Shortcuts => self.keybindings_ui(
                     &mut page,
@@ -390,7 +394,11 @@ impl Editor {
                         &query
                     },
                 ),
-                Section::Search | Section::Display => {
+                Section::Search
+                | Section::Display
+                | Section::Panels
+                | Section::Toolbar
+                | Section::Canvas => {
                     egui::ScrollArea::vertical()
                         .id_salt("settings-fields")
                         .show(&mut page, |ui| {
@@ -461,7 +469,13 @@ impl Editor {
         .changed()
     }
 
-    fn settings_navigation(&mut self, nav: &mut egui::Ui, matches: [bool; 4], compact: bool) {
+    fn settings_navigation(
+        &mut self,
+        nav: &mut egui::Ui,
+        matches: [bool; 8],
+        compact: bool,
+        searching: bool,
+    ) {
         if !matches.iter().any(|&found| found) {
             return;
         }
@@ -476,88 +490,196 @@ impl Editor {
                         }
                     }
                 });
-        } else {
-            for (section, found) in Section::ALL.into_iter().zip(matches) {
-                if found {
-                    let selected = self.settings_tab == section;
-                    let glyph = match section {
-                        Section::Search => icons::SEARCH,
-                        Section::Display => icons::DISPLAY,
-                        Section::Shortcuts => icons::KEYBOARD,
-                        Section::Extensions => icons::PACKAGES,
+            return;
+        }
+        let section_before_navigation = self.settings_tab;
+        let found = |section| {
+            Section::ALL
+                .iter()
+                .zip(matches)
+                .any(|(&page, matched)| page == section && matched)
+        };
+        egui::ScrollArea::vertical()
+            .id_salt("settings-tree")
+            .show(nav, |ui| {
+                if found(Section::Search) {
+                    self.settings_tree_row(ui, Section::Search, icons::SEARCH);
+                }
+                let display = [
+                    Section::Display,
+                    Section::Panels,
+                    Section::Toolbar,
+                    Section::Canvas,
+                ];
+                for (title, pages) in [
+                    ("display-heading", display.as_slice()),
+                    (
+                        "settings-extensions",
+                        [Section::Extensions, Section::Plugins].as_slice(),
+                    ),
+                ] {
+                    if !pages.iter().copied().any(found) {
+                        continue;
+                    }
+                    let id = ui.make_persistent_id(title);
+                    let stored = ui
+                        .ctx()
+                        .data(|data| data.get_temp::<bool>(id))
+                        .unwrap_or_else(|| pages.contains(&self.settings_tab));
+                    let mut expanded = stored
+                        || searching
+                        || (pages.contains(&self.settings_tab)
+                            && self.settings_tab != self.last_settings_tab);
+                    let glyph = if title == "display-heading" {
+                        icons::DISPLAY
+                    } else {
+                        icons::PACKAGES
                     };
                     if orange_ui_controls::navigation::sidebar_row(
-                        nav,
-                        section.title(),
-                        selected,
-                        None,
+                        ui,
+                        t(title),
+                        pages.contains(&self.settings_tab),
+                        Some(expanded),
                         |ui, rect, ink| {
-                            icons::paint_centered(ui.painter(), rect.center(), glyph, 16.0, ink)
+                            icons::paint_centered(ui.painter(), rect.center(), glyph, 15.0, ink)
                         },
                     )
                     .clicked()
+                        && !searching
                     {
-                        self.settings_tab = section;
+                        expanded = !expanded;
+                        ui.ctx().data_mut(|data| data.insert_temp(id, expanded));
+                        if expanded && !pages.contains(&self.settings_tab) {
+                            self.settings_tab = pages[0];
+                        }
+                    }
+                    if expanded {
+                        if !searching {
+                            ui.ctx().data_mut(|data| data.insert_temp(id, true));
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add_space(9.0);
+                            ui.vertical(|ui| {
+                                for &section in pages {
+                                    if found(section) {
+                                        let icon = match section {
+                                            Section::Display => icons::DISPLAY,
+                                            Section::Panels => icons::PROPERTIES,
+                                            Section::Toolbar => icons::SETTINGS,
+                                            Section::Canvas => icons::GRID,
+                                            Section::Extensions => icons::PACKAGES,
+                                            _ => icons::FULL_ACCESS,
+                                        };
+                                        self.settings_tree_row(ui, section, icon);
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    if title == "display-heading" && found(Section::Shortcuts) {
+                        self.settings_tree_row(ui, Section::Shortcuts, icons::KEYBOARD);
                     }
                 }
-            }
+                if !display.into_iter().any(found) && found(Section::Shortcuts) {
+                    self.settings_tree_row(ui, Section::Shortcuts, icons::KEYBOARD);
+                }
+            });
+        if self.settings_tab == section_before_navigation {
+            self.last_settings_tab = self.settings_tab;
+        }
+    }
+
+    fn settings_tree_row(&mut self, ui: &mut egui::Ui, section: Section, glyph: char) {
+        if orange_ui_controls::navigation::sidebar_row(
+            ui,
+            section.title(),
+            self.settings_tab == section,
+            None,
+            |ui, rect, ink| icons::paint_centered(ui.painter(), rect.center(), glyph, 15.0, ink),
+        )
+        .clicked()
+        {
+            self.settings_tab = section;
         }
     }
 
     fn display_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.settings_search.trim().is_empty() {
-            egui::ComboBox::from_id_salt("display-page")
-                .selected_text(self.display_page.title())
-                .show_select(ui, Surface::Dialog, |ui| {
-                    for page in DisplayPage::ALL {
-                        ui.selectable_value(&mut self.display_page, page, page.title());
-                    }
-                });
-            ui.add_space(SPACE_MEDIUM);
-        }
-        let searching = !self.settings_search.trim().is_empty();
-        if searching || self.display_page == DisplayPage::Appearance {
+        if self.settings_tab == Section::Display {
             self.appearance_picker(ui, ctx);
             self.interface_scale_picker(ui, ctx);
             self.corner_settings(ui, ctx);
         }
-        if searching || self.display_page == DisplayPage::Workspace {
+        if self.settings_tab == Section::Panels {
             ui.add_space(SPACE_LARGE);
             settings_group(ui, t("settings-panels"), |ui| {
-                ui.checkbox(&mut self.dock.names, t("dock-show-names"));
-                orange_ui_controls::toggle(
+                orange_ui_controls::navigation::settings_toggle(
                     ui,
-                    Surface::Dialog,
+                    &mut self.dock.names,
+                    t("dock-show-names"),
+                );
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
                     &mut self.panels.nodes,
                     t("show-left-panel"),
                 );
-                orange_ui_controls::toggle(
+                orange_ui_controls::navigation::settings_toggle(
                     ui,
-                    Surface::Dialog,
                     &mut self.panels.properties,
                     t("show-right-panel"),
                 );
             });
             ui.add_space(SPACE_LARGE);
             settings_group(ui, t("tree-appearance"), |ui| {
-                ui.checkbox(&mut self.tree_style.guides, t("tree-guides"));
-                ui.checkbox(&mut self.tree_style.arrows, t("tree-arrows"));
-                ui.checkbox(&mut self.tree_style.branch_background, t("tree-background"));
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
+                    &mut self.tree_style.guides,
+                    t("tree-guides"),
+                );
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
+                    &mut self.tree_style.arrows,
+                    t("tree-arrows"),
+                );
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
+                    &mut self.tree_style.branch_background,
+                    t("tree-background"),
+                );
             });
         }
-        if searching || self.display_page == DisplayPage::Toolbar {
+        if self.settings_tab == Section::Toolbar {
             self.toolbar_options(ui, true);
         }
-        if searching || self.display_page == DisplayPage::Workspace {
+        if self.settings_tab == Section::Panels {
             settings_group(ui, t("status-visibility"), |ui| {
-                ui.checkbox(&mut self.bars.status, t("status-show"));
-                ui.checkbox(&mut self.bars.zoom, t("zoom-controls"));
-                ui.checkbox(&mut self.bars.graph_state, t("graph-info"));
-                ui.checkbox(&mut self.bars.cpu, t("status-cpu"));
-                ui.checkbox(&mut self.bars.network, t("status-network"));
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
+                    &mut self.bars.status,
+                    t("status-show"),
+                );
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
+                    &mut self.bars.zoom,
+                    t("zoom-controls"),
+                );
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
+                    &mut self.bars.graph_state,
+                    t("graph-info"),
+                );
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
+                    &mut self.bars.cpu,
+                    t("status-cpu"),
+                );
+                orange_ui_controls::navigation::settings_toggle(
+                    ui,
+                    &mut self.bars.network,
+                    t("status-network"),
+                );
             });
         }
-        if searching || self.display_page == DisplayPage::Canvas {
+        if self.settings_tab == Section::Canvas {
             ui.add_space(SPACE_LARGE);
             settings_group(ui, t("settings-canvas"), |ui| {
                 setting_row(ui, t("grid-type"), |ui, label| {
@@ -608,15 +730,13 @@ impl Editor {
                     }
                 });
                 ui.add_space(SPACE_SMALL);
-                orange_ui_controls::toggle(
+                orange_ui_controls::navigation::settings_toggle(
                     ui,
-                    Surface::Dialog,
                     &mut self.canvas.snap,
                     t("snap-grid"),
                 );
-                orange_ui_controls::toggle(
+                orange_ui_controls::navigation::settings_toggle(
                     ui,
-                    Surface::Dialog,
                     &mut self.canvas.scroll_pans,
                     t("wheel-pans"),
                 );

@@ -197,6 +197,9 @@ impl eframe::App for Desktop {
         } else if self.system_status.take().is_some() {
             self.editor.set_system_status(Default::default());
         }
+        if self.bare.is_none() && self.shot.is_none() && std::mem::take(&mut self.native.open) {
+            self.editor.open_native_plugin_settings();
+        }
         match &mut self.bare {
             // All an embedding application does: show the canvas where it wants it.
             Some((graph, canvas)) => {
@@ -208,12 +211,11 @@ impl eframe::App for Desktop {
                 self.editor
                     .ui_with_layout(ui, &mut self.host, Editor::canvas_panel);
             }
-            None => self.editor.ui(ui, &mut self.host),
+            None => self
+                .editor
+                .ui_with_native_plugins(ui, &mut self.host, |ui| self.native.settings_page(ui)),
         }
         open_links(ui.ctx());
-        if self.bare.is_none() && self.shot.is_none() {
-            self.native.dialog(ui.ctx());
-        }
         let (events, focused) = ui.input(|input| (input.events.clone(), input.focused));
         let editing = ui.ctx().text_edit_focused() || ui.ctx().any_popup_open();
         let problems = self.keyboard.handle(&events, focused, |key, modifiers| {

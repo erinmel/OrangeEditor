@@ -34,7 +34,7 @@ pub fn sidebar_row(
         let ink = crate::theme::ensure_contrast(palette.text, fill, crate::theme::TEXT_CONTRAST);
         let painter = ui.painter_at(rect);
         if selected || response.hovered() {
-            painter.rect_filled(rect, 3, fill);
+            painter.rect_filled(rect, super::control_radius(ui.ctx()), fill);
         }
         if selected {
             painter.rect_filled(
@@ -90,6 +90,124 @@ pub fn sidebar_row(
     }
     response
 }
+/// A full-width row with vertically centered content and trailing controls.
+pub fn settings_row(
+    ui: &mut Ui,
+    height: f32,
+    trailing_width: f32,
+    leading: impl FnOnce(&mut Ui),
+    trailing: impl FnOnce(&mut Ui),
+) -> egui::Rect {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let split = (rect.right() - trailing_width).max(rect.left());
+    let cell = |index, bounds, layout| {
+        let mut cell = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(index)
+                .max_rect(bounds)
+                .layout(layout),
+        );
+        cell.set_clip_rect(ui.clip_rect().intersect(bounds));
+        cell
+    };
+    let mut cell = cell;
+    leading(&mut cell(
+        0,
+        egui::Rect::from_min_max(rect.min, egui::pos2(split, rect.bottom())),
+        egui::Layout::left_to_right(egui::Align::Center),
+    ));
+    trailing(&mut cell(
+        1,
+        egui::Rect::from_min_max(egui::pos2(split, rect.top()), rect.max),
+        egui::Layout::right_to_left(egui::Align::Center),
+    ));
+    rect
+}
+
+/// A large drag target with a centered grip, painted using the bundled icon font.
+#[cfg(feature = "icons")]
+pub fn drag_grip(ui: &mut Ui, glyph: char, label: &str) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 32.0), egui::Sense::drag());
+    if response.hovered() || response.dragged() {
+        ui.painter().rect_filled(
+            rect.shrink(2.0),
+            super::control_radius(ui.ctx()),
+            ui.visuals().widgets.hovered.bg_fill,
+        );
+    }
+    crate::icons::paint_centered(
+        ui.painter(),
+        rect.center(),
+        glyph,
+        18.0,
+        ui.visuals().weak_text_color(),
+    );
+    response
+        .on_hover_and_drag_cursor(egui::CursorIcon::Grab)
+        .on_hover_text(label)
+}
+
+/// A splitter with a wide hit area across the edge and a slim grip inside it.
+/// Pass a cardinal unit vector pointing from the edge into the panel.
+pub fn splitter(
+    ui: &Ui,
+    id: egui::Id,
+    edge: egui::Rect,
+    inward: egui::Vec2,
+    label: &str,
+) -> Response {
+    let vertical = inward.x != 0.0;
+    let thickness = 3.0;
+    let length = 40.0;
+    let hit = edge.expand2(if vertical {
+        egui::vec2(8.0, 0.0)
+    } else {
+        egui::vec2(0.0, 8.0)
+    });
+    let response = ui
+        .interact(hit, id, egui::Sense::click_and_drag())
+        .on_hover_and_drag_cursor(if vertical {
+            egui::CursorIcon::ResizeHorizontal
+        } else {
+            egui::CursorIcon::ResizeVertical
+        });
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Splitter, ui.is_enabled(), label));
+    let size = if vertical {
+        egui::vec2(thickness, edge.height().min(length))
+    } else {
+        egui::vec2(edge.width().min(length), thickness)
+    };
+    let color = if response.hovered() || response.dragged() || response.has_focus() {
+        ui.visuals().selection.stroke.color
+    } else {
+        ui.visuals().weak_text_color().gamma_multiply(0.48)
+    };
+    let center = edge.center() + inward * (2.0 + thickness / 2.0);
+    ui.painter()
+        .rect_filled(egui::Rect::from_center_size(center, size), 2, color);
+    response
+}
+
+/// A settings switch with its label on the left and the control aligned to the right.
+pub fn settings_toggle(ui: &mut Ui, value: &mut bool, label: &str) {
+    settings_row(
+        ui,
+        32.0,
+        48.0,
+        |ui| {
+            ui.add(egui::Label::new(label).truncate());
+        },
+        |ui| {
+            crate::checkbox(ui, Surface::Dialog, crate::CheckStyle::Toggle, value, "")
+                .accessible_name(label);
+        },
+    );
+}
+
 pub fn breadcrumbs(ui: &mut Ui, labels: &[&str]) -> Option<usize> {
     let mut clicked = None;
     ui.horizontal_wrapped(|ui| {

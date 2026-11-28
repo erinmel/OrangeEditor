@@ -432,3 +432,20 @@ toolbar-move-earlier = 前に移動
 toolbar-move-later = 後ろに移動
 toolbar-reset = ツールバーをリセット
 toolbar-check-graph = グラフを検証
+
+toolbar-left = 左
+toolbar-center = 中央
+toolbar-right = 右
+toolbar-flex-spacer = 可変スペーサー
+toolbar-drag-action = ドラッグして並べ替え、または別のグループに移動
+shortcut-search-hint = 操作またはショートカットを検索
+shortcut-reset-confirm = すべてのカスタムショートカットを既定値に戻しますか？
+general-display = 表示の基本設定
+toolbar-add-spacer = 可変スペーサーを追加
+toolbar-action-options = コマンドのオプション
+package-source-base = 基本
+package-source-native = ネイティブ
+package-source-installed = インストール済み
+package-unavailable = 利用不可
+
+dock-resize = ドックのサイズを変更

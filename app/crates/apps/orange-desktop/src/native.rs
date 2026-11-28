@@ -182,83 +182,70 @@ impl NativePlugins {
             .map_err(|error| format!("{:?}", error.kind()))
     }
 
-    /// The dialog: the risk in plain words, each library waiting for a decision, and the
-    /// ones allowed, which can be taken back.
-    pub fn dialog(&mut self, ctx: &eframe::egui::Context) {
-        use eframe::egui;
-        if !self.open {
-            return;
-        }
-        let mut open = true;
+    pub(super) fn settings_page(&mut self, ui: &mut eframe::egui::Ui) {
         let mut approve = None;
         let mut revoke = None;
-        let _ = egui::Window::new(t("desktop-native-title"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(460.0)
-            .show(ctx, |ui| {
-                ui.colored_label(ui.visuals().warn_fg_color, t("desktop-native-risk"));
-                ui.label(t("desktop-native-vault"));
-                ui.weak(tf(
-                    "desktop-native-folder",
-                    &[("folder", self.directory.display().to_string().into())],
-                ));
-                if self.pending.is_empty() && self.approved.is_empty() {
-                    ui.separator();
-                    ui.label(t("desktop-native-empty"));
-                }
-                for file in self.approved.keys().filter(|file| {
-                    !self.loaded.iter().any(|(loaded, ..)| loaded == *file)
-                        && !self.failed.iter().any(|(failed, _)| failed == *file)
-                }) {
-                    ui.horizontal(|ui| {
-                        ui.label(file);
-                        if ui.button(t("desktop-native-revoke")).clicked() {
-                            revoke = Some(file.clone());
-                        }
-                    });
-                }
-                for library in &self.pending {
-                    ui.separator();
-                    ui.strong(&library.file);
-                    ui.weak(&library.digest);
-                    if ui.button(t("desktop-native-allow")).clicked() {
-                        approve = Some(library.clone());
-                    }
-                }
-                if !self.loaded.is_empty() || self.approved.len() > self.pending.len() {
-                    ui.separator();
-                    ui.label(t("desktop-native-allowed"));
-                }
-                for (file, id, version) in &self.loaded {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{file} — {id} {version}"));
-                        if ui.button(t("desktop-native-revoke")).clicked() {
-                            revoke = Some(file.clone());
-                        }
-                    });
-                }
-                for (file, error) in &self.failed {
-                    ui.horizontal(|ui| {
-                        ui.label(tf(
-                            "desktop-native-failed",
-                            &[
-                                ("file", file.clone().into()),
-                                ("error", error.clone().into()),
-                            ],
-                        ));
-                        if ui.button(t("desktop-native-revoke")).clicked() {
-                            revoke = Some(file.clone());
-                        }
-                    });
-                }
-                if self.restart_needed {
-                    ui.separator();
-                    ui.label(t("desktop-native-restart"));
+        ui.colored_label(ui.visuals().warn_fg_color, t("desktop-native-risk"));
+        ui.add_space(4.0);
+        ui.label(t("desktop-native-vault"));
+        ui.add_space(8.0);
+        ui.weak(tf(
+            "desktop-native-folder",
+            &[("folder", self.directory.display().to_string().into())],
+        ));
+        if self.pending.is_empty() && self.approved.is_empty() {
+            ui.add_space(8.0);
+            ui.label(t("desktop-native-empty"));
+        }
+        for file in self.approved.keys().filter(|file| {
+            !self.loaded.iter().any(|(loaded, ..)| loaded == *file)
+                && !self.failed.iter().any(|(failed, _)| failed == *file)
+        }) {
+            ui.horizontal(|ui| {
+                ui.label(file);
+                if ui.button(t("desktop-native-revoke")).clicked() {
+                    revoke = Some(file.clone());
                 }
             });
+        }
+        for library in &self.pending {
+            ui.add_space(8.0);
+            ui.strong(&library.file);
+            ui.weak(&library.digest);
+            if ui.button(t("desktop-native-allow")).clicked() {
+                approve = Some(library.clone());
+            }
+        }
+        if !self.loaded.is_empty() || self.approved.len() > self.pending.len() {
+            ui.add_space(8.0);
+            ui.label(t("desktop-native-allowed"));
+        }
+        for (file, id, version) in &self.loaded {
+            ui.horizontal(|ui| {
+                ui.label(format!("{file} — {id} {version}"));
+                if ui.button(t("desktop-native-revoke")).clicked() {
+                    revoke = Some(file.clone());
+                }
+            });
+        }
+        for (file, error) in &self.failed {
+            ui.horizontal(|ui| {
+                ui.label(tf(
+                    "desktop-native-failed",
+                    &[
+                        ("file", file.clone().into()),
+                        ("error", error.clone().into()),
+                    ],
+                ));
+                if ui.button(t("desktop-native-revoke")).clicked() {
+                    revoke = Some(file.clone());
+                }
+            });
+        }
+        if self.restart_needed {
+            ui.add_space(8.0);
+            ui.label(t("desktop-native-restart"));
+        }
         if let Some(library) = approve
             && let Err(error) = self.approve(&library)
         {
@@ -271,7 +258,6 @@ impl NativePlugins {
             self.loaded.retain(|(loaded, ..)| *loaded != file);
             self.failed.retain(|(failed, _)| *failed != file);
         }
-        self.open = open;
     }
 }
 
@@ -326,10 +312,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
-    /// The dialog opens at start for a waiting library, states the risk, and its button
-    /// records the approval for the next start.
+    /// The settings page shows the risk and records approval for the next start.
     #[test]
-    fn the_dialog_names_the_risk_and_its_button_allows_full_access() {
+    fn the_settings_page_names_the_risk_and_its_button_allows_full_access() {
         use eframe::egui;
         let directory = folder("dialog");
         let mut plugins = NativePlugins::open(directory.clone());
@@ -347,7 +332,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| plugins.dialog(ui.ctx()),
+                |ui| plugins.settings_page(ui),
             )
         };
         let (mut risk, mut allow) = (false, None);

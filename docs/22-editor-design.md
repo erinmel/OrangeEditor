@@ -12,25 +12,32 @@ Icon tabs live on the left and right rails. Top icons open side panels, and
 icons at the foot of each rail open the corresponding half of the bottom tray.
 Drag a tab to another area or onto another tab to place it before
 that tab. The tab's context menu offers the same four destinations for moving
-between areas. The side panels and bottom tray are resizable, and the two
+between areas. The icon rails have fixed widths. The side panels and bottom tray are resizable, and the two
 bottom areas appear side by side when both are open. The editor remembers tab
 placement, order, visibility, and panel sizes in application preferences.
 
 Nodes, Variables, Types, and Connections start on the left, Properties starts on the
 right, Graph Info starts at the bottom left, and Problems and Log start at the bottom
 right. Right-click an icon to hide it, then right-click free space on a rail to add
-it back in that position. Docks use padded surfaces and gutters to separate adjacent
+it back in that position. The Add icon menu shows each tool’s glyph and name. Docks use padded surfaces and gutters to separate adjacent
 panels. Resize edges become visible on hover or while dragging. Scrollbars expand
 within a reserved gutter.
 
-Settings → Display has pages for Appearance, Workspace, Toolbar, and Canvas.
-Appearance configures corner radii independently for docks, windows, menus, and
-controls. The toolbar options menu and its context menu let you show or hide
-individual commands. In Customize toolbar, move commands earlier or later in the
-left group or reset the toolbar. Check and Run are anchored near Settings and can
-be hidden individually. Workspace controls icon names and status items. Optional CPU and network readings are
-system-wide and sampled by the desktop. Manage packages and graph bundles in
-Settings → Extensions.
+The Settings sidebar groups General display, Panels, Toolbar, and Canvas under
+Display and canvas. Search narrows the tree to matching pages. General display
+sets separate corner radii for docks, windows, menus, and controls. Panels
+controls icon names and status items. Optional CPU and network readings are
+system-wide and sampled by the desktop.
+
+The toolbar menu quickly shows or hides commands. In Customize toolbar, drag a
+command to reorder it or move it between the left, center, and right groups. The
+drag preview shows the command’s icon and name, and the insertion line follows
+the target row.
+Optional flexible spacers share the room left after laying out the commands.
+Keyboard shortcuts has its own action and key search, collapsible groups, and
+a confirmation before restoring defaults. Manage packages and graph bundles in
+Settings → Extensions → Packages. Native library approvals are on the Native
+plugins page.
 
 ## Finding nodes and connecting distant sections
 
@@ -167,7 +174,7 @@ combination in the selected language.
 | Area | Decision |
 |---|---|
 | Wheel | Zooms about the pointer by default. Shift+wheel scrolls sideways, Ctrl+wheel up and down. A setting gives back scroll-first for trackpads. |
-| Grid | A magnet icon toggles Snap to grid. Grid settings uses one segmented radio group for Dots, Lines and Hidden, with one highlighted choice and arrow-key navigation. The spacing slider shows four stops at 12, 24, 36 and 48 graph units. The same controls are available in Display and canvas. Grid visibility is independent of snapping. The default spacing is 24 graph units. Round dots and pixel-aligned lines use stronger marks every four steps. Below 12 points between minor marks, only the stronger grid is drawn. Both grids keep their alignment as the canvas pans and zooms. Alt while dragging moves freely. The zoom ranges from 20% to 175%. The zoom percentage opens a continuous slider, Fit and Actual size. The slider keeps the center point of the viewport fixed. |
+| Grid | A magnet icon toggles Snap to grid. Grid settings uses one segmented radio group for Dots, Lines and Hidden, with one highlighted choice and arrow-key navigation. The spacing slider shows four stops at 12, 24, 36 and 48 graph units. The same controls are available in Display and canvas → Canvas. Grid visibility is independent of snapping. The default spacing is 24 graph units. Round dots and pixel-aligned lines use stronger marks every four steps. Below 12 points between minor marks, only the stronger grid is drawn. Both grids keep their alignment as the canvas pans and zooms. Alt while dragging moves freely. The zoom ranges from 20% to 175%. The zoom percentage opens a continuous slider, Fit and Actual size. The slider keeps the center point of the viewport fixed. |
 | Resize | The desktop uses the platform window frame for resizing. Resizing the window or a dock preserves the graph point at the center of the canvas. |
 | Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. A front card covers only the area it overlaps and receives pointer input there. Exposed controls on rear cards stay visible and usable. |
 | Wires | Execution ports are diamonds, stream ports are squares, and other data ports are circles. Execution wires are thicker. Connector hues are adjusted for contrast against the canvas and card surfaces. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked to insert a node, set or remove a reroute point, or delete the wire. Reroute points can be dragged and are saved as layout, independent of execution. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |

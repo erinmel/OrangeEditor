@@ -986,3 +986,20 @@ toolbar-move-earlier = Mover antes
 toolbar-move-later = Mover después
 toolbar-reset = Restablecer barra de herramientas
 toolbar-check-graph = Validar grafo
+
+toolbar-left = Izquierda
+toolbar-center = Centro
+toolbar-right = Derecha
+toolbar-flex-spacer = Espaciador flexible
+toolbar-drag-action = Arrastra para reordenar o mover a otro grupo
+shortcut-search-hint = Buscar acciones o atajos
+shortcut-reset-confirm = ¿Reemplazar todos los atajos personalizados con los predeterminados?
+general-display = Apariencia general
+toolbar-add-spacer = Añadir espaciador flexible
+toolbar-action-options = Opciones del comando
+package-source-base = Base
+package-source-native = Nativo
+package-source-installed = Instalado
+package-unavailable = No disponible
+
+dock-resize = Cambiar tamaño del panel

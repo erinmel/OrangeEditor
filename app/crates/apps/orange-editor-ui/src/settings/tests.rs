@@ -30,7 +30,7 @@ fn settings_and_shortcuts_search_accept_localized_and_english_terms() {
         for typed in display {
             let query = orange_host::SearchQuery::new(typed);
             assert!(
-                Section::Display.relevance(&query).is_some(),
+                Section::Canvas.relevance(&query).is_some(),
                 "{tag}: {typed}"
             );
             assert!(
@@ -294,7 +294,7 @@ fn one_search_filters_keyboard_shortcuts_on_a_compact_window() {
         },
     )
     .drop_without_applying_deltas();
-    assert_eq!(editor.settings_tab, Section::Display);
+    assert_eq!(editor.settings_tab, Section::Canvas);
 
     editor.settings_search = editor.canvas.keys.label("save-as");
     let mut found = false;

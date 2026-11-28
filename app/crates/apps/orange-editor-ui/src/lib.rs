@@ -520,7 +520,9 @@ pub struct Editor {
     preferred_theme: Option<egui::ThemePreference>,
     tree_style: orange_ui_controls::TreeStyle,
     corners: settings::Corners,
-    display_page: settings::DisplayPage,
+    last_settings_tab: settings::Section,
+    shortcut_search: String,
+    shortcut_reset_open: bool,
     bars: settings::Bars,
     toolbar_options: toolbar_options::Toolbar,
     system_status: SystemStatus,
@@ -550,8 +552,7 @@ pub struct Editor {
     /// Whether the application shows file dialogs: the toolbar then has New, Open and
     /// Save as, which it hands over through [`Editor::take_request`].
     pub file_dialogs: bool,
-    /// Whether the application loads native plugin libraries: the Packages panel then
-    /// offers [`FileRequest::NativePlugins`].
+    /// Whether the host enables the native plugins page in Settings.
     pub native_plugins: bool,
     /// Draw native window commands and a drag region in the toolbar. Opt in only
     /// when the embedding window disables its own decorations.
@@ -1906,6 +1907,27 @@ impl Editor {
         host: &mut Host,
         layout: impl FnOnce(&mut Self, &mut egui::Ui, &mut Host),
     ) {
+        self.ui_with_pages(ui, host, layout, &mut |_| {});
+    }
+
+    /// Draws the default workspace with a host-provided native plugins settings page.
+    pub fn ui_with_native_plugins(
+        &mut self,
+        ui: &mut egui::Ui,
+        host: &mut Host,
+        mut plugins: impl FnMut(&mut egui::Ui),
+    ) {
+        self.ui_with_pages(ui, host, Self::default_layout, &mut plugins);
+    }
+
+    fn ui_with_pages(
+        &mut self,
+        ui: &mut egui::Ui,
+        host: &mut Host,
+        layout: impl FnOnce(&mut Self, &mut egui::Ui, &mut Host),
+        plugins: &mut dyn FnMut(&mut egui::Ui),
+    ) {
+        i18n::set_language(self.language());
         icons::install(ui.ctx());
         if !self.scale_applied {
             if let Some(scale) = self.preferred_scale {
@@ -1967,7 +1989,7 @@ impl Editor {
         if self.window_toolbar {
             resize_borders(ui.ctx());
         }
-        let _ = self.settings_window(ui.ctx(), host);
+        let _ = self.settings_window_with_plugins(ui.ctx(), host, plugins);
         self.package_import_dialog(ui.ctx(), host);
         self.bundle_import_dialog(ui.ctx(), host);
         self.package_removal_dialog(ui.ctx(), host);
@@ -1994,10 +2016,11 @@ impl Editor {
         if self.bars.status {
             self.workspace_bar(ui);
         }
-        self.dock_layout(ui, host);
+        let splitters = self.dock_layout(ui, host);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| self.canvas_panel(ui, host));
+        self.resize_docks(ui, splitters);
     }
 
     /// Whether a host-owned focused keyboard source may use this key. The host
@@ -2029,90 +2052,13 @@ impl Editor {
                 }
                 ui.horizontal(|ui| {
                     let open = self.document.is_some();
-                    let gap = ui.spacing().item_spacing.x;
-                    let button = icons::BUTTON_WIDTH + gap;
-                    let leading_width = self
-                        .toolbar_options
-                        .leading_width(self.file_dialogs, button);
-                    let mut trailing_width = 2.0 * button + 5.0;
-                    if self.toolbar_options.check() {
-                        trailing_width += button;
-                    }
-                    if self.toolbar_options.run() {
-                        trailing_width += button;
-                    }
-                    if self.window_toolbar {
-                        trailing_width += 3.0 * button + 5.0;
-                    }
-                    if leading_width > 0.0 && ui.available_width() < leading_width + trailing_width
-                    {
-                        egui::ScrollArea::horizontal()
-                            .id_salt("toolbar-edit-commands")
-                            .max_width((ui.available_width() - trailing_width).max(1.0))
-                            .min_scrolled_width(1.0)
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| self.toolbar_edit_commands(ui, host, open))
-                            });
+                    let button = icons::BUTTON_WIDTH + ui.spacing().item_spacing.x;
+                    let trailing_width = if self.window_toolbar {
+                        5.0 * button + 5.0
                     } else {
-                        self.toolbar_edit_commands(ui, host, open);
-                    }
-                    let rest = ui.available_rect_before_wrap();
-                    if self.window_toolbar {
-                        let drag = egui::Rect::from_min_max(
-                            rest.min,
-                            egui::pos2(
-                                (rest.right() - trailing_width).max(rest.left()),
-                                rest.bottom(),
-                            ),
-                        );
-                        if drag.width() > 100.0 {
-                            let name = self
-                                .path()
-                                .and_then(|path| std::path::Path::new(path).file_name())
-                                .map_or_else(
-                                    || "OrangeEditor".into(),
-                                    |name| name.to_string_lossy(),
-                                );
-                            let painter = ui.painter().with_clip_rect(drag.shrink(8.0));
-                            painter.text(
-                                drag.center(),
-                                egui::Align2::CENTER_CENTER,
-                                name,
-                                egui::FontId::proportional(12.0),
-                                ui.visuals().weak_text_color(),
-                            );
-                        }
-                        let response = ui.interact(
-                            drag,
-                            ui.scope_id().with("window-drag"),
-                            egui::Sense::click_and_drag(),
-                        );
-                        response.context_menu(|ui| self.toolbar_options(ui, false));
-                        if response.double_clicked() {
-                            let maximized =
-                                ui.input(|input| input.viewport().maximized.unwrap_or(false));
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                        } else if response.drag_started() {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                        }
-                    } else {
-                        let free = egui::Rect::from_min_max(
-                            rest.min,
-                            egui::pos2(
-                                (rest.right() - trailing_width).max(rest.left()),
-                                rest.bottom(),
-                            ),
-                        );
-                        if free.is_positive() {
-                            ui.interact(
-                                free,
-                                ui.scope_id().with("toolbar-empty"),
-                                egui::Sense::click(),
-                            )
-                            .context_menu(|ui| self.toolbar_options(ui, false));
-                        }
-                    }
+                        2.0 * button
+                    };
+                    self.toolbar_groups(ui, host, open, trailing_width);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.window_toolbar {
                             if icons::button(ui, true, icons::CLOSE, t("close-window"), "Alt+F4")
@@ -2167,46 +2113,38 @@ impl Editor {
                         egui::Popup::menu(&options)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                             .show(|ui| self.toolbar_options(ui, false));
-                        ui.add_space(5.0);
-                        let running = self.is_running();
-                        let blocked = self
-                            .document
-                            .as_ref()
-                            .is_some_and(|document| document.run_blocked);
-                        let (hint, key) = if running {
-                            ("stop-with-key", "stop")
-                        } else {
-                            ("run-with-key", "run")
-                        };
-                        if self.toolbar_options.run()
-                            && icons::run_button(ui, running || open && !blocked, running)
-                                .on_hover_text(tf(
-                                    hint,
-                                    &[("key", self.canvas.keys.label(key).into())],
-                                ))
-                                .on_disabled_hover_text(t(if blocked {
-                                    "run-blocked-hint"
-                                } else {
-                                    "run-hint"
-                                }))
-                                .clicked()
-                        {
-                            if running {
-                                self.stop(host);
-                            } else {
-                                ui.memory_mut(egui::Memory::stop_text_input);
-                                self.run_asked = true;
-                            }
-                        }
-                        if self.toolbar_options.check()
-                            && icons::button(ui, open, icons::CHECK, t("check-graph-hint"), "")
-                                .clicked()
-                        {
-                            self.check(host);
-                        }
                     });
                 });
             });
+    }
+
+    fn toolbar_run(&mut self, ui: &mut egui::Ui, host: &mut Host, open: bool) {
+        let running = self.is_running();
+        let blocked = self
+            .document
+            .as_ref()
+            .is_some_and(|document| document.run_blocked);
+        let (hint, key) = if running {
+            ("stop-with-key", "stop")
+        } else {
+            ("run-with-key", "run")
+        };
+        if icons::run_button(ui, running || open && !blocked, running)
+            .on_hover_text(tf(hint, &[("key", self.canvas.keys.label(key).into())]))
+            .on_disabled_hover_text(t(if blocked {
+                "run-blocked-hint"
+            } else {
+                "run-hint"
+            }))
+            .clicked()
+        {
+            if running {
+                self.stop(host);
+            } else {
+                ui.memory_mut(egui::Memory::stop_text_input);
+                self.run_asked = true;
+            }
+        }
     }
 
     /// Whether the visible status bar has opted in to CPU or network sampling.
@@ -2698,15 +2636,14 @@ impl Editor {
                     continue;
                 }
                 shown += 1;
-                let kind = match package.kind {
-                    PackageKind::Base => "base",
-                    PackageKind::Native => "built-in",
-                    _ => "installed",
-                };
+                let kind = t(match package.kind {
+                    PackageKind::Base => "package-source-base",
+                    PackageKind::Native => "package-source-native",
+                    _ => "package-source-installed",
+                });
                 let _ = egui::Frame::new()
                     .fill(ui.visuals().faint_bg_color)
-                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                    .corner_radius(6)
+                    .corner_radius(self.corners.docks)
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .outer_margin(egui::Margin {
                         bottom: 6,
@@ -2714,38 +2651,17 @@ impl Editor {
                     })
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.weak(package.version);
-                                    ui.with_layout(
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            let _ = ui
-                                                .add(
-                                                    egui::Label::new(
-                                                        egui::RichText::new(name).strong(),
-                                                    )
-                                                    .truncate(),
-                                                )
-                                                .on_hover_text(package.id);
-                                        },
-                                    );
-                                },
-                            );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(name).on_hover_text(package.id);
+                            ui.weak(package.version);
+                            ui.weak(kind);
+                            if package.enabled && !package.active {
+                                ui.weak(t("package-unavailable"));
+                            }
                         });
                         if !about.is_empty() {
-                            let _ =
-                                ui.add(egui::Label::new(egui::RichText::new(about).small()).wrap());
+                            ui.add(egui::Label::new(about).wrap());
                         }
-                        ui.weak(tf(
-                            "package-status",
-                            &[
-                                ("kind", kind.into()),
-                                ("active", if package.active { "yes" } else { "no" }.into()),
-                            ],
-                        ));
                         let key = package
                             .id
                             .parse()

@@ -991,3 +991,20 @@ toolbar-move-earlier = Move earlier
 toolbar-move-later = Move later
 toolbar-reset = Reset toolbar
 toolbar-check-graph = Check graph
+
+toolbar-left = Left
+toolbar-center = Center
+toolbar-right = Right
+toolbar-flex-spacer = Flexible spacer
+toolbar-drag-action = Drag to reorder or move to another group
+shortcut-search-hint = Search actions or shortcuts
+shortcut-reset-confirm = Replace all custom shortcuts with the defaults?
+general-display = General display
+toolbar-add-spacer = Add flexible spacer
+toolbar-action-options = Command options
+package-source-base = Core
+package-source-native = Native
+package-source-installed = Installed
+package-unavailable = Unavailable
+
+dock-resize = Resize dock

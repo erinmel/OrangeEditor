@@ -52,7 +52,12 @@ pub fn switch_with_thumb(
     let text = ui
         .painter()
         .layout_no_wrap(label.to_owned(), font.clone(), theme.text);
-    let width = (track_width + s.sm + text.size().x)
+    let label_width = if label.is_empty() {
+        0.0
+    } else {
+        s.sm + text.size().x
+    };
+    let width = (track_width + label_width)
         .min(ui.available_width())
         .max(0.0);
     let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click());

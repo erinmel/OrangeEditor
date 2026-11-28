@@ -604,7 +604,7 @@ impl crate::Editor {
     }
 
     pub(crate) fn keybindings_ui(&mut self, ui: &mut egui::Ui, query: &str) {
-        let reset_requested = ui
+        let mut reset_requested = ui
             .horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(t("shortcuts-heading"))
@@ -625,12 +625,59 @@ impl crate::Editor {
                 .inner
             })
             .inner;
+        let recording = self.is_recording_shortcut();
+        let search_changed = ui
+            .add_enabled_ui(!recording, |ui| {
+                controls::search(
+                    ui,
+                    "shortcut-search",
+                    &mut self.shortcut_search,
+                    t("shortcut-search-hint"),
+                )
+                .changed()
+            })
+            .inner;
+        if search_changed || reset_requested {
+            self.shortcut_edit = None;
+        }
         if reset_requested {
+            self.shortcut_reset_open = true;
+        }
+        if self.shortcut_reset_open {
+            orange_ui_controls::modal(ui.ctx(), egui::Id::unique("reset-keymap")).show(
+                ui.ctx(),
+                |ui| {
+                    ui.strong(t("restore-default-shortcuts"));
+                    ui.label(t("shortcut-reset-confirm"));
+                    let (confirm, cancel) = orange_ui_controls::confirm_cancel(
+                        ui,
+                        Surface::Dialog,
+                        t("restore-default-shortcuts"),
+                        t("cancel"),
+                        controls::ButtonTone::Neutral,
+                        true,
+                    );
+                    reset_requested = confirm.clicked();
+                    if reset_requested
+                        || cancel.clicked()
+                        || ui.input(|input| input.key_pressed(Key::Escape))
+                    {
+                        self.shortcut_reset_open = false;
+                    }
+                },
+            );
+        }
+        if reset_requested && !self.shortcut_reset_open {
             self.canvas.keys = Keymap::default();
             self.shortcut_edit = None;
         }
-        let prepared = orange_host::SearchQuery::new(query);
-        let searched_chord = prepared.is_valid().then(|| parse_shortcut(query)).flatten();
+        let local_query = self.shortcut_search.trim().to_owned();
+        let filters = [query.trim(), local_query.as_str()].map(|text| {
+            let query = orange_host::SearchQuery::new(text);
+            let chord = query.is_valid().then(|| parse_shortcut(text)).flatten();
+            (query, chord)
+        });
+        let searching = filters.iter().any(|(query, _)| !query.is_empty());
         let table_width =
             (ui.available_width() - ui.spacing().scroll.allocated_width() - 6.0).max(0.0);
         let (header, [action, binding]) = shortcut_row(ui, table_width, CONTROL_HEIGHT);
@@ -652,31 +699,57 @@ impl crate::Editor {
                 let mut any = false;
                 for &(group, actions) in ACTION_GROUPS {
                     let mut headed = false;
+                    let mut group_open = true;
                     for &(action, label, _, _) in actions {
                         let keys = self.canvas.keys.label(action);
                         if !self
                             .shortcut_edit
                             .as_ref()
                             .is_some_and(|edit| edit.action == action)
-                            && self
-                                .shortcut_rank(action, label, group, &prepared, searched_chord)
-                                .is_none()
+                            && filters.iter().any(|(query, chord)| {
+                                self.shortcut_rank(action, label, group, query, *chord)
+                                    .is_none()
+                            })
                         {
                             continue;
                         }
                         any = true;
                         if !headed {
                             ui.add_space(SPACE_SMALL);
-                            let (_, [heading, _]) = shortcut_row(ui, table_width, 19.0);
-                            put_left(
+                            let id = ui.make_persistent_id(group);
+                            let expanded = ui
+                                .ctx()
+                                .data_mut(|data| data.get_persisted::<bool>(id))
+                                .unwrap_or(true);
+                            group_open = searching || expanded;
+                            if orange_ui_controls::navigation::sidebar_row(
                                 ui,
-                                heading,
-                                egui::Label::new(egui::RichText::new(t(group)).strong()),
+                                t(group),
+                                false,
+                                Some(group_open),
+                                |ui, rect, ink| {
+                                    crate::icons::paint_centered(
+                                        ui.painter(),
+                                        rect.center(),
+                                        crate::icons::KEYBOARD,
+                                        14.0,
+                                        ink,
+                                    )
+                                },
                             )
-                            .on_hover_text(t(group_help(group)));
+                            .on_hover_text(t(group_help(group)))
+                            .clicked()
+                                && !searching
+                            {
+                                group_open = !expanded;
+                                ui.ctx()
+                                    .data_mut(|data| data.insert_persisted(id, group_open));
+                            }
                             headed = true;
                         }
-                        self.shortcut_binding_row(ui, table_width, action, t(label), keys);
+                        if group_open {
+                            self.shortcut_binding_row(ui, table_width, action, t(label), keys);
+                        }
                     }
                 }
                 if !any {
@@ -795,13 +868,12 @@ impl crate::Editor {
                     } if !is_modifier_key(key) => Some((key, modifiers)),
                     _ => None,
                 });
-                if let Some((key, modifiers)) = captured {
-                    input.consume_key(modifiers, key);
-                }
+
                 input.events.retain(|event| {
                     !matches!(
                         event,
-                        egui::Event::Text(_)
+                        egui::Event::Key { pressed: true, .. }
+                            | egui::Event::Text(_)
                             | egui::Event::Copy
                             | egui::Event::Cut
                             | egui::Event::Paste(_)

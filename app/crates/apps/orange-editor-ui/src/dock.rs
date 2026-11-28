@@ -78,6 +78,7 @@ const AREA_LABELS: [&str; 4] = [
     "dock-bottom-right",
 ];
 const RAIL: f32 = 30.0;
+pub(super) type DockSplitter = (usize, egui::Rect, f32, f32);
 
 pub(super) fn workspace_scroll() -> egui::style::ScrollStyle {
     egui::style::ScrollStyle {
@@ -300,7 +301,7 @@ impl Editor {
         }
     }
 
-    pub(super) fn dock_layout(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+    pub(super) fn dock_layout(&mut self, ui: &mut egui::Ui, host: &mut Host) -> Vec<DockSplitter> {
         Self::sync_visibility(&mut self.dock, self.panels, self.log_events, self.tab);
         self.sync_panels_from_dock();
         let mut targets = [egui::Rect::NOTHING; 4];
@@ -312,7 +313,8 @@ impl Editor {
             } else {
                 egui::Panel::right("dock-right-tabs")
             };
-            rail.show_separator_line(false)
+            rail.resizable(false)
+                .show_separator_line(false)
                 .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
                 .exact_size(if self.dock.names { 112.0 } else { RAIL })
                 .show(ui, |ui| {
@@ -343,19 +345,19 @@ impl Editor {
                     }
                 });
         }
+        let mut splitters = Vec::new();
         let bottom = [self.dock.active[2], self.dock.active[3]];
         if bottom.iter().any(Option::is_some) {
             let max = (ui.available_height() * 0.55).max(70.0);
             let panel = egui::Panel::bottom("dock-bottom-content")
+                .resizable(false)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::NONE
                         .fill(ui.visuals().panel_fill)
                         .inner_margin(egui::Margin::symmetric(3, 4)),
                 )
-                .resizable(true)
-                .size_range(70.0..=max)
-                .default_size(self.dock.sizes[2].clamp(70.0, max))
+                .exact_size(self.dock.sizes[2].clamp(70.0, max))
                 .show(ui, |ui| {
                     if let [Some(left), Some(right)] = bottom {
                         ui.spacing_mut().item_spacing.x = 8.0;
@@ -382,9 +384,13 @@ impl Editor {
                         self.dock_surface(ui, host, tool);
                     }
                 });
-            if ui.input(|input| input.pointer.is_decidedly_dragging()) {
-                self.dock.sizes[2] = panel.response.rect.height();
-            }
+            let rect = panel.response.rect;
+            splitters.push((
+                2,
+                egui::Rect::from_min_max(rect.left_top(), rect.right_top()),
+                70.0,
+                max,
+            ));
         }
         let side_max = (ui.available_width() * 0.38).max(100.0);
         for (area, target) in targets.iter_mut().enumerate().take(2) {
@@ -395,23 +401,84 @@ impl Editor {
                     egui::Panel::right("orange-inspector")
                 };
                 let panel = content
+                    .resizable(false)
                     .show_separator_line(false)
                     .frame(
                         egui::Frame::NONE
                             .fill(ui.visuals().panel_fill)
                             .inner_margin(egui::Margin::symmetric(3, 4)),
                     )
-                    .resizable(true)
-                    .size_range(100.0..=side_max)
-                    .default_size(self.dock.sizes[area].clamp(100.0, side_max))
+                    .exact_size(self.dock.sizes[area].clamp(100.0, side_max))
                     .show(ui, |ui| self.dock_surface(ui, host, tool));
                 *target = panel.response.rect;
-                if ui.input(|input| input.pointer.is_decidedly_dragging()) {
-                    self.dock.sizes[area] = panel.response.rect.width();
-                }
+                let rect = panel.response.rect;
+                let x = if area == 0 { rect.right() } else { rect.left() };
+                splitters.push((
+                    area,
+                    egui::Rect::from_min_max(
+                        egui::pos2(x, rect.top()),
+                        egui::pos2(x, rect.bottom()),
+                    ),
+                    100.0,
+                    side_max,
+                ));
             }
         }
         self.dock_drop(ui, targets, rails, &slots);
+        splitters
+    }
+
+    pub(super) fn resize_docks(&mut self, ui: &egui::Ui, splitters: Vec<DockSplitter>) {
+        for (area, edge, min, max) in splitters {
+            let id = ui.scope_id().with(("dock-resize", area));
+            let inward = match area {
+                0 => -egui::Vec2::X,
+                1 => egui::Vec2::X,
+                _ => egui::Vec2::Y,
+            };
+            let response =
+                orange_ui_controls::navigation::splitter(ui, id, edge, inward, t("dock-resize"));
+            let origin_id = id.with("origin");
+            if response.has_focus() {
+                let (back, forward) = if area == 2 {
+                    (egui::Key::ArrowUp, egui::Key::ArrowDown)
+                } else {
+                    (egui::Key::ArrowLeft, egui::Key::ArrowRight)
+                };
+                let steps = ui.input_mut(|input| {
+                    i8::from(input.consume_key(egui::Modifiers::NONE, forward))
+                        - i8::from(input.consume_key(egui::Modifiers::NONE, back))
+                });
+                if steps != 0 {
+                    let direction = if area == 0 { 1.0 } else { -1.0 };
+                    self.dock.sizes[area] = (self.dock.sizes[area].clamp(min, max)
+                        + 12.0 * f32::from(steps) * direction)
+                        .clamp(min, max);
+                    ui.request_repaint();
+                }
+            }
+            if response.drag_started() {
+                let shown = self.dock.sizes[area];
+                let axis = usize::from(area == 2);
+                if let Some(press) = ui.input(|input| input.pointer.press_origin()) {
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(origin_id, (press[axis], shown.clamp(min, max)))
+                    });
+                }
+            }
+            if (response.dragged() || response.drag_stopped())
+                && let Some(pointer) = response.interact_pointer_pos()
+                && let Some((press, initial)) =
+                    ui.ctx().data(|data| data.get_temp::<(f32, f32)>(origin_id))
+            {
+                let delta = pointer[usize::from(area == 2)] - press;
+                let size = (initial + if area == 0 { delta } else { -delta }).clamp(min, max);
+                if self.dock.sizes[area] != size {
+                    self.dock.sizes[area] = size;
+                    ui.request_repaint();
+                }
+            }
+        }
     }
 
     fn dock_tabs(&mut self, ui: &mut egui::Ui, area: usize, slots: &mut Vec<(Tool, egui::Rect)>) {
@@ -462,12 +529,16 @@ impl Editor {
                 self.sync_panels_from_dock();
             }
             response.context_menu(|ui| {
-                if ui.button(t("dock-hide-icon")).clicked() {
+                if ui
+                    .button((icons::centered(icons::CLOSE), t("dock-hide-icon")))
+                    .clicked()
+                {
                     self.dock.hide(tool);
                     self.sync_panels_from_dock();
                     ui.close();
                 }
                 ui.checkbox(&mut self.dock.names, t("dock-show-names"));
+                self.dock_add_menu(ui, area);
                 ui.add_space(4.0);
                 for (destination, label) in AREA_LABELS.into_iter().enumerate() {
                     if ui
@@ -485,18 +556,26 @@ impl Editor {
             ui.interact(rest, ui.scope_id().with("empty-rail"), egui::Sense::click())
                 .context_menu(|ui| {
                     ui.checkbox(&mut self.dock.names, t("dock-show-names"));
-                    ui.add_enabled_ui(!self.dock.hidden.is_empty(), |ui| {
-                        ui.menu_button(t("dock-add-icon"), |ui| {
-                            for tool in self.dock.hidden.clone() {
-                                if ui.button(t(tool.key())).clicked() {
-                                    self.move_dock_tool(tool, area, None);
-                                    ui.close();
-                                }
-                            }
-                        })
-                    });
+                    self.dock_add_menu(ui, area);
                 });
         }
+    }
+
+    fn dock_add_menu(&mut self, ui: &mut egui::Ui, area: usize) {
+        ui.add_enabled_ui(!self.dock.hidden.is_empty(), |ui| {
+            ui.menu_button(t("dock-add-icon"), |ui| {
+                for tool in Tool::ALL {
+                    if self.dock.hidden.contains(&tool)
+                        && ui
+                            .button((icons::centered(tool.icon()), t(tool.key())))
+                            .clicked()
+                    {
+                        self.move_dock_tool(tool, area, None);
+                        ui.close();
+                    }
+                }
+            });
+        });
     }
 
     fn dock_drop(
@@ -631,7 +710,9 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| editor.dock_layout(ui, &mut host),
+                |ui| {
+                    editor.dock_layout(ui, &mut host);
+                },
             )
             .drop_without_applying_deltas();
         };
@@ -708,12 +789,120 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| editor.dock_layout(ui, &mut host),
+                |ui| {
+                    editor.dock_layout(ui, &mut host);
+                },
             );
             menu_shown |= output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == menu));
             output.drop_without_applying_deltas();
         }
         assert!(menu_shown);
+    }
+
+    #[test]
+    fn icon_rail_edges_do_not_offer_resize_cursors() {
+        let ctx = egui::Context::default();
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        for names in [false, true] {
+            editor.dock.names = names;
+            let width = if names { 112.0 } else { RAIL };
+            for x in [width, screen.width() - width] {
+                for _ in 0..2 {
+                    let output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            events: vec![egui::Event::PointerMoved(egui::pos2(x, 270.0))],
+                            ..Default::default()
+                        },
+                        |ui| editor.ui(ui, &mut host),
+                    );
+                    let cursor = output.platform_output.cursor_icon;
+                    output.drop_without_applying_deltas();
+                    assert_ne!(cursor, egui::CursorIcon::ResizeHorizontal);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn splitter_grips_stay_inside_docks_and_drag_without_jumping() {
+        let ctx = egui::Context::default();
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.dock.show(Tool::GraphInfo, true);
+        let mut handles = [egui::Rect::NOTHING; 3];
+        let mut frame = |editor: &mut Editor, events| {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let root = ui.scope_id();
+                    editor.ui(ui, &mut host);
+                    for (area, handle) in handles.iter_mut().enumerate() {
+                        if let Some(response) = ui.read_response(root.with(("dock-resize", area))) {
+                            *handle = response.rect;
+                        }
+                    }
+                },
+            );
+            let grips = std::array::from_fn::<_, 3, _>(|area| {
+                let inward = [-egui::Vec2::X, egui::Vec2::X, egui::Vec2::Y][area];
+                let size = if area == 2 {
+                    egui::vec2(40.0, 3.0)
+                } else {
+                    egui::vec2(3.0, 40.0)
+                };
+                let expected =
+                    egui::Rect::from_center_size(handles[area].center() + 3.5 * inward, size);
+                output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.rect == expected))
+            });
+            output.drop_without_applying_deltas();
+            (handles, grips)
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            pressed,
+            button: egui::PointerButton::Primary,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for (area, motion) in [
+            egui::vec2(25.0, 0.0),
+            egui::vec2(-25.0, 0.0),
+            egui::vec2(0.0, -25.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let before = editor.dock.sizes;
+            let (handles, grips) = frame(&mut editor, vec![]);
+            assert!(
+                grips[area],
+                "dock {area} grip must be inset with matching dimensions"
+            );
+            let handle = handles[area];
+            assert!(handle.is_positive());
+            let start = handle.center() + motion.normalized() * 6.0;
+            let end = start + motion;
+            for events in [
+                vec![egui::Event::PointerMoved(start)],
+                vec![button(start, true)],
+                vec![egui::Event::PointerMoved(end)],
+                vec![button(end, false)],
+            ] {
+                frame(&mut editor, events);
+            }
+            let mut expected = before;
+            expected[area] += 25.0;
+            assert_eq!(editor.dock.sizes, expected);
+        }
     }
 
     #[test]
