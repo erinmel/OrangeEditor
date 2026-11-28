@@ -303,9 +303,15 @@ impl Editor {
                                                 t("toolbar-drag-action"),
                                             );
                                             grip.dnd_set_drag_payload(action);
-                                            ui.add(
-                                                egui::Label::new(icons::text(icon))
-                                                    .selectable(false),
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::Vec2::splat(16.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            icons::paint_command(
+                                                ui,
+                                                rect,
+                                                icon,
+                                                ui.visuals().text_color(),
                                             );
                                             ui.add(
                                                 egui::Label::new(
@@ -412,7 +418,7 @@ impl Editor {
 
     fn toolbar_drop(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         zones: &[(usize, egui::Rect)],
         rows: &[(usize, Action, egui::Rect)],
     ) {
@@ -475,7 +481,7 @@ impl Editor {
 
     fn toolbar_drag_preview(
         &self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         action: Action,
         pointer: egui::Pos2,
         pickup: f32,
@@ -525,13 +531,18 @@ impl Editor {
             ui.visuals().selection.stroke,
             egui::StrokeKind::Inside,
         );
-        icons::paint_centered(
-            &painter,
-            anchor + egui::vec2(16.0, size.y / 2.0),
-            icon,
-            17.0,
-            theme.text,
+        let mut preview = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("toolbar-drag-icon")
+                .layer_id(painter.layer_id())
+                .max_rect(rect),
         );
+        preview.set_clip_rect(bounds);
+        let icon_rect = egui::Rect::from_center_size(
+            anchor + egui::vec2(16.0, size.y / 2.0),
+            egui::Vec2::splat(16.0),
+        );
+        icons::paint_command(&preview, icon_rect, icon, theme.text);
         painter.galley(anchor + egui::vec2(30.0, 7.0), galley, theme.text);
     }
 
@@ -772,6 +783,62 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toolbar_settings_and_preview_use_the_toolbar_command_painter() {
+        let mut editor = Editor::new();
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let ctx = egui::Context::default();
+        icons::install(&ctx);
+        let painted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = painted.clone();
+        icons::set_command_painter(
+            &ctx,
+            Some(std::sync::Arc::new(move |painter, rect, icon, _| {
+                capture
+                    .lock()
+                    .unwrap()
+                    .push((icon, painter.layer_id().order, rect.size()));
+                true
+            })),
+        );
+
+        let render = |draw: &mut dyn FnMut(&mut egui::Ui)| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 850.0),
+                    )),
+                    ..Default::default()
+                },
+                draw,
+            )
+            .drop_without_applying_deltas();
+            std::mem::take(&mut *painted.lock().unwrap())
+        };
+        let toolbar = render(&mut |ui| editor.toolbar(ui, &mut host));
+        let settings = render(&mut |ui| editor.toolbar_options(ui, true));
+        for icon in [icons::GROUP, icons::UNGROUP, icons::ARRANGE, icons::SNAP] {
+            assert!(
+                toolbar
+                    .iter()
+                    .any(|entry| entry.0 == icon && entry.2 == egui::Vec2::splat(16.0))
+            );
+            assert!(
+                settings
+                    .iter()
+                    .any(|entry| entry.0 == icon && entry.2 == egui::Vec2::splat(16.0))
+            );
+        }
+        let preview = render(&mut |ui| {
+            editor.toolbar_drag_preview(ui, Action::Snap, egui::pos2(150.0, 150.0), 1.0);
+        });
+        assert_eq!(
+            preview,
+            [(icons::SNAP, egui::Order::Tooltip, egui::Vec2::splat(16.0))]
+        );
+    }
 
     #[test]
     fn dragging_a_command_grip_moves_it_into_the_center_group() {

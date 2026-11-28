@@ -221,7 +221,7 @@ pub(crate) fn dock_tab(
     response
 }
 
-fn paint_command(ui: &egui::Ui, rect: egui::Rect, icon: char, color: egui::Color32) {
+pub(crate) fn paint_command(ui: &egui::Ui, rect: egui::Rect, icon: char, color: egui::Color32) {
     let painter = ui
         .ctx()
         .data(|data| data.get_temp::<Arc<CommandPainter>>(command_painter_id()));
